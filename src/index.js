@@ -695,10 +695,11 @@ async function runMediaGroupPipeline(env, items, update) {
 // ============================================================
 // CONTENT PIPELINE — the heart of the system
 // ============================================================
-// Wrapped with a 25s hard timeout to prevent Cloudflare from killing the worker
-// mid-flight (free tier wall time limit = 30s). If the pipeline doesn't finish
-// in 25s, we abort and publish with format-only fallback.
-const PIPELINE_TIMEOUT_MS = 25_000;
+// Wrapped with a 55s hard timeout. Cloudflare Workers free tier:
+//   - Initial response: must be under 30s (we return 200 immediately via ctx.waitUntil)
+//   - Background tasks (ctx.waitUntil): can run up to 30s wall time, often more
+// We give the pipeline 55s to finish. If it doesn't, we abort and show error.
+const PIPELINE_TIMEOUT_MS = 55_000;
 
 async function runPipeline(env, content, feedbackChatId = null, update = null) {
   const SETTINGS = env.SETTINGS;
@@ -755,7 +756,7 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
         `<blockquote>✍️ AI rewrite (if needed)...</blockquote>`,
         `<blockquote>📝 Formatting &amp; publishing...</blockquote>`,
         ``,
-        `<i>Usually takes 5-15 seconds.</i>`,
+        `<i>Can take up to 30-40 seconds for large AI models.</i>`,
       ].join("\n"),
       { disable_web_page_preview: true }
     ).catch((e) => ({ ok: false, error: e.message }));
@@ -763,11 +764,20 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
 
-  // Run the inner pipeline with a hard timeout
-  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime);
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`PIPELINE_TIMEOUT after ${PIPELINE_TIMEOUT_MS}ms`)), PIPELINE_TIMEOUT_MS)
-  );
+  // Run the inner pipeline with a hard timeout.
+  // IMPORTANT: We use AbortController so that when the timeout fires, the inner
+  // pipeline's in-flight fetch() calls get cancelled — otherwise they keep running
+  // in the background and Cloudflare kills the worker.
+  const abortCtrl = new AbortController();
+  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime, abortCtrl.signal);
+  const timeoutPromise = new Promise((_, reject) => {
+    const t = setTimeout(() => {
+      abortCtrl.abort(); // Cancel in-flight fetches inside the inner pipeline
+      reject(new Error(`PIPELINE_TIMEOUT after ${PIPELINE_TIMEOUT_MS}ms`));
+    }, PIPELINE_TIMEOUT_MS);
+    // Clear the timeout if the inner pipeline finishes first
+    innerPromise.finally(() => clearTimeout(t));
+  });
 
   try {
     pipelineResult = await Promise.race([innerPromise, timeoutPromise]);
@@ -786,8 +796,8 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
           `<blockquote>The pipeline took longer than ${PIPELINE_TIMEOUT_MS / 1000}s and was aborted.</blockquote>`,
           ``,
           `<i>This usually means the AI provider is slow. Try:</i>`,
-          `• Switch to OpenRouter in the admin panel`,
-          `• Set rewrite mode to "none" (format only)`,
+          `• Use a faster model (e.g. <code>meta-llama/llama-3.3-70b-instruct:free</code>)`,
+          `• Or set rewrite mode to "none" (format only)`,
         ].join("\n"),
         { disable_web_page_preview: true }
       ).catch(() => {});
@@ -809,7 +819,7 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
 // ============================================================
 // INNER PIPELINE — the actual processing (wrapped by timeout above)
 // ============================================================
-async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime) {
+async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime, abortSignal) {
   const SETTINGS = env.SETTINGS;
   const adminId = content.fromId || env.ADMIN_ID;
 

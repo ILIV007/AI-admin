@@ -27,14 +27,16 @@ console.log("\n🧪 Pipeline Timeout & Fast-Path\n");
 // 1. PIPELINE_TIMEOUT_MS exists
 console.log("Pipeline timeout wrapper:");
 assert(indexSrc.includes("PIPELINE_TIMEOUT_MS"), "PIPELINE_TIMEOUT_MS constant exists");
-assert(indexSrc.includes("25_000") || indexSrc.includes("25000"), "timeout is 25 seconds (under Cloudflare's 30s limit)");
+assert(indexSrc.includes("55_000") || indexSrc.includes("55000"), "pipeline timeout is 55 seconds (under Cloudflare's 60s ctx.waitUntil limit)");
 assert(indexSrc.includes("Promise.race"), "uses Promise.race for timeout");
 assert(indexSrc.includes("PIPELINE_TIMEOUT"), "rejects with PIPELINE_TIMEOUT message");
+assert(indexSrc.includes("abortCtrl.abort()"), "aborts in-flight fetches on timeout (AbortController)");
 
 // 2. Processing message is sent OUTSIDE the timeout wrapper
 console.log("\nProcessing message handling:");
 assert(indexSrc.includes("OUTSIDE the timeout wrapper"), "comment notes processing message is outside timeout");
 assert(indexSrc.includes("runPipelineInner"), "has runPipelineInner function (separate from wrapper)");
+assert(indexSrc.includes("abortSignal"), "runPipelineInner accepts abortSignal parameter");
 
 // 3. Finally: logUpdate is ALWAYS called
 console.log("\nAlways log update:");
@@ -42,10 +44,18 @@ assert(indexSrc.includes("Finally: always log"), "has finally block for logging"
 assert(indexSrc.includes("pipelineError ? \"error\""), "logs error status on timeout");
 assert(indexSrc.includes("pipelineResult?.ok ? \"ok\""), "logs ok status on success");
 
-// 4. AI timeout (increased to 15s for large models on OpenRouter)
+// 4. AI timeout (increased to 25s for large models on OpenRouter)
 console.log("\nAI timeout:");
-assert(aiSrc.includes("15_000") || aiSrc.includes("15000"), "AI timeout is 15 seconds (enough for large models)");
-assert(!aiSrc.includes("8_000") && !aiSrc.includes("8000"), "old 8s timeout removed");
+assert(aiSrc.includes("25_000") || aiSrc.includes("25000"), "AI timeout is 25 seconds (enough for large models)");
+assert(!aiSrc.includes("8_000") && !aiSrc.includes("8000") && !aiSrc.includes("15_000"), "old 8s/15s timeouts removed");
+
+// 5. AI providers run in PARALLEL (concurrent, not sequential)
+console.log("\nAI providers run in parallel:");
+assert(aiSrc.includes("PARALLEL"), "has PARALLEL comment");
+assert(aiSrc.includes("Promise.all"), "uses Promise.all to run both providers concurrently");
+assert(aiSrc.includes("primaryPromise"), "creates primaryPromise");
+assert(aiSrc.includes("fallbackPromise"), "creates fallbackPromise");
+assert(!aiSrc.includes("Trying fallback"), "no sequential 'Trying fallback' (now parallel)");
 
 // 5. AI classify removed (rule-based only)
 console.log("\nAI classify removed (rule-based only):");
@@ -57,7 +67,7 @@ assert(classifierSrc.includes("30-second wall time limit"), "mentions Cloudflare
 // 6. Timeout error message edits the processing message
 console.log("\nTimeout UX:");
 assert(indexSrc.includes("Pipeline timed out"), "edits processing message on timeout");
-assert(indexSrc.includes("Switch to OpenRouter"), "suggests switching provider on timeout");
+assert(indexSrc.includes("faster model"), "suggests using a faster model on timeout");
 
 // 7. escapeHtmlForTg still exists (used for error messages)
 assert(indexSrc.includes("function escapeHtmlForTg"), "escapeHtmlForTg helper exists");

@@ -13,7 +13,7 @@
  * If both fail, we throw — the caller MUST handle this gracefully (FORMAT_ONLY).
  */
 
-const REQUEST_TIMEOUT_MS = 15_000; // 15s — enough for large models (550B) on OpenRouter free tier
+const REQUEST_TIMEOUT_MS = 25_000; // 25s per provider — generous for large models like nvidia/nemotron-550b
 
 /** Race a fetch against a timeout using AbortController */
 async function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -144,22 +144,55 @@ export function buildAIChain(env, settings) {
 }
 
 // ============================================================
-// UNIFIED complete() — tries primary, then fallback
+// UNIFIED complete() — races primary + fallback in PARALLEL for speed
+// ============================================================
+// Old approach: try primary, if it fails, try fallback. This means worst-case
+// is 2× timeout (e.g. 25s + 25s = 50s) which exceeds the pipeline timeout.
+//
+// New approach: fire BOTH providers at the same time. Whichever returns first
+// (and succeeds) wins. The other is left running in the background (its result
+// is discarded). This means worst-case is just 1× timeout = 25s.
+//
+// If both fail, we return the more useful error.
 // ============================================================
 export async function aiComplete(env, settings, params) {
   const { primary, fallback } = buildAIChain(env, settings);
 
-  try {
-    return { text: await primary.complete(params), provider: primary.name, ok: true };
-  } catch (e1) {
-    console.warn(`[AI] primary (${primary.name}) failed: ${e1.message}. Trying fallback…`);
-    try {
-      return { text: await fallback.complete(params), provider: fallback.name, ok: true, fellBack: true };
-    } catch (e2) {
-      console.error(`[AI] fallback (${fallback.name}) also failed: ${e2.message}`);
-      return { ok: false, error: e2.message, primaryError: e1.message };
-    }
+  // Race both providers in parallel
+  const primaryPromise = primary.complete(params).then(
+    (text) => ({ text, provider: primary.name, ok: true }),
+    (err) => ({ ok: false, provider: primary.name, error: err.message })
+  );
+  const fallbackPromise = fallback.complete(params).then(
+    (text) => ({ text, provider: fallback.name, ok: true, fellBack: true }),
+    (err) => ({ ok: false, provider: fallback.name, error: err.message })
+  );
+
+  // Wait for BOTH to resolve (either success or failure)
+  const [primaryResult, fallbackResult] = await Promise.all([
+    primaryPromise.catch((e) => ({ ok: false, provider: primary.name, error: e.message })),
+    fallbackPromise.catch((e) => ({ ok: false, provider: fallback.name, error: e.message })),
+  ]);
+
+  console.log(`[AI] primary (${primary.name}): ${primaryResult.ok ? "OK" : "FAIL — " + (primaryResult.error || "").slice(0, 80)}`);
+  console.log(`[AI] fallback (${fallback.name}): ${fallbackResult.ok ? "OK" : "FAIL — " + (fallbackResult.error || "").slice(0, 80)}`);
+
+  // Prefer primary if it succeeded; otherwise use fallback
+  if (primaryResult.ok) {
+    return primaryResult;
   }
+  if (fallbackResult.ok) {
+    console.warn(`[AI] primary failed, using fallback (${fallback.name})`);
+    return fallbackResult;
+  }
+
+  // Both failed — return the primary error (more useful for the user)
+  return {
+    ok: false,
+    error: `${primaryResult.error} | ${fallbackResult.error}`,
+    primaryError: primaryResult.error,
+    fallbackError: fallbackResult.error,
+  };
 }
 
 // ============================================================

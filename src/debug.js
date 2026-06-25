@@ -377,19 +377,25 @@ export async function testKV(SETTINGS) {
   }
 }
 
+/**
+ * Test BOTH AI providers in parallel and report timing for each.
+ * This is the key diagnostic — shows which provider is slow/fast and any errors.
+ */
 export async function testAI(env) {
-  const provider = env.DEFAULT_AI_PROVIDER || "gemini";
-  const model = provider === "openrouter" ? (env.OPENROUTER_MODEL || "google/gemini-2.0-flash-exp:free") : (env.GEMINI_MODEL || "gemini-2.0-flash");
-  const apiKey = provider === "openrouter" ? env.OPENROUTER_API_KEY : env.GEMINI_API_KEY;
-
-  if (!apiKey) return { ok: false, error: `${provider} API key is not set` };
+  const geminiModel = env.GEMINI_MODEL || "gemini-2.0-flash";
+  const openrouterModel = env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
 
   const userMsg = "Reply with exactly: AI_OK";
   const systemMsg = "You are a test endpoint. Reply with exactly: AI_OK";
 
-  try {
-    if (provider === "gemini") {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  // Test Gemini
+  const geminiTest = (async () => {
+    if (!env.GEMINI_API_KEY) return { ok: false, provider: "gemini", model: geminiModel, error: "GEMINI_API_KEY not set", ms: 0 };
+    const start = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 25000);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${env.GEMINI_API_KEY}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -398,35 +404,74 @@ export async function testAI(env) {
           contents: [{ role: "user", parts: [{ text: userMsg }] }],
           generationConfig: { temperature: 0, maxOutputTokens: 50 },
         }),
-      });
+        signal: ctrl.signal,
+      }).catch((e) => {
+        if (e.name === "AbortError") throw new Error(`TIMEOUT after 25s`);
+        throw e;
+      }).finally(() => clearTimeout(t));
       const data = await res.json();
-      if (!res.ok) return { ok: false, error: `Gemini ${res.status}: ${JSON.stringify(data.error || data).slice(0, 300)}` };
+      const ms = Date.now() - start;
+      if (!res.ok) return { ok: false, provider: "gemini", model: geminiModel, error: `HTTP ${res.status}: ${JSON.stringify(data.error || data).slice(0, 200)}`, ms };
       const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
-      return { ok: true, provider, model, response: text.trim().slice(0, 200) };
-    } else {
+      return { ok: true, provider: "gemini", model: geminiModel, response: text.trim().slice(0, 200), ms };
+    } catch (e) {
+      return { ok: false, provider: "gemini", model: geminiModel, error: e.message, ms: Date.now() - start };
+    }
+  })();
+
+  // Test OpenRouter
+  const openrouterTest = (async () => {
+    if (!env.OPENROUTER_API_KEY) return { ok: false, provider: "openrouter", model: openrouterModel, error: "OPENROUTER_API_KEY not set", ms: 0 };
+    const start = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 25000);
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
           "HTTP-Referer": "https://ai-admin.workers.dev",
           "X-Title": "AI Admin Debug",
         },
         body: JSON.stringify({
-          model,
+          model: openrouterModel,
           messages: [{ role: "system", content: systemMsg }, { role: "user", content: userMsg }],
           temperature: 0,
           max_tokens: 50,
         }),
-      });
+        signal: ctrl.signal,
+      }).catch((e) => {
+        if (e.name === "AbortError") throw new Error(`TIMEOUT after 25s`);
+        throw e;
+      }).finally(() => clearTimeout(t));
       const data = await res.json();
-      if (!res.ok) return { ok: false, error: `OpenRouter ${res.status}: ${JSON.stringify(data.error || data).slice(0, 300)}` };
+      const ms = Date.now() - start;
+      if (!res.ok) return { ok: false, provider: "openrouter", model: openrouterModel, error: `HTTP ${res.status}: ${JSON.stringify(data.error || data).slice(0, 200)}`, ms };
       const text = data?.choices?.[0]?.message?.content ?? "";
-      return { ok: true, provider, model, response: text.trim().slice(0, 200) };
+      return { ok: true, provider: "openrouter", model: openrouterModel, response: text.trim().slice(0, 200), ms };
+    } catch (e) {
+      return { ok: false, provider: "openrouter", model: openrouterModel, error: e.message, ms: Date.now() - start };
     }
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  })();
+
+  // Run both in parallel
+  const [gemini, openrouter] = await Promise.all([geminiTest, openrouterTest]);
+
+  return {
+    ok: gemini.ok || openrouter.ok,
+    gemini,
+    openrouter,
+    recommendation: !gemini.ok && !openrouter.ok
+      ? "Both providers failed. Check API keys and quotas."
+      : !gemini.ok
+      ? "Gemini failed — using OpenRouter as primary."
+      : !openrouter.ok
+      ? "OpenRouter failed — using Gemini as primary."
+      : (gemini.ms < openrouter.ms
+        ? `Both OK. Gemini faster (${gemini.ms}ms vs ${openrouter.ms}ms).`
+        : `Both OK. OpenRouter faster (${openrouter.ms}ms vs ${gemini.ms}ms).`),
+  };
 }
 
 // ============================================================
