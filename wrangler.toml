@@ -1,0 +1,38 @@
+# ============================================================
+# AI Admin — Cloudflare Worker configuration
+# Version: v0.1
+# ============================================================
+#
+# SETUP NOTES:
+#   - KV binding, secrets, and vars are configured MANUALLY via
+#     the Cloudflare dashboard (Workers & Pages → your worker → Settings).
+#   - See README.md → "Manual Dashboard Setup" for the full walkthrough.
+#
+# What to set in the dashboard:
+#   KV Namespace Bindings:
+#     SETTINGS  →  your KV namespace
+#
+#   Environment Variables (vars):
+#     ADMIN_ID           →  your Telegram numeric user ID
+#     TARGET_CHANNEL     →  @your_channel  (or  -100xxxxxxxxx)
+#     FOOTER_TEXT        →  🌀 @ILIVIR3
+#     DEFAULT_AI_PROVIDER → gemini
+#     GEMINI_MODEL       →  gemini-2.0-flash
+#     OPENROUTER_MODEL   →  google/gemini-2.0-flash-exp:free
+#     WEBHOOK_SECRET     →  any random string (optional but recommended)
+#
+#   Secrets (encrypted):
+#     BOT_TOKEN          →  from @BotFather
+#     GEMINI_API_KEY     →  from aistudio.google.com
+#     OPENROUTER_API_KEY →  from openrouter.ai/keys
+# ============================================================
+
+name = "ai-admin"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV binding — set this via the Cloudflare dashboard, OR uncomment and fill below.
+# [[kv_namespaces]]
+# binding = "SETTINGS"
+# id = "your-kv-namespace-id"
