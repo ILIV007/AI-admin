@@ -25,6 +25,7 @@ export const DEFAULTS = Object.freeze({
   personality_mode: "friendly",
   footer_text: "🌀 @ILIVIR3",
   ai_provider: "gemini",
+  channel_editing_enabled: false, // Default OFF — channel posts are NOT edited unless admin enables this
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 

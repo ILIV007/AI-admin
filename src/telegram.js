@@ -118,6 +118,17 @@ export async function answerCallbackQuery(token, callbackQueryId, text = null, s
   });
 }
 
+/** Edit the caption of a message (used for channel post editing when media is present) */
+export async function editMessageCaption(token, chatId, messageId, caption, extra = {}) {
+  return tgCall(token, "editMessageCaption", {
+    chat_id: chatId,
+    message_id: messageId,
+    caption,
+    parse_mode: extra.parse_mode ?? "HTML",
+    reply_markup: extra.reply_markup,
+  });
+}
+
 /** Set the webhook URL */
 export async function setWebhook(token, url, secretToken) {
   return tgCall(token, "setWebhook", {

@@ -25,6 +25,8 @@ import {
   sendMessage,
   answerCallbackQuery,
   getMe,
+  editMessageText,
+  editMessageCaption,
 } from "./telegram.js";
 import { getSettings, bumpStats, bumpGlobalStats } from "./kv.js";
 import { classify } from "./classifier.js";
@@ -218,9 +220,28 @@ async function handleUpdate(update, env) {
       return;
     }
 
-    // 4. If it's a channel/group post, process as content pipeline
+    // 4. If it's a channel/group post, check if channel editing is enabled
     if (content.chatType === "channel" || content.chatType === "supergroup" || content.chatType === "group") {
-      await runPipeline(env, content, update);
+      const settings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
+
+      // Default OFF: if channel_editing_enabled is false, do NOT touch channel posts
+      if (!settings.channel_editing_enabled) {
+        console.log(`[update] channel post ignored (channel_editing_enabled=false) from ${content.chatType}:${content.chatId}`);
+        await logUpdate(SETTINGS, update, "ignored", "channel editing is OFF");
+        return;
+      }
+
+      // Loop prevention: skip posts sent by the bot itself (e.g., when the bot
+      // publishes a post to the channel, we don't want to re-process it)
+      const botId = await getBotId(env);
+      if (botId && content.fromId === botId) {
+        console.log("[update] skipping channel post from bot itself (loop prevention)");
+        await logUpdate(SETTINGS, update, "ignored", "self-post (loop prevention)");
+        return;
+      }
+
+      // Channel editing is ON → edit the original post in place
+      await runChannelEditPipeline(env, content, update);
       return;
     }
 
@@ -329,8 +350,9 @@ async function handlePrivateMessage(env, content, update) {
   }
 
   // Otherwise: treat as content to process and publish
+  // Pass content.chatId as feedbackChatId so the user gets the final post + status
   console.log("[cmd] content for pipeline");
-  await runPipeline(env, content, null, update);
+  await runPipeline(env, content, content.chatId, update);
 }
 
 // ============================================================
@@ -444,6 +466,19 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     return;
   }
 
+  // 5a: Send the FINAL post to the user (so they see exactly what was published)
+  //     This uses the same media file_id, so media is preserved.
+  if (feedbackChatId) {
+    console.log(`[pipeline] sending final post to user ${feedbackChatId}`);
+    await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+      text: formattedText,
+      mediaType: content.mediaType,
+      mediaFileId: content.mediaFileId,
+      extra: { parse_mode: parseMode, disable_web_page_preview: false },
+    });
+  }
+
+  // 5b: Publish to the target channel
   const publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
     text: formattedText,
     mediaType: content.mediaType,
@@ -461,18 +496,14 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     }
     console.log(`[pipeline] published OK in ${Date.now() - startTime}ms`);
 
+    // Send a brief status message (the full post was already sent above)
     if (feedbackChatId) {
-      const preview = finalText.length > 200 ? finalText.slice(0, 200) + "…" : finalText;
       await sendMessage(
         env.BOT_TOKEN,
         feedbackChatId,
         [
           `✅ <b>Published</b> to <code>${targetChannel}</code>`,
-          ``,
-          `<b>Decision:</b> <code>${decision.content_type} / ${effectiveRewriteMode}</code>`,
-          `<b>AI used:</b> <code>${wasRewritten ? "yes" : "no (format only)"}</code>`,
-          `<b>Preview:</b>`,
-          preview,
+          `<b>Type:</b> <code>${decision.content_type} / ${effectiveRewriteMode}</code> · <b>AI:</b> <code>${wasRewritten ? "yes" : "no"}</code>`,
         ].join("\n"),
         { disable_web_page_preview: true }
       );
@@ -493,6 +524,139 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     }
     if (update) await logUpdate(SETTINGS, update, "error", `publish: ${publishRes.description}`);
   }
+}
+
+// ============================================================
+// CHANNEL EDIT PIPELINE — edits the original channel post in place
+// ============================================================
+async function runChannelEditPipeline(env, content, update) {
+  const SETTINGS = env.SETTINGS;
+  const adminId = env.ADMIN_ID;
+  const startTime = Date.now();
+
+  console.log(`[channel-edit] start — chat=${content.chatId} msg=${content.messageId} hasMedia=${!!content.mediaFileId}`);
+
+  let settings;
+  try {
+    settings = await getSettings(SETTINGS, adminId);
+  } catch (e) {
+    console.error("[channel-edit] KV getSettings failed:", e.message);
+    await logError(SETTINGS, e, "getSettings");
+    return;
+  }
+
+  const rawText = content.text || "";
+  if (!rawText && !content.mediaFileId) {
+    console.log("[channel-edit] nothing to edit (no text, no media)");
+    return;
+  }
+
+  const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
+
+  // CLASSIFY
+  let decision;
+  try {
+    const cls = await classify(env, settings, rawText);
+    decision = cls.decision;
+    console.log(`[channel-edit] classify: type=${decision.content_type} mode=${decision.rewrite_mode} src=${cls.source}`);
+  } catch (e) {
+    console.warn("[channel-edit] classify failed:", e.message);
+    decision = { content_type: "other", rewrite_mode: "light", needs_rewrite: true, language_mode: effectiveLang };
+  }
+
+  // CLEAN
+  const cleanedText = cleanContent(rawText);
+
+  // REWRITE
+  let finalText = cleanedText;
+  let wasRewritten = false;
+  const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
+  const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
+
+  if (shouldRewrite && decision.needs_rewrite !== false) {
+    try {
+      if (effectiveRewriteMode === "summary") {
+        const res = await aiSummarize(env, settings, cleanedText, effectiveLang);
+        if (res.ok && res.text) { finalText = res.text; wasRewritten = true; }
+      } else {
+        const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
+        if (res.ok && res.text) { finalText = res.text; wasRewritten = true; }
+      }
+    } catch (e) {
+      console.error("[channel-edit] AI error:", e.message);
+    }
+  }
+
+  // FORMAT
+  const { text: formattedText, parseMode } = formatPost(finalText, {
+    footer: settings.footer_text,
+    engineName: "html",
+  });
+
+  // EDIT THE ORIGINAL POST IN PLACE
+  let editRes;
+  if (content.mediaType) {
+    // Post has media → use editMessageCaption (only the caption changes)
+    editRes = await editMessageCaption(env.BOT_TOKEN, content.chatId, content.messageId, formattedText, {
+      parse_mode: parseMode,
+    });
+  } else {
+    // Text-only post → use editMessageText
+    editRes = await editMessageText(env.BOT_TOKEN, content.chatId, content.messageId, formattedText, {
+      parse_mode: parseMode,
+    });
+  }
+
+  if (editRes.ok) {
+    await bumpStats(SETTINGS, adminId, "processed");
+    await bumpGlobalStats(SETTINGS, "processed");
+    if (wasRewritten) {
+      await bumpStats(SETTINGS, adminId, "rewritten");
+      await bumpGlobalStats(SETTINGS, "rewritten");
+    }
+    console.log(`[channel-edit] edited OK in ${Date.now() - startTime}ms`);
+
+    // Brief notification to admin
+    await sendMessage(
+      env.BOT_TOKEN, adminId,
+      `✏️ <b>Edited channel post</b> #${content.messageId} in <code>${content.chatId}</code>\n` +
+      `<b>Type:</b> <code>${decision.content_type} / ${effectiveRewriteMode}</code> · <b>AI:</b> <code>${wasRewritten ? "yes" : "no"}</code>`,
+      { disable_web_page_preview: true }
+    );
+    if (update) await logUpdate(SETTINGS, update, "ok", `channel-edit: ${decision.content_type}/${effectiveRewriteMode}`);
+  } else {
+    await bumpStats(SETTINGS, adminId, "failed");
+    await bumpGlobalStats(SETTINGS, "failed");
+    console.error("[channel-edit] edit failed:", editRes.description);
+    await logError(SETTINGS, new Error(`Channel edit failed: ${editRes.description}`), `chat=${content.chatId} msg=${content.messageId}`);
+
+    // Notify admin of failure
+    await sendMessage(
+      env.BOT_TOKEN, adminId,
+      `❌ <b>Channel edit failed:</b> <code>${editRes.description || "unknown"}</code>\n` +
+      `Post #${content.messageId} in <code>${content.chatId}</code>`,
+      { disable_web_page_preview: true }
+    );
+    if (update) await logUpdate(SETTINGS, update, "error", `channel-edit: ${editRes.description}`);
+  }
+}
+
+// ============================================================
+// BOT ID CACHE — used for loop prevention in channel editing
+// ============================================================
+let _cachedBotId = null;
+async function getBotId(env) {
+  if (_cachedBotId) return _cachedBotId;
+  try {
+    const me = await getMe(env.BOT_TOKEN);
+    if (me.ok) {
+      _cachedBotId = me.result.id;
+      return _cachedBotId;
+    }
+  } catch (e) {
+    console.warn("[getBotId] failed:", e.message);
+  }
+  return null;
 }
 
 // ============================================================
