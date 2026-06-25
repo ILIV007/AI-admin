@@ -24,7 +24,7 @@ export const DEFAULTS = Object.freeze({
   rewrite_mode: "normal",
   personality_mode: "friendly",
   footer_text: "🌀 @ILIVIR3",
-  ai_provider: "gemini",
+  ai_provider: "openrouter", // Default to OpenRouter (Gemini often hits 429 on free tier)
   channel_editing_enabled: false, // Default OFF — channel posts are NOT edited unless admin enables this
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
@@ -80,4 +80,41 @@ export async function bumpGlobalStats(SETTINGS, field) {
   cur[field] = (cur[field] || 0) + 1;
   await SETTINGS.put(KEY_GLOBAL_STATS, JSON.stringify(cur));
   return cur;
+}
+
+// ============================================================
+// MEDIA GROUP BUFFERING
+// ============================================================
+// Telegram sends each photo in an album as a separate update, all sharing
+// the same `media_group_id`. We buffer them in KV so we can send them all
+// together with `sendMediaGroup` (preserves the album layout).
+//
+// Flow:
+//   1. First update with a given media_group_id → store item, wait ~1.5s, then
+//      read the full group from KV and process it as one unit.
+//   2. Subsequent updates with the same media_group_id → just add to the KV
+//      list and return early. The first waiter handles processing.
+// ============================================================
+
+const KEY_MEDIA_GROUP = (id) => `mg:${id}`;
+
+export async function getMediaGroup(SETTINGS, mediaGroupId) {
+  if (!SETTINGS || !mediaGroupId) return [];
+  try {
+    const raw = await SETTINGS.get(KEY_MEDIA_GROUP(mediaGroupId));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveMediaGroup(SETTINGS, mediaGroupId, items) {
+  if (!SETTINGS || !mediaGroupId) return;
+  // TTL of 60 seconds so abandoned groups don't pile up
+  await SETTINGS.put(KEY_MEDIA_GROUP(mediaGroupId), JSON.stringify(items), { expirationTtl: 60 });
+}
+
+export async function deleteMediaGroup(SETTINGS, mediaGroupId) {
+  if (!SETTINGS || !mediaGroupId) return;
+  await SETTINGS.delete(KEY_MEDIA_GROUP(mediaGroupId));
 }

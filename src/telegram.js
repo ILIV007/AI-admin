@@ -89,6 +89,33 @@ export async function sendAnimation(token, chatId, fileId, caption, extra = {}) 
   });
 }
 
+/**
+ * Send a media group (album) — multiple photos/videos in one message.
+ * `mediaItems` is an array of { type, fileId, caption? }.
+ * Only the first item can have a caption (Telegram API limit).
+ */
+export async function sendMediaGroup(token, chatId, mediaItems, extra = {}) {
+  const media = mediaItems.map((item, i) => {
+    const m = {
+      type: item.type, // "photo" | "video"
+      media: item.fileId,
+    };
+    // Only first item can have caption
+    if (i === 0 && item.caption) {
+      m.caption = item.caption;
+      m.parse_mode = extra.parse_mode ?? "HTML";
+    }
+    return m;
+  });
+
+  return tgCall(token, "sendMediaGroup", {
+    chat_id: chatId,
+    media,
+    reply_markup: extra.reply_markup,
+    disable_notification: extra.disable_notification,
+  });
+}
+
 /** Edit message text (used by admin panel inline menus) */
 export async function editMessageText(token, chatId, messageId, text, extra = {}) {
   return tgCall(token, "editMessageText", {
@@ -171,6 +198,8 @@ export function extractContent(update) {
     text: msg.text || msg.caption || "",
     mediaType: null,
     mediaFileId: null,
+    mediaGroupId: msg.media_group_id || null, // present when photo is part of an album
+    replyToMessage: msg.reply_to_message || null, // present when message is a reply
     entities: msg.entities || msg.caption_entities || [],
     raw: msg,
   };

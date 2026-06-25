@@ -28,8 +28,16 @@ import {
   editMessageText,
   editMessageCaption,
   sendChatAction,
+  sendMediaGroup,
 } from "./telegram.js";
-import { getSettings, bumpStats, bumpGlobalStats } from "./kv.js";
+import {
+  getSettings,
+  bumpStats,
+  bumpGlobalStats,
+  getMediaGroup,
+  saveMediaGroup,
+  deleteMediaGroup,
+} from "./kv.js";
 import { classify } from "./classifier.js";
 import { cleanContent, detectLanguage } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
@@ -329,6 +337,15 @@ async function handleUpdate(update, env) {
       return;
     }
 
+    // 2.5. MEDIA GROUP HANDLING
+    // If this message is part of a media group (album), buffer it and let the
+    // first-arriving invocation process the whole group together.
+    if (content.mediaGroupId) {
+      console.log(`[update] media group detected: ${content.mediaGroupId} (item type=${content.mediaType})`);
+      const handled = await handleMediaGroupUpdate(env, content, update);
+      if (handled) return; // either buffered, or fully processed as a group
+    }
+
     // 3. If it's a private message, treat as admin interaction
     if (content.chatType === "private") {
       await handlePrivateMessage(env, content, update);
@@ -477,6 +494,211 @@ async function handlePrivateMessage(env, content, update) {
 }
 
 // ============================================================
+// MEDIA GROUP HANDLER
+// ============================================================
+// Buffers media group items in KV. The first-arriving invocation waits ~1.5s
+// for the rest of the group to arrive, then processes them all together using
+// sendMediaGroup (preserves album layout in Telegram).
+//
+// Returns true if the update was handled (either buffered or fully processed).
+// Returns false if media group handling should fall through to normal pipeline.
+// ============================================================
+const MEDIA_GROUP_WAIT_MS = 1500;
+
+async function handleMediaGroupUpdate(env, content, update) {
+  const SETTINGS = env.SETTINGS;
+  const mgId = content.mediaGroupId;
+
+  // Read existing items in this group
+  const existing = await getMediaGroup(SETTINGS, mgId);
+  const myItem = {
+    fileId: content.mediaFileId,
+    type: content.mediaType === "video" ? "video" : "photo",
+    caption: content.text || "",
+    chatId: content.chatId,
+    fromId: content.fromId,
+    chatType: content.chatType,
+    messageId: content.messageId,
+    replyToMessage: content.replyToMessage,
+  };
+
+  if (existing.length === 0) {
+    // FIRST item in the group — store it, wait, then process the whole group
+    console.log(`[media-group] first item for ${mgId}, waiting ${MEDIA_GROUP_WAIT_MS}ms for more...`);
+    await saveMediaGroup(SETTINGS, mgId, [myItem]);
+
+    // Wait for other items to arrive
+    await new Promise((r) => setTimeout(r, MEDIA_GROUP_WAIT_MS));
+
+    // Read the full group (may have grown during the wait)
+    const fullGroup = await getMediaGroup(SETTINGS, mgId);
+    console.log(`[media-group] processing group ${mgId} with ${fullGroup.length} items`);
+
+    if (fullGroup.length === 0) {
+      // Race condition: another invocation already processed and deleted it
+      console.log(`[media-group] group ${mgId} already processed, skipping`);
+      return true;
+    }
+
+    // Process the group as a unit
+    try {
+      await runMediaGroupPipeline(env, fullGroup, update);
+    } catch (e) {
+      console.error(`[media-group] pipeline error: ${e.message}`);
+      await logError(SETTINGS, e, `media group ${mgId}`);
+    }
+
+    // Cleanup
+    await deleteMediaGroup(SETTINGS, mgId);
+    return true;
+  } else {
+    // SUBSEQUENT item — just add to the buffer; the first waiter will process it
+    console.log(`[media-group] adding item to existing group ${mgId} (now ${existing.length + 1} items)`);
+    existing.push(myItem);
+    await saveMediaGroup(SETTINGS, mgId, existing);
+    return true; // Don't process this item individually
+  }
+}
+
+// ============================================================
+// MEDIA GROUP PIPELINE — processes a buffered album
+// ============================================================
+async function runMediaGroupPipeline(env, items, update) {
+  const SETTINGS = env.SETTINGS;
+  const adminId = items[0].fromId || env.ADMIN_ID;
+  const startTime = Date.now();
+
+  // Combine all captions into one text for processing
+  // (Telegram only allows caption on the first item of a media group)
+  const combinedText = items
+    .map((it, i) => (it.caption ? (items.length > 1 ? `[Photo ${i + 1}]: ${it.caption}` : it.caption) : ""))
+    .filter(Boolean)
+    .join("\n\n");
+
+  console.log(`[mg-pipeline] start — ${items.length} items, combined text: ${combinedText.length} chars`);
+
+  let settings;
+  try {
+    settings = await getSettings(SETTINGS, adminId);
+  } catch (e) {
+    console.error("[mg-pipeline] KV getSettings failed:", e.message);
+    return;
+  }
+
+  // Use the FIRST item's chatId for feedback (all items have the same chatId)
+  const feedbackChatId = items[0].chatType === "private" ? items[0].chatId : null;
+
+  // Send processing message
+  let processingMsgId = null;
+  if (feedbackChatId) {
+    const procRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
+      `⏳ <b>Processing album</b> (${items.length} photos)\n\n<i>Cleaning → AI rewrite → publishing...</i>`,
+      { disable_web_page_preview: true }
+    ).catch(() => ({ ok: false }));
+    if (procRes.ok) processingMsgId = procRes.result?.message_id;
+    await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
+  }
+
+  // Process the combined text (clean → AI rewrite → format)
+  const effectiveLang = settings.language_mode === "auto" ? detectLanguage(combinedText) : settings.language_mode;
+  const cleanedText = cleanContent(combinedText);
+
+  let finalText = cleanedText;
+  let wasRewritten = false;
+  let aiProvider = "none";
+  let aiError = null;
+
+  const decision = { content_type: "album", rewrite_mode: settings.rewrite_mode || "normal", needs_rewrite: true };
+  const effectiveRewriteMode = decision.rewrite_mode || "light";
+  const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
+
+  if (shouldRewrite) {
+    try {
+      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
+      if (res.ok && res.text) {
+        finalText = res.text;
+        wasRewritten = true;
+        aiProvider = res.provider;
+        console.log(`[mg-pipeline] AI rewrite OK (${res.provider})`);
+      } else {
+        aiError = res.error;
+        console.warn(`[mg-pipeline] AI rewrite failed: ${res.error}`);
+      }
+    } catch (e) {
+      aiError = e.message;
+      console.error(`[mg-pipeline] AI exception: ${e.message}`);
+    }
+  }
+
+  // Format with footer
+  const { text: formattedText, parseMode } = formatPost(finalText, {
+    footer: settings.footer_text,
+    engineName: "html",
+  });
+
+  // Build media items for sendMediaGroup
+  // Only the first item gets the caption (Telegram API requirement)
+  const mediaItems = items.map((it, i) => ({
+    type: it.type,
+    fileId: it.fileId,
+    caption: i === 0 ? formattedText : undefined,
+  }));
+
+  // Send to user (feedback) and channel
+  const targetChannel = env.TARGET_CHANNEL;
+  let publishOk = false;
+  let publishErr = null;
+
+  if (feedbackChatId) {
+    const userRes = await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, {
+      parse_mode: parseMode,
+    });
+    if (!userRes.ok) {
+      console.warn(`[mg-pipeline] send to user failed: ${userRes.description}`);
+    }
+  }
+
+  if (targetChannel) {
+    const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
+      parse_mode: parseMode,
+    });
+    publishOk = pubRes.ok;
+    publishErr = pubRes.description;
+    console.log(`[mg-pipeline] publish to channel: ${publishOk ? "OK" : publishErr}`);
+  } else {
+    publishOk = true; // No channel configured; treat as ok
+  }
+
+  // Stats
+  if (publishOk) {
+    await bumpStats(SETTINGS, adminId, "processed");
+    await bumpGlobalStats(SETTINGS, "processed");
+    if (wasRewritten) {
+      await bumpStats(SETTINGS, adminId, "rewritten");
+      await bumpGlobalStats(SETTINGS, "rewritten");
+    }
+  } else {
+    await bumpStats(SETTINGS, adminId, "failed");
+    await bumpGlobalStats(SETTINGS, "failed");
+    await logError(SETTINGS, new Error(`Media group publish failed: ${publishErr}`), `target=${targetChannel}`);
+  }
+
+  // Edit processing message → final status
+  if (feedbackChatId && processingMsgId) {
+    const totalMs = Date.now() - startTime;
+    const statusLine = aiError
+      ? `⚠️ AI failed — used format-only fallback`
+      : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
+    await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+      `✅ <b>Album published</b> (${items.length} photos) → <code>${targetChannel || "(no channel)"}</code>\n${statusLine} · ${totalMs}ms`,
+      { disable_web_page_preview: true }
+    ).catch(() => {});
+  }
+
+  if (update) await logUpdate(SETTINGS, update, publishOk ? "ok" : "error", `media-group: ${items.length} items, AI: ${wasRewritten ? "yes" : "no"}`);
+}
+
+// ============================================================
 // CONTENT PIPELINE — the heart of the system
 // ============================================================
 // Wrapped with a 25s hard timeout to prevent Cloudflare from killing the worker
@@ -601,6 +823,20 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
   console.log(`[pipeline] lang=${effectiveLang} (settings=${settings.language_mode})`);
 
+  // ---------- STEP 0: REPLY CONTEXT ----------
+  // If the message is a reply to another message, include the original message
+  // as context for the AI. This preserves reply chains.
+  let replyContext = "";
+  if (content.replyToMessage) {
+    const orig = content.replyToMessage;
+    const origText = orig.text || orig.caption || "";
+    if (origText) {
+      replyContext = `[Original message being replied to]\n${origText}\n\n[Reply message]\n`;
+      console.log(`[pipeline] reply context: ${origText.length} chars from msg ${orig.message_id}`);
+      traceStep("reply_context", true, `${origText.length} chars`);
+    }
+  }
+
   // ---------- STEP 1: CLASSIFY (rule-based only — fast, no AI) ----------
   let decision;
   let classifySource = "rules";
@@ -618,7 +854,9 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
 
   // ---------- STEP 2: CLEAN ----------
   const cleanedText = cleanContent(rawText);
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
+  // Include reply context in the text that goes to AI (so AI can understand the conversation)
+  const textForAI = replyContext + cleanedText;
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${replyContext ? ` (+${replyContext.length} reply ctx)` : ""}`);
 
   // ---------- STEP 3: REWRITE / SUMMARIZE (or skip) ----------
   let finalText = cleanedText;
@@ -633,7 +871,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
       if (effectiveRewriteMode === "summary") {
-        const res = await aiSummarize(env, settings, cleanedText, effectiveLang);
+        const res = await aiSummarize(env, settings, textForAI, effectiveLang);
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
@@ -648,7 +886,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
         const res = await aiRewrite(
           env,
           settings,
-          cleanedText,
+          textForAI,
           effectiveRewriteMode,
           effectiveLang,
           settings.personality_mode || "friendly"

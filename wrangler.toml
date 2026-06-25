@@ -1,33 +1,13 @@
 # ============================================================
 # AI Admin — Cloudflare Worker configuration
-# Version: v0.1
+# Version: v0.1.8
 # ============================================================
 #
 # SETUP NOTES:
-#   - KV binding, secrets, and vars are configured MANUALLY via
-#     the Cloudflare dashboard (Workers & Pages → your worker → Settings).
-#   - See README.md → "Manual Dashboard Setup" for the full walkthrough.
-#
-# What to set in the dashboard:
-#   KV Namespace Bindings:
-#     SETTINGS  →  your KV namespace
-#
-#   Environment Variables (vars):
-#     ADMIN_ID           →  your Telegram numeric user ID
-#     TARGET_CHANNEL     →  @your_channel  (or  -100xxxxxxxxx)
-#     FOOTER_TEXT        →  🌀 @ILIVIR3
-#     DEFAULT_AI_PROVIDER → gemini
-#     GEMINI_MODEL       →  gemini-2.0-flash
-#     OPENROUTER_MODEL   →  google/gemini-2.0-flash-exp:free
-#     WEBHOOK_SECRET     →  any random string (optional but recommended)
-#
-#   Secrets (encrypted):
-#     BOT_TOKEN          →  from @BotFather
-#     GEMINI_API_KEY     →  from aistudio.google.com
-#     OPENROUTER_API_KEY →  from openrouter.ai/keys
-#
-#   Optional (for debug dashboard protection):
-#     DEBUG_TOKEN        →  any random string; if set, /debug requires ?token=XXX
+#   - KV binding is configured below.
+#   - Secrets (BOT_TOKEN, GEMINI_API_KEY, OPENROUTER_API_KEY) MUST be set via
+#     the Cloudflare dashboard (Workers & Pages → ai-admin → Settings → Variables and Secrets).
+#   - Other vars are set below and can be overridden via the dashboard.
 # ============================================================
 
 name = "ai-admin"
@@ -39,3 +19,32 @@ compatibility_flags = ["nodejs_compat"]
 [[kv_namespaces]]
 binding = "SETTINGS"
 id = "c8adbda37ee642d194adabf79f458f0d"
+
+# ============================================================
+# Environment Variables (non-secret)
+# Override these in the Cloudflare dashboard if needed.
+# ============================================================
+[vars]
+ADMIN_ID = "126679582"
+TARGET_CHANNEL = "@ILIVIR3"
+FOOTER_TEXT = "🌀 @ILIVIR3"
+
+# AI Provider: "openrouter" (default — works even when Gemini quota is exceeded)
+# Switch to "gemini" via the bot's admin panel if you prefer.
+DEFAULT_AI_PROVIDER = "openrouter"
+
+# Gemini model (free tier)
+GEMINI_MODEL = "gemini-2.0-flash"
+
+# OpenRouter model — nvidia/nemotron-3-ultra-550b-a55b:free
+# A capable free model that handles rewriting well.
+OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+# ============================================================
+# Secrets (DO NOT put real values here — set via dashboard):
+#   BOT_TOKEN          →  from @BotFather
+#   GEMINI_API_KEY     →  from aistudio.google.com
+#   OPENROUTER_API_KEY →  from openrouter.ai/keys
+#   WEBHOOK_SECRET     →  optional, for webhook verification
+#   DEBUG_TOKEN        →  optional, for /debug protection
+# ============================================================
