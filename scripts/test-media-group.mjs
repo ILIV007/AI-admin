@@ -39,13 +39,16 @@ assert(wranglerSrc.includes('"openrouter"'), "DEFAULT_AI_PROVIDER is openrouter"
 console.log("\nKV defaults:");
 assert(kvSrc.includes('ai_provider: "openrouter"'), "default ai_provider is openrouter");
 
-// 3. KV media group helpers
+// 3. KV media group helpers (v0.1.9: per-item keys + list())
 console.log("\nKV media group helpers:");
-assert(kvSrc.includes("getMediaGroup"), "getMediaGroup function exists");
-assert(kvSrc.includes("saveMediaGroup"), "saveMediaGroup function exists");
+assert(kvSrc.includes("saveMediaGroupItem"), "saveMediaGroupItem function exists (per-item key)");
+assert(kvSrc.includes("listMediaGroupItems"), "listMediaGroupItems function exists (prefix scan)");
 assert(kvSrc.includes("deleteMediaGroup"), "deleteMediaGroup function exists");
-assert(kvSrc.includes("KEY_MEDIA_GROUP"), "KEY_MEDIA_GROUP constant exists");
-assert(kvSrc.includes("expirationTtl: 60"), "media group entries have 60s TTL");
+assert(kvSrc.includes("MG_PREFIX"), "MG_PREFIX constant exists");
+assert(kvSrc.includes("MG_KEY"), "MG_KEY constant exists");
+assert(kvSrc.includes("expirationTtl: 120"), "media group entries have 120s TTL");
+assert(kvSrc.includes("RACE CONDITION FIX"), "has comment about race condition fix");
+assert(!kvSrc.includes("getMediaGroup("), "old getMediaGroup (single-key) removed");
 
 // 4. Telegram sendMediaGroup
 console.log("\nTelegram sendMediaGroup:");
@@ -61,20 +64,17 @@ assert(tgSrc.includes("replyToMessage"), "extractContent captures replyToMessage
 console.log("\nAI defaults:");
 assert(aiSrc.includes("nvidia/nemotron-3-ultra-550b-a55b:free"), "OpenRouter default model is nvidia/nemotron");
 
-// 7. Media group handler in index.js
-console.log("\nMedia group handler:");
+// 7. Media group handler in index.js (v0.1.9: leader election)
+console.log("\nMedia group handler (leader election):");
 assert(indexSrc.includes("handleMediaGroupUpdate"), "handleMediaGroupUpdate function exists");
 assert(indexSrc.includes("runMediaGroupPipeline"), "runMediaGroupPipeline function exists");
 assert(indexSrc.includes("MEDIA_GROUP_WAIT_MS"), "MEDIA_GROUP_WAIT_MS constant exists");
-assert(indexSrc.includes("setTimeout(r, MEDIA_GROUP_WAIT_MS)"), "waits for group items to arrive");
-assert(indexSrc.includes("media group detected"), "logs media group detection");
-
-// 8. Media group processing
-console.log("\nMedia group processing:");
-assert(indexSrc.includes("combinedText"), "combines captions from all items");
-assert(indexSrc.includes("[Photo"), "labels photos when multiple");
-assert(indexSrc.includes("sendMediaGroup(env.BOT_TOKEN"), "uses sendMediaGroup for publishing");
-assert(indexSrc.includes("caption: i === 0"), "only first item gets caption");
+assert(indexSrc.includes("2_500") || indexSrc.includes("2500"), "wait time is 2.5s (increased from 1.5s)");
+assert(indexSrc.includes("LEADER ELECTION"), "has leader election comment");
+assert(indexSrc.includes("leader.messageId !== content.messageId"), "defers to leader");
+assert(indexSrc.includes("I am the LEADER"), "leader processes the group");
+assert(indexSrc.includes("saveMediaGroupItem"), "saves per-item to KV");
+assert(indexSrc.includes("listMediaGroupItems"), "lists all items via prefix scan");
 
 // 9. Reply chain handling
 console.log("\nReply chain handling:");

@@ -89,32 +89,58 @@ export async function bumpGlobalStats(SETTINGS, field) {
 // the same `media_group_id`. We buffer them in KV so we can send them all
 // together with `sendMediaGroup` (preserves the album layout).
 //
-// Flow:
-//   1. First update with a given media_group_id → store item, wait ~1.5s, then
-//      read the full group from KV and process it as one unit.
-//   2. Subsequent updates with the same media_group_id → just add to the KV
-//      list and return early. The first waiter handles processing.
+// RACE CONDITION FIX (v0.1.9):
+// Previous versions stored all items under ONE key (mg:<groupId>), which caused
+// a read-modify-write race: multiple concurrent invocations would each read
+// "empty", save their own item, and overwrite each other.
+//
+// New approach: each item gets its OWN unique key (mg:<groupId>:<messageId>).
+// This eliminates the overwrite race. Then we use KV's list() method to
+// collect all items with the same group prefix, and use leader election
+// (smallest message_id processes) to avoid duplicate processing.
 // ============================================================
 
-const KEY_MEDIA_GROUP = (id) => `mg:${id}`;
+const MG_PREFIX = (groupId) => `mg:${groupId}:`;
+const MG_KEY = (groupId, msgId) => `mg:${groupId}:${msgId}`;
 
-export async function getMediaGroup(SETTINGS, mediaGroupId) {
-  if (!SETTINGS || !mediaGroupId) return [];
+/** Save a single media group item under its own unique key */
+export async function saveMediaGroupItem(SETTINGS, groupId, msgId, item) {
+  if (!SETTINGS || !groupId || !msgId) return;
+  await SETTINGS.put(MG_KEY(groupId, msgId), JSON.stringify(item), { expirationTtl: 120 });
+}
+
+/** List all items in a media group using prefix scan */
+export async function listMediaGroupItems(SETTINGS, groupId) {
+  if (!SETTINGS || !groupId) return [];
   try {
-    const raw = await SETTINGS.get(KEY_MEDIA_GROUP(mediaGroupId));
-    return raw ? JSON.parse(raw) : [];
-  } catch {
+    const list = await SETTINGS.list({ prefix: MG_PREFIX(groupId), limit: 100 });
+    const items = [];
+    for (const key of list.keys) {
+      const raw = await SETTINGS.get(key.name);
+      if (raw) {
+        try {
+          items.push(JSON.parse(raw));
+        } catch {}
+      }
+    }
+    // Sort by message_id to preserve order
+    items.sort((a, b) => (a.messageId || 0) - (b.messageId || 0));
+    return items;
+  } catch (e) {
+    console.error("[kv] listMediaGroupItems failed:", e.message);
     return [];
   }
 }
 
-export async function saveMediaGroup(SETTINGS, mediaGroupId, items) {
-  if (!SETTINGS || !mediaGroupId) return;
-  // TTL of 60 seconds so abandoned groups don't pile up
-  await SETTINGS.put(KEY_MEDIA_GROUP(mediaGroupId), JSON.stringify(items), { expirationTtl: 60 });
-}
-
-export async function deleteMediaGroup(SETTINGS, mediaGroupId) {
-  if (!SETTINGS || !mediaGroupId) return;
-  await SETTINGS.delete(KEY_MEDIA_GROUP(mediaGroupId));
+/** Delete all items in a media group */
+export async function deleteMediaGroup(SETTINGS, groupId) {
+  if (!SETTINGS || !groupId) return;
+  try {
+    const list = await SETTINGS.list({ prefix: MG_PREFIX(groupId), limit: 100 });
+    for (const key of list.keys) {
+      await SETTINGS.delete(key.name);
+    }
+  } catch (e) {
+    console.error("[kv] deleteMediaGroup failed:", e.message);
+  }
 }

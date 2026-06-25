@@ -42,10 +42,10 @@ assert(indexSrc.includes("Finally: always log"), "has finally block for logging"
 assert(indexSrc.includes("pipelineError ? \"error\""), "logs error status on timeout");
 assert(indexSrc.includes("pipelineResult?.ok ? \"ok\""), "logs ok status on success");
 
-// 4. AI timeout reduced
+// 4. AI timeout (increased to 15s for large models on OpenRouter)
 console.log("\nAI timeout:");
-assert(aiSrc.includes("8_000") || aiSrc.includes("8000"), "AI timeout reduced to 8 seconds");
-assert(!aiSrc.includes("12_000") && !aiSrc.includes("12000") && !aiSrc.includes("20_000"), "old 12s/20s timeout removed");
+assert(aiSrc.includes("15_000") || aiSrc.includes("15000"), "AI timeout is 15 seconds (enough for large models)");
+assert(!aiSrc.includes("8_000") && !aiSrc.includes("8000"), "old 8s timeout removed");
 
 // 5. AI classify removed (rule-based only)
 console.log("\nAI classify removed (rule-based only):");

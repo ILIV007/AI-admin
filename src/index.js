@@ -34,8 +34,8 @@ import {
   getSettings,
   bumpStats,
   bumpGlobalStats,
-  getMediaGroup,
-  saveMediaGroup,
+  saveMediaGroupItem,
+  listMediaGroupItems,
   deleteMediaGroup,
 } from "./kv.js";
 import { classify } from "./classifier.js";
@@ -496,21 +496,18 @@ async function handlePrivateMessage(env, content, update) {
 // ============================================================
 // MEDIA GROUP HANDLER
 // ============================================================
-// Buffers media group items in KV. The first-arriving invocation waits ~1.5s
-// for the rest of the group to arrive, then processes them all together using
-// sendMediaGroup (preserves album layout in Telegram).
-//
-// Returns true if the update was handled (either buffered or fully processed).
-// Returns false if media group handling should fall through to normal pipeline.
+// Each photo in an album gets its own unique KV key (no overwrite race).
+// ALL invocations wait for the group to assemble, then the LEADER
+// (smallest message_id) processes the whole group. Others return early.
 // ============================================================
-const MEDIA_GROUP_WAIT_MS = 1500;
+const MEDIA_GROUP_WAIT_MS = 2500;
 
 async function handleMediaGroupUpdate(env, content, update) {
   const SETTINGS = env.SETTINGS;
   const mgId = content.mediaGroupId;
 
-  // Read existing items in this group
-  const existing = await getMediaGroup(SETTINGS, mgId);
+  // Save THIS item under its own unique key (mg:<groupId>:<messageId>)
+  // No race condition — each key is unique!
   const myItem = {
     fileId: content.mediaFileId,
     type: content.mediaType === "video" ? "video" : "photo",
@@ -521,43 +518,40 @@ async function handleMediaGroupUpdate(env, content, update) {
     messageId: content.messageId,
     replyToMessage: content.replyToMessage,
   };
+  await saveMediaGroupItem(SETTINGS, mgId, content.messageId, myItem);
+  console.log(`[media-group] saved item ${content.messageId} for group ${mgId}`);
 
-  if (existing.length === 0) {
-    // FIRST item in the group — store it, wait, then process the whole group
-    console.log(`[media-group] first item for ${mgId}, waiting ${MEDIA_GROUP_WAIT_MS}ms for more...`);
-    await saveMediaGroup(SETTINGS, mgId, [myItem]);
+  // ALL invocations wait for the rest of the group to arrive
+  await new Promise((r) => setTimeout(r, MEDIA_GROUP_WAIT_MS));
 
-    // Wait for other items to arrive
-    await new Promise((r) => setTimeout(r, MEDIA_GROUP_WAIT_MS));
+  // List all items in this group
+  const fullGroup = await listMediaGroupItems(SETTINGS, mgId);
+  console.log(`[media-group] group ${mgId} has ${fullGroup.length} items after wait`);
 
-    // Read the full group (may have grown during the wait)
-    const fullGroup = await getMediaGroup(SETTINGS, mgId);
-    console.log(`[media-group] processing group ${mgId} with ${fullGroup.length} items`);
-
-    if (fullGroup.length === 0) {
-      // Race condition: another invocation already processed and deleted it
-      console.log(`[media-group] group ${mgId} already processed, skipping`);
-      return true;
-    }
-
-    // Process the group as a unit
-    try {
-      await runMediaGroupPipeline(env, fullGroup, update);
-    } catch (e) {
-      console.error(`[media-group] pipeline error: ${e.message}`);
-      await logError(SETTINGS, e, `media group ${mgId}`);
-    }
-
-    // Cleanup
-    await deleteMediaGroup(SETTINGS, mgId);
+  if (fullGroup.length === 0) {
+    console.log(`[media-group] group ${mgId} empty after wait, skipping`);
     return true;
-  } else {
-    // SUBSEQUENT item — just add to the buffer; the first waiter will process it
-    console.log(`[media-group] adding item to existing group ${mgId} (now ${existing.length + 1} items)`);
-    existing.push(myItem);
-    await saveMediaGroup(SETTINGS, mgId, existing);
-    return true; // Don't process this item individually
   }
+
+  // LEADER ELECTION: only the item with the SMALLEST message_id processes
+  const leader = fullGroup[0]; // sorted by messageId asc
+  if (leader.messageId !== content.messageId) {
+    console.log(`[media-group] I am item ${content.messageId}, leader is ${leader.messageId} — deferring`);
+    return true; // not the leader, let the leader handle it
+  }
+
+  // I AM THE LEADER — process the group
+  console.log(`[media-group] I am the LEADER (item ${content.messageId}), processing ${fullGroup.length} items`);
+  try {
+    await runMediaGroupPipeline(env, fullGroup, update);
+  } catch (e) {
+    console.error(`[media-group] pipeline error: ${e.message}`);
+    await logError(SETTINGS, e, `media group ${mgId}`);
+  }
+
+  // Cleanup
+  await deleteMediaGroup(SETTINGS, mgId);
+  return true;
 }
 
 // ============================================================

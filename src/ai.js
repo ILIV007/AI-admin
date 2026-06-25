@@ -13,7 +13,7 @@
  * If both fail, we throw — the caller MUST handle this gracefully (FORMAT_ONLY).
  */
 
-const REQUEST_TIMEOUT_MS = 8_000; // 8s — must stay well under Cloudflare's 30s wall time limit
+const REQUEST_TIMEOUT_MS = 15_000; // 15s — enough for large models (550B) on OpenRouter free tier
 
 /** Race a fetch against a timeout using AbortController */
 async function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -52,6 +52,11 @@ function geminiProvider({ apiKey, model }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+      }).catch((e) => {
+        if (e.name === "AbortError") {
+          throw new Error(`GEMINI_TIMEOUT: model=${model} took longer than ${REQUEST_TIMEOUT_MS / 1000}s`);
+        }
+        throw new Error(`GEMINI_NETWORK: ${e.message}`);
       });
 
       if (!res.ok) {
@@ -97,6 +102,11 @@ function openRouterProvider({ apiKey, model }) {
           "X-Title": "ILIVIR3 AI Admin",
         },
         body: JSON.stringify(body),
+      }).catch((e) => {
+        if (e.name === "AbortError") {
+          throw new Error(`OPENROUTER_TIMEOUT: model=${model} took longer than ${REQUEST_TIMEOUT_MS / 1000}s. Try a faster model in wrangler.toml (e.g. google/gemini-2.0-flash-exp:free or meta-llama/llama-3.3-70b-instruct:free).`);
+        }
+        throw new Error(`OPENROUTER_NETWORK: ${e.message}`);
       });
 
       if (!res.ok) {
