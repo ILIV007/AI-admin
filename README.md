@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Version 0.1.4**
+**Version 0.1.0**
 
 Telegram channel content processing bot — built on Cloudflare Workers, 100% free.
 

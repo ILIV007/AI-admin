@@ -202,9 +202,18 @@ export async function getStatus(env, SETTINGS) {
     DEBUG_TOKEN: maskValue(env.DEBUG_TOKEN),
   };
 
-  // KV binding check
-  const kvStatus = { bound: !!SETTINGS, readable: false, writable: false, error: null };
-  if (SETTINGS) {
+  // === PARALLEL: run all independent operations at once with a 8s timeout ===
+  // This is THE fix for the dashboard being stuck in loading — previously these
+  // were all sequential, which could take 15-30s if Telegram API was slow.
+  const fetchWithTimeout = (url, ms = 8000) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+  };
+
+  const kvTestPromise = (async () => {
+    const kvStatus = { bound: !!SETTINGS, readable: false, writable: false, error: null };
+    if (!SETTINGS) return kvStatus;
     try {
       await SETTINGS.get("__debug_kv_test__");
       kvStatus.readable = true;
@@ -217,36 +226,42 @@ export async function getStatus(env, SETTINGS) {
     } catch (e) {
       kvStatus.error = (kvStatus.error ? kvStatus.error + " | " : "") + `write: ${e.message}`;
     }
-  }
+    return kvStatus;
+  })();
 
-  // Bot info
-  let botInfo = null;
-  if (env.BOT_TOKEN) {
+  const botInfoPromise = (async () => {
+    if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
     try {
-      const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`);
-      botInfo = await res.json();
+      const res = await fetchWithTimeout(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`);
+      return await res.json();
     } catch (e) {
-      botInfo = { ok: false, error: e.message };
+      return { ok: false, error: e.message };
     }
-  } else {
-    botInfo = { ok: false, error: "BOT_TOKEN not set" };
-  }
+  })();
 
-  // Webhook info
-  let webhookInfo = null;
-  if (env.BOT_TOKEN) {
+  const webhookInfoPromise = (async () => {
+    if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
     try {
-      const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`);
-      webhookInfo = await res.json();
+      const res = await fetchWithTimeout(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`);
+      return await res.json();
     } catch (e) {
-      webhookInfo = { ok: false, error: e.message };
+      return { ok: false, error: e.message };
     }
-  }
+  })();
 
-  // Recent logs
-  const recentUpdates = await getRecentUpdates(SETTINGS);
-  const recentErrors = await getRecentErrors(SETTINGS);
-  const recentRawRequests = await getRecentRawRequests(SETTINGS);
+  const updatesPromise = getRecentUpdates(SETTINGS);
+  const errorsPromise = getRecentErrors(SETTINGS);
+  const rawPromise = getRecentRawRequests(SETTINGS);
+
+  // Wait for everything in parallel
+  const [kvStatus, botInfo, webhookInfo, recentUpdates, recentErrors, recentRawRequests] = await Promise.all([
+    kvTestPromise,
+    botInfoPromise,
+    webhookInfoPromise,
+    updatesPromise,
+    errorsPromise,
+    rawPromise,
+  ]);
 
   // Diagnosis — auto-detect common issues
   const issues = [];
@@ -561,12 +576,18 @@ export function debugHTML(baseUrl = "") {
 </div>
 
 <script>
+// Preserve the ?token=XXX query param from the URL so all API calls stay authenticated
+// (if DEBUG_TOKEN is set, every /debug/api/* call needs the token too).
+const urlParams = new URLSearchParams(window.location.search);
+const TOKEN_PARAM = urlParams.get("token") || urlParams.get("t");
+const TOKEN_QS = TOKEN_PARAM ? "?token=" + encodeURIComponent(TOKEN_PARAM) : "";
 const BASE = "";
+
 let lastStatus = null;
 
 async function loadStatus() {
   try {
-    const res = await fetch(BASE + "/debug/api/status");
+    const res = await fetch(BASE + "/debug/api/status" + TOKEN_QS);
     if (!res.ok) {
       throw new Error("HTTP " + res.status);
     }
@@ -744,7 +765,7 @@ async function runTest(type) {
   resultEl.classList.add("show");
   resultEl.innerHTML = '<span class="spinner"></span> Running test...';
   try {
-    const res = await fetch(BASE + "/debug/api/test/" + type, { method: "POST" });
+    const res = await fetch(BASE + "/debug/api/test/" + type + TOKEN_QS, { method: "POST" });
     const data = await res.json();
     resultEl.innerHTML = JSON.stringify(data, null, 2);
   } catch (e) {
@@ -760,7 +781,7 @@ async function clearLogs() {
   resultEl.classList.add("show");
   resultEl.innerHTML = '<span class="spinner"></span> Clearing...';
   try {
-    const res = await fetch(BASE + "/debug/api/clear", { method: "POST" });
+    const res = await fetch(BASE + "/debug/api/clear" + TOKEN_QS, { method: "POST" });
     const data = await res.json();
     resultEl.innerHTML = JSON.stringify(data, null, 2);
   } catch (e) {

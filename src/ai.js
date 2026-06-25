@@ -13,7 +13,7 @@
  * If both fail, we throw — the caller MUST handle this gracefully (FORMAT_ONLY).
  */
 
-const REQUEST_TIMEOUT_MS = 20_000; // Cloudflare Workers free tier CPU is short
+const REQUEST_TIMEOUT_MS = 12_000; // Reduced from 20s — prevents the pipeline from appearing stuck
 
 /** Race a fetch against a timeout using AbortController */
 async function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {

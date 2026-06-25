@@ -201,11 +201,26 @@ function handleDebugRoute(request, url, env) {
     });
   }
 
+  // GET /debug/api/ping — ultra-fast liveness check (no KV, no API calls)
+  if (request.method === "GET" && url.pathname === "/debug/api/ping") {
+    return json({
+      ok: true,
+      time: new Date().toISOString(),
+      has_bot_token: !!env.BOT_TOKEN,
+      has_admin_id: !!env.ADMIN_ID,
+      has_kv: !!SETTINGS,
+      has_webhook_secret: !!env.WEBHOOK_SECRET,
+    });
+  }
+
   // GET /debug/api/status
   if (request.method === "GET" && url.pathname === "/debug/api/status") {
     return getStatus(env, SETTINGS).then(
       (data) => json(data),
-      (e) => json({ ok: false, error: e.message }, 500)
+      (e) => {
+        console.error("[debug] getStatus failed:", e.message);
+        return json({ ok: false, error: e.message, stack: e.stack?.split("\n").slice(0, 5).join("\n") }, 500);
+      }
     );
   }
 
@@ -492,15 +507,29 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     return;
   }
 
+  // Send IMMEDIATE "processing..." message so the user knows the bot is working.
+  // The typing indicator only lasts 5s, but the AI pipeline can take 10-20s.
+  // Without this, the user sees "typing..." disappear and thinks the bot is dead.
+  if (feedbackChatId) {
+    await sendMessage(env.BOT_TOKEN, feedbackChatId,
+      "⏳ <b>Processing...</b>\n\nAnalyzing content → cleaning → AI rewrite → formatting → publishing.\n\nThis takes ~5-15 seconds.",
+      { disable_web_page_preview: true }
+    ).catch(() => {});
+    // Re-trigger typing since we just sent a message
+    await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
+  }
+
   // Determine effective language mode
   const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
   console.log(`[pipeline] lang=${effectiveLang} (settings=${settings.language_mode})`);
 
   // ---------- STEP 1: CLASSIFY ----------
   let decision;
+  let classifySource = "rules";
   try {
     const cls = await classify(env, settings, rawText);
     decision = cls.decision;
+    classifySource = cls.source;
     console.log(`[pipeline] classify: type=${decision.content_type} mode=${decision.rewrite_mode} needs=${decision.needs_rewrite} src=${cls.source}`);
   } catch (e) {
     console.warn("[pipeline] classify failed:", e.message);
