@@ -392,13 +392,62 @@ https://ai-admin.<your-subdomain>.workers.dev/debug?token=YOUR_TOKEN
 
 اگر ربات silent هست، احتمالاً یکی از این مشکلاته:
 
-1. **ADMIN_ID اشتباه** — به داشبورد برو. اگه `ADMIN_ID` ست نشده یا اشتباهه، در بخش "Issues" قرمز می‌شه. ربات هم حالا وقتی پیام می‌گیری، بهت می‌گه ID واقعی‌ت چیه.
+#### 🚨 مشکل 1 (شایع‌ترین): Webhook 403 Forbidden
 
-2. **KV بایند نشده** — در داشبورد چک کن: اگه "KV (SETTINGS)" قرمزه، باید بری به Cloudflare dashboard و KV رو با variable name دقیقاً `SETTINGS` بایند کنی.
+اگر تو داشبورد دیباگ می‌بینی:
+```
+⚠️ Telegram reports webhook error: Wrong response from the webhook: 403 Forbidden
+🔗 Pending Updates: 5 (یا بیشتر)
+📜 Recent Updates: (خالی)
+```
 
-3. **Webhook secret mismatch** — اگه `WEBHOOK_SECRET` ست کردی ولی هنگام setWebhook ازش استفاده نکردی (یا برعکس)، تمام updateها 403 می‌خورن. در داشبورد "Webhook Info" → "Last Error" رو چک کن.
+این یعنی **`WEBHOOK_SECRET` mismatch**. شما `WEBHOOK_SECRET` رو در Cloudflare set کردی، ولی هنگام `setWebhook` این secret رو به تلگرام ندادی. پس تلگرام بدون هدر secret می‌فرسته، Worker رد می‌کنه (403).
 
-4. **Bot تو کانال ادمین نیست** — پیام خطا رو تو PV ربات می‌بینی. ربات رو به کانال اضافه کن و دسترسی Post Messages بده.
+**رفع سریع (یک دستور):**
+
+```bash
+# 1. مطمئن شو .dev.vars فایل داره (cp .dev.vars.example .dev.vars و مقداردهی کن)
+# 2. اجرا کن:
+npm run fix:webhook -- https://ai-admin.<your-subdomain>.workers.dev
+```
+
+این اسکریپت خودش:
+- وضعیت webhook فعلی رو چک می‌کنه
+- `WEBHOOK_SECRET` رو از `.dev.vars` می‌خونه
+- `setWebhook` رو با secret_token درست صدا می‌زنه
+- pending updates رو پاک می‌کنه (`drop_pending_updates: true`)
+- یه پیام تست هم می‌فرسته
+
+**روش دستی (curl):**
+
+```bash
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://ai-admin.<your-subdomain>.workers.dev/webhook",
+    "secret_token": "<YOUR_WEBHOOK_SECRET_EXACT_VALUE>",
+    "allowed_updates": ["message", "callback_query", "channel_post"],
+    "drop_pending_updates": true
+  }'
+```
+
+> ⚠️ **مهم:** مقدار `<YOUR_WEBHOOK_SECRET_EXACT_VALUE>` باید دقیقاً همون چیزی باشه که تو Cloudflare ست کردی. حتی یه کاراکتر فرق داشته باشه، بازم 403 می‌خوری.
+
+#### مشکل 2: ADMIN_ID اشتباه
+
+به داشبورد برو. اگه `ADMIN_ID` ست نشده یا اشتباهه، در بخش "Issues" قرمز می‌شه. ربات هم حالا وقتی پیام می‌گیری، بهت می‌گه ID واقعی‌ت چیه.
+
+#### مشکل 3: KV بایند نشده
+
+در داشبورد چک کن: اگه "KV (SETTINGS)" قرمزه، باید بری به Cloudflare dashboard و KV رو با variable name دقیقاً `SETTINGS` بایند کنی.
+
+#### مشکل 4: Bot تو کانال ادمین نیست
+
+پیام خطا رو تو PV ربات می‌بینی. ربات رو به کانال اضافه کن و دسترسی Post Messages بده.
+
+#### مشکل 5: Gemini 429 (quota exceeded)
+
+اگر تو تست AI خطای `429` می‌بینی، یعنی quota رایگان Gemini تموم شده. این بحرانی نیست — OpenRouter به‌عنوان fallback خودکار فعال می‌شه. یا چند ساعت صبر کن تا quota refresh بشه، یا مدل دیگه‌ای رو تست کن.
 
 ### لاگ‌های زنده
 

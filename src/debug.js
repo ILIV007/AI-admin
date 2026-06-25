@@ -213,8 +213,38 @@ export async function getStatus(env, SETTINGS) {
   if (!SETTINGS) issues.push({ severity: "critical", msg: "KV namespace 'SETTINGS' is not bound. Settings cannot be read/written." });
   else if (!kvStatus.readable || !kvStatus.writable)
     issues.push({ severity: "critical", msg: `KV read/write failed: ${kvStatus.error}` });
-  if (webhookInfo?.ok && webhookInfo.result.last_error_message)
-    issues.push({ severity: "warning", msg: `Telegram reports webhook error: ${webhookInfo.result.last_error_message}` });
+
+  // === WEBHOOK 403 DIAGNOSIS (most common silent failure cause) ===
+  if (webhookInfo?.ok && webhookInfo.result.last_error_message) {
+    const errMsg = webhookInfo.result.last_error_message;
+    const is403 = /403|forbidden/i.test(errMsg);
+
+    if (is403 && env.WEBHOOK_SECRET) {
+      // Worker has WEBHOOK_SECRET set, but Telegram is getting 403.
+      // This happens when setWebhook was called WITHOUT the secret_token parameter,
+      // so Telegram doesn't send the x-telegram-bot-api-secret-token header.
+      issues.push({
+        severity: "critical",
+        msg: `Webhook returns 403 Forbidden. The Worker has WEBHOOK_SECRET set, but Telegram was NOT configured to send the secret_token header. Run: node scripts/fix-webhook.mjs https://your-worker.workers.dev (the script reads WEBHOOK_SECRET from .dev.vars and re-registers the webhook with the correct secret_token).`,
+      });
+    } else if (is403 && !env.WEBHOOK_SECRET) {
+      issues.push({
+        severity: "critical",
+        msg: `Webhook returns 403 Forbidden but WEBHOOK_SECRET is NOT set in the Worker. This may indicate a deployment issue. Try: npm run deploy && node scripts/fix-webhook.mjs https://your-worker.workers.dev`,
+      });
+    } else {
+      issues.push({ severity: "warning", msg: `Telegram reports webhook error: ${errMsg}` });
+    }
+  }
+
+  // Pending updates = telegram is retrying but failing
+  if (webhookInfo?.ok && webhookInfo.result.pending_update_count > 0) {
+    issues.push({
+      severity: "warning",
+      msg: `${webhookInfo.result.pending_update_count} pending updates queued in Telegram. These will keep retrying (and failing) until the webhook is fixed. The fix-webhook.mjs script drops them.`,
+    });
+  }
+
   if (!env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY)
     issues.push({ severity: "warning", msg: "No AI API keys set. Only FORMAT_ONLY mode will work." });
 

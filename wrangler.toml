@@ -35,7 +35,7 @@ main = "src/index.js"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
-# KV binding — set this via the Cloudflare dashboard, OR uncomment and fill below.
- [[kv_namespaces]]
- binding = "SETTINGS"
- id = "c8adbda37ee642d194adabf79f458f0d"
+# KV binding — configured by user. (Also bindable via dashboard.)
+[[kv_namespaces]]
+binding = "SETTINGS"
+id = "c8adbda37ee642d194adabf79f458f0d"

@@ -81,8 +81,21 @@ export default {
       if (env.WEBHOOK_SECRET) {
         const secret = request.headers.get("x-telegram-bot-api-secret-token");
         if (secret !== env.WEBHOOK_SECRET) {
-          console.warn("[webhook] 403 — secret token mismatch");
-          return new Response("Forbidden", { status: 403 });
+          // CRITICAL: log this clearly so the user can see WHY 403 happens
+          // (most common cause: setWebhook was called WITHOUT secret_token,
+          //  so Telegram doesn't send the header at all).
+          console.warn(
+            `[webhook] 403 Forbidden — secret token mismatch.\n` +
+              `  Expected: ${env.WEBHOOK_SECRET.slice(0, 3)}…${env.WEBHOOK_SECRET.slice(-3)} (from WEBHOOK_SECRET env var)\n` +
+              `  Got:      ${secret ? `"${secret.slice(0, 3)}…${secret.slice(-3)}" (header present but wrong)` : "(header missing — setWebhook was called without secret_token)"}\n` +
+              `  Fix: run  node scripts/fix-webhook.mjs https://your-worker.workers.dev\n` +
+              `         OR  re-call setWebhook with secret_token parameter.`
+          );
+          return new Response(
+            "Forbidden — webhook secret mismatch. " +
+              "If you are the admin, run scripts/fix-webhook.mjs to re-register the webhook with the correct secret_token.",
+            { status: 403 }
+          );
         }
       }
 
@@ -90,6 +103,7 @@ export default {
       try {
         update = await request.json();
       } catch {
+        console.warn("[webhook] 400 — invalid JSON");
         return new Response("Bad Request", { status: 400 });
       }
 

@@ -1,6 +1,6 @@
 {
   "name": "ai-admin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AI Admin — Telegram channel content processing bot on Cloudflare Workers. Free, serverless, AI-powered.",
   "type": "module",
   "main": "src/index.js",
@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
+    "fix:webhook": "node scripts/fix-webhook.mjs",
     "test:units": "node scripts/test-units.mjs",
     "test:pipeline": "node scripts/test-pipeline.mjs",
     "test:admin": "node scripts/test-admin.mjs",
