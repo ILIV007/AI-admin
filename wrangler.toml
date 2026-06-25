@@ -25,6 +25,9 @@
 #     BOT_TOKEN          →  from @BotFather
 #     GEMINI_API_KEY     →  from aistudio.google.com
 #     OPENROUTER_API_KEY →  from openrouter.ai/keys
+#
+#   Optional (for debug dashboard protection):
+#     DEBUG_TOKEN        →  any random string; if set, /debug requires ?token=XXX
 # ============================================================
 
 name = "ai-admin"
@@ -33,6 +36,6 @@ compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 # KV binding — set this via the Cloudflare dashboard, OR uncomment and fill below.
- [[kv_namespaces]]
- binding = "ai_admin_settings"
- id = "c8adbda37ee642d194adabf79f458f0d"
+# [[kv_namespaces]]
+# binding = "SETTINGS"
+# id = "your-kv-namespace-id"
