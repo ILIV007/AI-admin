@@ -118,6 +118,11 @@ export async function answerCallbackQuery(token, callbackQueryId, text = null, s
   });
 }
 
+/** Send a chat action (e.g., "typing" indicator) so the user sees the bot is working */
+export async function sendChatAction(token, chatId, action = "typing") {
+  return tgCall(token, "sendChatAction", { chat_id: chatId, action });
+}
+
 /** Edit the caption of a message (used for channel post editing when media is present) */
 export async function editMessageCaption(token, chatId, messageId, caption, extra = {}) {
   return tgCall(token, "editMessageCaption", {

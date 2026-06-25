@@ -27,6 +27,7 @@ import {
   getMe,
   editMessageText,
   editMessageCaption,
+  sendChatAction,
 } from "./telegram.js";
 import { getSettings, bumpStats, bumpGlobalStats } from "./kv.js";
 import { classify } from "./classifier.js";
@@ -43,6 +44,7 @@ import {
   clearDebugLogs,
   logUpdate,
   logError,
+  logRawRequest,
   debugHTML,
 } from "./debug.js";
 
@@ -79,39 +81,100 @@ export default {
 
     // ----- POST /webhook : Telegram updates -----
     if (request.method === "POST" && url.pathname === "/webhook") {
-      // Optional: verify Telegram's secret token header
-      if (env.WEBHOOK_SECRET) {
-        const secret = request.headers.get("x-telegram-bot-api-secret-token");
-        if (secret !== env.WEBHOOK_SECRET) {
-          // CRITICAL: log this clearly so the user can see WHY 403 happens
-          // (most common cause: setWebhook was called WITHOUT secret_token,
-          //  so Telegram doesn't send the header at all).
-          console.warn(
-            `[webhook] 403 Forbidden — secret token mismatch.\n` +
-              `  Expected: ${env.WEBHOOK_SECRET.slice(0, 3)}…${env.WEBHOOK_SECRET.slice(-3)} (from WEBHOOK_SECRET env var)\n` +
-              `  Got:      ${secret ? `"${secret.slice(0, 3)}…${secret.slice(-3)}" (header present but wrong)` : "(header missing — setWebhook was called without secret_token)"}\n` +
-              `  Fix: run  node scripts/fix-webhook.mjs https://your-worker.workers.dev\n` +
-              `         OR  re-call setWebhook with secret_token parameter.`
-          );
-          return new Response(
-            "Forbidden — webhook secret mismatch. " +
-              "If you are the admin, run scripts/fix-webhook.mjs to re-register the webhook with the correct secret_token.",
-            { status: 403 }
-          );
-        }
+      const SETTINGS = env.SETTINGS;
+      const secret = request.headers.get("x-telegram-bot-api-secret-token");
+      const hasSecretCheck = !!env.WEBHOOK_SECRET;
+      const secretMatches = !hasSecretCheck || secret === env.WEBHOOK_SECRET;
+
+      // Try to read body as JSON (we'll need it for both logging and processing)
+      let update = null;
+      let bodyParseError = null;
+      let bodySize = 0;
+      try {
+        const text = await request.text();
+        bodySize = text.length;
+        update = JSON.parse(text);
+      } catch (e) {
+        bodyParseError = e.message;
       }
 
-      let update;
-      try {
-        update = await request.json();
-      } catch {
-        console.warn("[webhook] 400 — invalid JSON");
+      // Extract info from the update for the raw log (BEFORE we make any decision)
+      const updateInfo = extractUpdateInfoForLog(update);
+
+      // ===== SECRET TOKEN VERIFICATION =====
+      if (hasSecretCheck && !secretMatches) {
+        console.warn(
+          `[webhook] 403 — secret mismatch.\n` +
+            `  Expected: ${env.WEBHOOK_SECRET.slice(0, 3)}…${env.WEBHOOK_SECRET.slice(-3)}\n` +
+            `  Got:      ${secret ? `"${secret.slice(0, 3)}…${secret.slice(-3)}"` : "(missing)"}\n` +
+            `  Fix: npm run fix:webhook -- https://your-worker.workers.dev`
+        );
+        // LOG the rejected request so the dashboard shows it
+        ctx.waitUntil(
+          logRawRequest(SETTINGS, {
+            method: request.method,
+            path: url.pathname,
+            hasSecret: !!secret,
+            secretMatch: false,
+            bodySize,
+            updateType: updateInfo.updateType,
+            fromId: updateInfo.fromId,
+            chatId: updateInfo.chatId,
+            textPreview: updateInfo.textPreview,
+            status: "rejected_403",
+            detail: `Expected ${env.WEBHOOK_SECRET.slice(0, 3)}…${env.WEBHOOK_SECRET.slice(-3)}, got ${secret ? secret.slice(0, 3) + "…" + secret.slice(-3) : "(missing)"}`,
+          })
+        );
+        return new Response("Forbidden — secret mismatch", { status: 403 });
+      }
+
+      // ===== INVALID JSON =====
+      if (!update) {
+        console.warn("[webhook] 400 — invalid JSON:", bodyParseError);
+        ctx.waitUntil(
+          logRawRequest(SETTINGS, {
+            method: request.method,
+            path: url.pathname,
+            hasSecret: !!secret,
+            secretMatch: secretMatches,
+            bodySize,
+            updateType: "invalid_json",
+            fromId: null,
+            chatId: null,
+            textPreview: bodyParseError,
+            status: "rejected_400",
+            detail: "Could not parse request body as JSON",
+          })
+        );
         return new Response("Bad Request", { status: 400 });
       }
 
-      // Handle in the background so we can return 200 quickly
-      // (Telegram requires 200 within 5s or it retries)
-      ctx.waitUntil(handleUpdate(update, env));
+      // ===== SUCCESS — log raw request, then process in background =====
+      console.log(
+        `[webhook] 200 — type=${updateInfo.updateType} from=${updateInfo.fromId} chat=${updateInfo.chatId} preview="${updateInfo.textPreview.slice(0, 30)}"`
+      );
+
+      // Use ctx.waitUntil so we can return 200 immediately (Telegram needs 200 within 5s)
+      ctx.waitUntil(
+        (async () => {
+          // 1. Log the raw request (always, even on success — for the dashboard)
+          await logRawRequest(SETTINGS, {
+            method: request.method,
+            path: url.pathname,
+            hasSecret: !!secret,
+            secretMatch: secretMatches,
+            bodySize,
+            updateType: updateInfo.updateType,
+            fromId: updateInfo.fromId,
+            chatId: updateInfo.chatId,
+            textPreview: updateInfo.textPreview,
+            status: "ok",
+            detail: "processed",
+          });
+          // 2. Process the update
+          await handleUpdate(update, env);
+        })()
+      );
       return new Response("ok", { status: 200 });
     }
 
@@ -179,6 +242,43 @@ function handleDebugRoute(request, url, env) {
   }
 
   return new Response("Not Found", { status: 404 });
+}
+
+// ============================================================
+// UPDATE HANDLER — dispatches based on update type
+// ============================================================
+/**
+ * Extract a small summary of the update for the raw request log.
+ * Used BEFORE we decide whether to accept or reject the request.
+ * Returns safe defaults if the update is null/unparseable.
+ */
+function extractUpdateInfoForLog(update) {
+  if (!update) return { updateType: "invalid", fromId: null, chatId: null, textPreview: "" };
+  if (update.callback_query) {
+    return {
+      updateType: "callback_query",
+      fromId: update.callback_query.from?.id,
+      chatId: update.callback_query.message?.chat?.id,
+      textPreview: update.callback_query.data || "",
+    };
+  }
+  if (update.message) {
+    return {
+      updateType: "message",
+      fromId: update.message.from?.id,
+      chatId: update.message.chat?.id,
+      textPreview: update.message.text || update.message.caption || "",
+    };
+  }
+  if (update.channel_post) {
+    return {
+      updateType: "channel_post",
+      fromId: update.channel_post.from?.id || update.channel_post.sender_chat?.id,
+      chatId: update.channel_post.chat?.id,
+      textPreview: update.channel_post.text || update.channel_post.caption || "",
+    };
+  }
+  return { updateType: "other", fromId: null, chatId: null, textPreview: "" };
 }
 
 // ============================================================
@@ -303,6 +403,12 @@ async function handlePrivateMessage(env, content, update) {
   }
 
   const text = content.text || "";
+
+  // Send typing indicator IMMEDIATELY so the user sees the bot is alive
+  // (this is the #1 UX signal that the bot received the message)
+  if (content.chatId) {
+    await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
+  }
 
   // /start → admin panel
   if (/^\/start\b/i.test(text)) {

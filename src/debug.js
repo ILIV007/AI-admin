@@ -23,6 +23,7 @@
 const DEBUG_MAX_ENTRIES = 30;
 const KEY_DEBUG_UPDATES = "debug:updates";
 const KEY_DEBUG_ERRORS = "debug:errors";
+const KEY_DEBUG_RAW = "debug:raw_requests"; // raw incoming requests (before any processing)
 
 // ============================================================
 // LOGGING — store in KV for the dashboard
@@ -113,10 +114,52 @@ export async function getRecentErrors(SETTINGS) {
   }
 }
 
+/**
+ * Log a RAW incoming HTTP request — before any processing.
+ * This is THE key diagnostic: if this doesn't appear, the request never reached the Worker
+ * (or was rejected before reaching here).
+ */
+export async function logRawRequest(SETTINGS, info) {
+  if (!SETTINGS) return;
+  try {
+    const entry = {
+      time: new Date().toISOString(),
+      method: info.method,
+      path: info.path,
+      hasSecret: info.hasSecret,
+      secretMatch: info.secretMatch,
+      bodySize: info.bodySize,
+      updateType: info.updateType, // "message" | "callback_query" | "channel_post" | "other"
+      fromId: info.fromId,
+      chatId: info.chatId,
+      textPreview: (info.textPreview || "").slice(0, 80),
+      status: info.status, // "ok" | "rejected_403" | "rejected_400" | "error"
+      detail: info.detail,
+    };
+    const raw = await SETTINGS.get(KEY_DEBUG_RAW);
+    const list = raw ? JSON.parse(raw) : [];
+    list.unshift(entry);
+    await SETTINGS.put(KEY_DEBUG_RAW, JSON.stringify(list.slice(0, DEBUG_MAX_ENTRIES)));
+  } catch (e) {
+    console.error("[debug] logRawRequest failed:", e.message);
+  }
+}
+
+export async function getRecentRawRequests(SETTINGS) {
+  if (!SETTINGS) return [];
+  try {
+    const raw = await SETTINGS.get(KEY_DEBUG_RAW);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function clearDebugLogs(SETTINGS) {
   if (!SETTINGS) return;
   await SETTINGS.put(KEY_DEBUG_UPDATES, JSON.stringify([]));
   await SETTINGS.put(KEY_DEBUG_ERRORS, JSON.stringify([]));
+  await SETTINGS.put(KEY_DEBUG_RAW, JSON.stringify([]));
 }
 
 // ============================================================
@@ -203,6 +246,7 @@ export async function getStatus(env, SETTINGS) {
   // Recent logs
   const recentUpdates = await getRecentUpdates(SETTINGS);
   const recentErrors = await getRecentErrors(SETTINGS);
+  const recentRawRequests = await getRecentRawRequests(SETTINGS);
 
   // Diagnosis — auto-detect common issues
   const issues = [];
@@ -248,6 +292,26 @@ export async function getStatus(env, SETTINGS) {
   if (!env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY)
     issues.push({ severity: "warning", msg: "No AI API keys set. Only FORMAT_ONLY mode will work." });
 
+  // === RAW REQUEST DIAGNOSIS ===
+  // This is the #1 silent failure detector: if the user sends a message to the bot
+  // but no raw request appears in the log, the webhook is broken (URL wrong, secret
+  // mismatch, or the worker is crashing on boot).
+  const rawCount = recentRawRequests?.length || 0;
+  if (rawCount === 0 && webhookInfo?.ok && webhookInfo.result.url) {
+    issues.push({
+      severity: "warning",
+      msg: "No raw requests logged yet. Send a message to your bot — if nothing appears in 'Recent Raw Requests' below, your webhook isn't delivering updates to the Worker (check webhook URL & secret).",
+    });
+  } else if (rawCount > 0) {
+    const rejected = recentRawRequests.filter((r) => r.status && r.status.startsWith("rejected")).length;
+    if (rejected > 0) {
+      issues.push({
+        severity: "critical",
+        msg: `${rejected} of ${rawCount} recent requests were REJECTED (403/400). This means Telegram is delivering updates but the Worker is rejecting them — check WEBHOOK_SECRET mismatch in the raw request log below.`,
+      });
+    }
+  }
+
   return {
     time: new Date().toISOString(),
     envVars,
@@ -257,6 +321,7 @@ export async function getStatus(env, SETTINGS) {
     webhookInfo,
     recentUpdates,
     recentErrors,
+    recentRawRequests,
     issues,
   };
 }
@@ -470,6 +535,16 @@ export function debugHTML(baseUrl = "") {
   </div>
 
   <div class="section">
+    <h2>📡 Recent Raw Requests (last 30) <span style="color:#8b949e;font-size:0.7em;font-weight:normal;">— THE key diagnostic</span></h2>
+    <div id="raw-table"><div class="empty">Loading...</div></div>
+    <p style="margin-top:10px;color:#8b949e;font-size:0.85em;">
+      If you send a message to your bot and <strong>nothing appears here</strong>, the webhook is broken (URL or secret mismatch).<br>
+      If requests appear with <strong>status <code>rejected_403</code></strong>, the WEBHOOK_SECRET doesn't match.<br>
+      If requests appear with <strong>status <code>ok</code></strong> but the bot still doesn't respond, check "Recent Updates" and "Recent Errors" below.
+    </p>
+  </div>
+
+  <div class="section">
     <h2>❌ Recent Errors (last 30)</h2>
     <div id="errors-table"><div class="empty">Loading...</div></div>
   </div>
@@ -597,6 +672,32 @@ function renderStatus(data) {
       '<table><thead><tr><th>Time</th><th>Error</th><th>Context</th></tr></thead><tbody>' +
       errors.map(e =>
         '<tr><td class="timestamp">' + esc(fmtTime(e.time)) + '</td><td><strong>' + esc(e.error) + '</strong>' + (e.stack ? '<details><summary>stack</summary><pre>' + esc(e.stack) + '</pre></details>' : '') + '</td><td>' + esc(e.context) + '</td></tr>'
+      ).join("") + '</tbody></table>';
+  }
+
+  // Raw requests table — THE KEY DIAGNOSTIC
+  const raws = data.recentRawRequests || [];
+  if (raws.length === 0) {
+    document.getElementById("raw-table").innerHTML =
+      '<div class="empty">⚠️ No raw requests logged yet.<br><br>' +
+      'Send a message to your bot now. If nothing appears here after a few seconds, your webhook is broken.<br>' +
+      'If requests appear with <code>rejected_403</code>, the WEBHOOK_SECRET doesn\'t match.</div>';
+  } else {
+    const statusBadge = (s) => {
+      const cls = s === "ok" ? "badge-ok" : (s.startsWith("rejected") ? "badge-error" : "badge-ignored");
+      return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
+    };
+    document.getElementById("raw-table").innerHTML =
+      '<table><thead><tr><th>Time</th><th>Type</th><th>From</th><th>Chat</th><th>Secret</th><th>Size</th><th>Preview</th><th>Status</th></tr></thead><tbody>' +
+      raws.map(r =>
+        '<tr><td class="timestamp">' + esc(fmtTime(r.time)) + '</td>' +
+        '<td>' + esc(r.updateType) + '</td>' +
+        '<td>' + esc(r.fromId) + '</td>' +
+        '<td>' + esc(r.chatId) + '</td>' +
+        '<td>' + (r.hasSecret ? (r.secretMatch ? '<span class="status-ok">✓ match</span>' : '<span class="status-fail">✗ mismatch</span>') : '<span class="status-warn">none</span>') + '</td>' +
+        '<td>' + esc(r.bodySize) + '</td>' +
+        '<td>' + esc(r.textPreview) + (r.detail && r.detail !== "processed" ? '<br><small class="status-fail">' + esc(r.detail) + '</small>' : '') + '</td>' +
+        '<td>' + statusBadge(r.status) + '</td></tr>'
       ).join("") + '</tbody></table>';
   }
 
