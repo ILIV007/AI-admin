@@ -13,7 +13,7 @@
  * If both fail, we throw — the caller MUST handle this gracefully (FORMAT_ONLY).
  */
 
-const REQUEST_TIMEOUT_MS = 12_000; // Reduced from 20s — prevents the pipeline from appearing stuck
+const REQUEST_TIMEOUT_MS = 8_000; // 8s — must stay well under Cloudflare's 30s wall time limit
 
 /** Race a fetch against a timeout using AbortController */
 async function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {

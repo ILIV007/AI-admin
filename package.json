@@ -1,6 +1,6 @@
 {
   "name": "ai-admin",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "AI Admin — Telegram channel content processing bot on Cloudflare Workers. Free, serverless, AI-powered.",
   "type": "module",
   "main": "src/index.js",
@@ -16,7 +16,8 @@
     "test:channel": "node scripts/test-channel-edit.mjs",
     "test:raw": "node scripts/test-raw-logging.mjs",
     "test:trace": "node scripts/test-pipeline-trace.mjs",
-    "test": "node scripts/test-units.mjs && node scripts/test-pipeline.mjs && node scripts/test-admin.mjs && node scripts/test-debug.mjs && node scripts/test-debug-html.mjs && node scripts/test-channel-edit.mjs && node scripts/test-raw-logging.mjs && node scripts/test-pipeline-trace.mjs"
+    "test:timeout": "node scripts/test-timeout.mjs",
+    "test": "node scripts/test-units.mjs && node scripts/test-pipeline.mjs && node scripts/test-admin.mjs && node scripts/test-debug.mjs && node scripts/test-debug-html.mjs && node scripts/test-channel-edit.mjs && node scripts/test-raw-logging.mjs && node scripts/test-pipeline-trace.mjs && node scripts/test-timeout.mjs"
   },
   "devDependencies": {
     "wrangler": "^3.90.0"

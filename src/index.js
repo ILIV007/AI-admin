@@ -479,10 +479,18 @@ async function handlePrivateMessage(env, content, update) {
 // ============================================================
 // CONTENT PIPELINE — the heart of the system
 // ============================================================
+// Wrapped with a 25s hard timeout to prevent Cloudflare from killing the worker
+// mid-flight (free tier wall time limit = 30s). If the pipeline doesn't finish
+// in 25s, we abort and publish with format-only fallback.
+const PIPELINE_TIMEOUT_MS = 25_000;
+
 async function runPipeline(env, content, feedbackChatId = null, update = null) {
   const SETTINGS = env.SETTINGS;
   const adminId = content.fromId || env.ADMIN_ID;
   const startTime = Date.now();
+  let processingMsgId = null;
+  let pipelineError = null;
+  let pipelineResult = null;
 
   // Pipeline trace log — captures each step's result for debugging
   const trace = [];
@@ -495,6 +503,8 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
 
   console.log(`[pipeline] start — from=${adminId} hasText=${!!content.text} hasMedia=${!!content.mediaFileId}`);
 
+  // Send IMMEDIATE "processing" message — this happens BEFORE the timeout-protected inner pipeline
+  // so the user always sees feedback, even if the inner pipeline times out.
   let settings;
   try {
     settings = await getSettings(SETTINGS, adminId);
@@ -518,10 +528,7 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     return;
   }
 
-  // Send IMMEDIATE "processing" message so the user knows the bot is working.
-  // Uses Telegram's native blockquote for a clean, modern look.
-  // We keep the message ID so we can EDIT it later with the final status (instead of sending a separate message).
-  let processingMsgId = null;
+  // Send the processing message (kept OUTSIDE the timeout wrapper so it always sends)
   if (feedbackChatId) {
     const procRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
       [
@@ -537,15 +544,64 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
       { disable_web_page_preview: true }
     ).catch((e) => ({ ok: false, error: e.message }));
     if (procRes.ok) processingMsgId = procRes.result?.message_id;
-    // Re-trigger typing since we just sent a message
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
+
+  // Run the inner pipeline with a hard timeout
+  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime);
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`PIPELINE_TIMEOUT after ${PIPELINE_TIMEOUT_MS}ms`)), PIPELINE_TIMEOUT_MS)
+  );
+
+  try {
+    pipelineResult = await Promise.race([innerPromise, timeoutPromise]);
+  } catch (e) {
+    pipelineError = e;
+    console.error(`[pipeline] ${e.message}`);
+    traceStep("pipeline_aborted", false, e.message);
+    await logError(SETTINGS, e, "pipeline timeout/abort");
+
+    // Edit the processing message to show timeout error
+    if (feedbackChatId && processingMsgId) {
+      await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+        [
+          `⏱️ <b>Pipeline timed out</b>`,
+          ``,
+          `<blockquote>The pipeline took longer than ${PIPELINE_TIMEOUT_MS / 1000}s and was aborted.</blockquote>`,
+          ``,
+          `<i>This usually means the AI provider is slow. Try:</i>`,
+          `• Switch to OpenRouter in the admin panel`,
+          `• Set rewrite mode to "none" (format only)`,
+        ].join("\n"),
+        { disable_web_page_preview: true }
+      ).catch(() => {});
+    }
+  }
+
+  // Finally: always log the update + trace summary
+  const traceSummary = trace.map(t => `${t.step}:${t.ok ? "✓" : "✗"}`).join(" → ");
+  console.log(`[pipeline trace summary] ${traceSummary}`);
+  if (update) {
+    const status = pipelineError ? "error" : (pipelineResult?.ok ? "ok" : "error");
+    const detail = pipelineError
+      ? `aborted: ${pipelineError.message}`
+      : pipelineResult?.detail || traceSummary;
+    await logUpdate(SETTINGS, update, status, detail);
+  }
+}
+
+// ============================================================
+// INNER PIPELINE — the actual processing (wrapped by timeout above)
+// ============================================================
+async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime) {
+  const SETTINGS = env.SETTINGS;
+  const adminId = content.fromId || env.ADMIN_ID;
 
   // Determine effective language mode
   const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
   console.log(`[pipeline] lang=${effectiveLang} (settings=${settings.language_mode})`);
 
-  // ---------- STEP 1: CLASSIFY ----------
+  // ---------- STEP 1: CLASSIFY (rule-based only — fast, no AI) ----------
   let decision;
   let classifySource = "rules";
   try {
@@ -633,8 +689,7 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     if (feedbackChatId) {
       await sendMessage(env.BOT_TOKEN, feedbackChatId, "❌ <code>TARGET_CHANNEL</code> not configured.");
     }
-    if (update) await logUpdate(SETTINGS, update, "error", "TARGET_CHANNEL not set");
-    return;
+    return { ok: false, detail: "TARGET_CHANNEL not set" };
   }
 
   // 5a: Send the FINAL post to the user (so they see exactly what was published)
@@ -705,7 +760,6 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
         { disable_web_page_preview: true }
       );
     }
-    if (update) await logUpdate(SETTINGS, update, "ok", `published: ${decision.content_type}/${effectiveRewriteMode} (${totalMs}ms)`);
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
     await bumpGlobalStats(SETTINGS, "failed");
@@ -730,16 +784,13 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
         `❌ <b>Publish failed:</b> <code>${publishRes.description || "unknown error"}</code>\n\nMake sure the bot is an admin in <code>${targetChannel}</code> with permission to post messages.`
       );
     }
-    if (update) await logUpdate(SETTINGS, update, "error", `publish: ${publishRes.description}`);
   }
 
-  // Log the full trace for debugging (stored in recent updates detail)
-  const traceSummary = trace.map(t => `${t.step}:${t.ok ? "✓" : "✗"}`).join(" → ");
-  console.log(`[pipeline trace summary] ${traceSummary}`);
-  if (update) {
-    // Update the log entry with the trace summary (overwrites the earlier "published" detail)
-    // This is best-effort; we don't re-log to avoid duplicates
-  }
+  // Return result so the outer wrapper knows the outcome
+  return {
+    ok: publishRes.ok,
+    detail: `published: ${decision.content_type}/${effectiveRewriteMode}`,
+  };
 }
 
 /** Minimal HTML escaper for displaying error text inside Telegram HTML messages */

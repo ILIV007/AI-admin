@@ -81,47 +81,25 @@ export function ruleBasedClassify(text) {
 // ============================================================
 
 /**
- * Try AI classification first; on failure, use rule-based.
- * Always returns { ok, decision, source: "ai" | "rules" }
+ * FAST rule-based classify only.
+ *
+ * Why no AI classify? Cloudflare Workers free tier has a 30-second wall time limit.
+ * AI classify calls Gemini (often 429) then OpenRouter fallback = up to 24 seconds.
+ * Combined with AI rewrite, the pipeline exceeds 30s and Cloudflare kills the worker
+ * mid-flight — leaving the "processing" message stuck forever.
+ *
+ * The rule-based classifier is instant (<1ms) and produces good results for the
+ * common content types. AI classify was a nice-to-have but is not worth the risk.
+ *
+ * Always returns { ok, decision, source: "rules" }
  */
 export async function classify(env, settings, text) {
-  // Skip AI for very short text — rule-based is sufficient and free
-  if (!text || text.length < 60) {
-    const decision = ruleBasedClassify(text);
-    // Respect admin's forced settings if any
-    if (settings.rewrite_mode && settings.rewrite_mode !== "normal") {
-      decision.rewrite_mode = settings.rewrite_mode;
-      decision.needs_rewrite = settings.rewrite_mode !== "none";
-    }
-    return { ok: true, source: "rules", decision };
-  }
-
-  // Try AI
-  const aiRes = await aiClassifySafe(env, settings, text);
-  if (aiRes.ok) {
-    // Override with admin's forced settings if any
-    const decision = { ...aiRes.decision };
-    if (settings.language_mode && settings.language_mode !== "auto") {
-      decision.language_mode = settings.language_mode;
-    }
-    return { ok: true, source: "ai", decision };
-  }
-
-  // Fallback
-  console.warn(`[classifier] AI failed (${aiRes.error}); using rules`);
   const decision = ruleBasedClassify(text);
+
+  // Respect admin's forced language mode
   if (settings.language_mode && settings.language_mode !== "auto") {
     decision.language_mode = settings.language_mode;
   }
-  return { ok: true, source: "rules", decision, aiError: aiRes.error };
-}
 
-// Wrapper that gracefully handles missing AI module
-async function aiClassifySafe(env, settings, text) {
-  try {
-    const { aiClassify } = await import("./ai.js");
-    return await aiClassify(env, settings, text);
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  return { ok: true, source: "rules", decision };
 }
