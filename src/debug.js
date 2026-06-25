@@ -702,7 +702,7 @@ function renderStatus(data) {
     document.getElementById("raw-table").innerHTML =
       '<div class="empty">⚠️ No raw requests logged yet.<br><br>' +
       'Send a message to your bot now. If nothing appears here after a few seconds, your webhook is broken.<br>' +
-      'If requests appear with <code>rejected_403</code>, the WEBHOOK_SECRET doesn\'t match.</div>';
+      'If requests appear with <code>rejected_403</code>, the WEBHOOK_SECRET does not match.</div>';
   } else {
     const statusBadge = (s) => {
       const cls = s === "ok" ? "badge-ok" : (s.startsWith("rejected") ? "badge-error" : "badge-ignored");

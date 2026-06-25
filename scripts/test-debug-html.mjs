@@ -65,6 +65,46 @@ assert(html.includes("status-fail") || html.includes("status-ok"), "has status i
 const backtickCount = (html.match(/`/g) || []).length;
 assert(backtickCount === 0, `no stray backticks in output (found ${backtickCount})`);
 
+// CRITICAL: extract the JS from <script> tag and verify it parses without syntax errors.
+// This catches the v0.1.5 regression where an apostrophe inside a single-quoted JS string
+// (inside a template literal) broke the entire dashboard.
+const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+assert(scriptMatch !== null, "has a <script> tag");
+if (scriptMatch) {
+  const js = scriptMatch[1];
+  try {
+    // Use Function constructor to parse the JS without running it
+    new Function(js);
+    console.log("  ✅ script tag JS parses without syntax errors");
+    passed++;
+  } catch (e) {
+    console.error(`  ❌ script tag JS has syntax error: ${e.message}`);
+    failed++;
+  }
+
+  // Check for common apostrophe issues that break single-quoted strings
+  // Pattern: 'word'word' (missing escape) — but exclude legitimate cases like ' + '...'
+  const dangerousPatterns = [
+    /'[^'\n]*doesn[^'\n]*'/i,
+    /'[^'\n]*can't[^'\n]*'/i,
+    /'[^'\n]*won't[^'\n]*'/i,
+    /'[^'\n]*it's[^'\n]*'/i,
+    /'[^'\n]*don't[^'\n]*'/i,
+  ];
+  let hasApostropheIssue = false;
+  for (const pat of dangerousPatterns) {
+    if (pat.test(js)) {
+      console.error(`  ❌ Found unescaped apostrophe pattern: ${pat}`);
+      hasApostropheIssue = true;
+      failed++;
+    }
+  }
+  if (!hasApostropheIssue) {
+    console.log("  ✅ no unescaped apostrophes in JS strings");
+    passed++;
+  }
+}
+
 // ============================================================
 console.log("\n" + "=".repeat(50));
 console.log(`HTML tests: ${passed} passed, ${failed} failed`);

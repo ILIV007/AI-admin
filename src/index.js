@@ -484,13 +484,24 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
   const adminId = content.fromId || env.ADMIN_ID;
   const startTime = Date.now();
 
+  // Pipeline trace log — captures each step's result for debugging
+  const trace = [];
+  const traceStep = (step, ok, detail = "") => {
+    const entry = { step, ok: !!ok, detail: detail.slice(0, 200), ms: Date.now() - startTime };
+    trace.push(entry);
+    console.log(`[pipeline trace] ${step}: ${ok ? "OK" : "FAIL"}${detail ? " — " + detail.slice(0, 100) : ""} (${entry.ms}ms)`);
+    return entry;
+  };
+
   console.log(`[pipeline] start — from=${adminId} hasText=${!!content.text} hasMedia=${!!content.mediaFileId}`);
 
   let settings;
   try {
     settings = await getSettings(SETTINGS, adminId);
+    traceStep("getSettings", true, `provider=${settings.ai_provider} rw=${settings.rewrite_mode}`);
   } catch (e) {
     console.error("[pipeline] KV getSettings failed:", e.message);
+    traceStep("getSettings", false, e.message);
     await logError(SETTINGS, e, "getSettings");
     if (feedbackChatId) {
       await sendMessage(env.BOT_TOKEN, feedbackChatId,
@@ -507,14 +518,25 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     return;
   }
 
-  // Send IMMEDIATE "processing..." message so the user knows the bot is working.
-  // The typing indicator only lasts 5s, but the AI pipeline can take 10-20s.
-  // Without this, the user sees "typing..." disappear and thinks the bot is dead.
+  // Send IMMEDIATE "processing" message so the user knows the bot is working.
+  // Uses Telegram's native blockquote for a clean, modern look.
+  // We keep the message ID so we can EDIT it later with the final status (instead of sending a separate message).
+  let processingMsgId = null;
   if (feedbackChatId) {
-    await sendMessage(env.BOT_TOKEN, feedbackChatId,
-      "⏳ <b>Processing...</b>\n\nAnalyzing content → cleaning → AI rewrite → formatting → publishing.\n\nThis takes ~5-15 seconds.",
+    const procRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
+      [
+        `⏳ <b>Processing your post</b>`,
+        ``,
+        `<blockquote>🔄 Analyzing content type...</blockquote>`,
+        `<blockquote>🧹 Cleaning spam &amp; attribution...</blockquote>`,
+        `<blockquote>✍️ AI rewrite (if needed)...</blockquote>`,
+        `<blockquote>📝 Formatting &amp; publishing...</blockquote>`,
+        ``,
+        `<i>Usually takes 5-15 seconds.</i>`,
+      ].join("\n"),
       { disable_web_page_preview: true }
-    ).catch(() => {});
+    ).catch((e) => ({ ok: false, error: e.message }));
+    if (procRes.ok) processingMsgId = procRes.result?.message_id;
     // Re-trigger typing since we just sent a message
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
@@ -530,20 +552,23 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     const cls = await classify(env, settings, rawText);
     decision = cls.decision;
     classifySource = cls.source;
-    console.log(`[pipeline] classify: type=${decision.content_type} mode=${decision.rewrite_mode} needs=${decision.needs_rewrite} src=${cls.source}`);
+    traceStep("classify", true, `type=${decision.content_type} mode=${decision.rewrite_mode} src=${cls.source}`);
   } catch (e) {
     console.warn("[pipeline] classify failed:", e.message);
+    traceStep("classify", false, e.message);
     await logError(SETTINGS, e, "classify");
     decision = { content_type: "other", rewrite_mode: "light", needs_rewrite: true, language_mode: effectiveLang };
   }
 
   // ---------- STEP 2: CLEAN ----------
   const cleanedText = cleanContent(rawText);
-  console.log(`[pipeline] clean: ${rawText.length}→${cleanedText.length} chars`);
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
 
   // ---------- STEP 3: REWRITE / SUMMARIZE (or skip) ----------
   let finalText = cleanedText;
   let wasRewritten = false;
+  let aiProvider = "none";
+  let aiError = null;
 
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
   const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
@@ -556,9 +581,12 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
-          console.log(`[pipeline] summarize OK (${res.provider})`);
+          aiProvider = res.provider;
+          traceStep("ai_summarize", true, `provider=${res.provider} len=${res.text.length}`);
         } else {
-          console.warn(`[pipeline] summarize failed: ${res.error}`);
+          aiError = res.error;
+          traceStep("ai_summarize", false, res.error || "unknown");
+          await logError(SETTINGS, new Error(`AI summarize failed: ${res.error}`), "aiSummarize");
         }
       } else {
         const res = await aiRewrite(
@@ -572,15 +600,22 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
-          console.log(`[pipeline] rewrite OK (${res.provider})`);
+          aiProvider = res.provider;
+          traceStep("ai_rewrite", true, `provider=${res.provider} mode=${effectiveRewriteMode} len=${res.text.length}`);
         } else {
-          console.warn(`[pipeline] rewrite failed: ${res.error}`);
+          aiError = res.error;
+          traceStep("ai_rewrite", false, res.error || "unknown");
+          await logError(SETTINGS, new Error(`AI rewrite failed: ${res.error}`), "aiRewrite");
         }
       }
     } catch (e) {
       console.error("[pipeline] AI step error:", e.message);
+      aiError = e.message;
+      traceStep("ai_exception", false, e.message);
       await logError(SETTINGS, e, "AI rewrite/summarize");
     }
+  } else {
+    traceStep("ai_skip", true, `mode=${effectiveRewriteMode} should=${shouldRewrite}`);
   }
 
   // ---------- STEP 4: FORMAT ----------
@@ -588,12 +623,13 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     footer: settings.footer_text,
     engineName: "html",
   });
-  console.log(`[pipeline] format: ${formattedText.length} chars`);
+  traceStep("format", true, `${formattedText.length} chars, parseMode=${parseMode}`);
 
   // ---------- STEP 5: PUBLISH ----------
   const targetChannel = env.TARGET_CHANNEL;
   if (!targetChannel) {
     console.error("[pipeline] TARGET_CHANNEL not set");
+    traceStep("publish", false, "TARGET_CHANNEL not set");
     if (feedbackChatId) {
       await sendMessage(env.BOT_TOKEN, feedbackChatId, "❌ <code>TARGET_CHANNEL</code> not configured.");
     }
@@ -603,14 +639,27 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
 
   // 5a: Send the FINAL post to the user (so they see exactly what was published)
   //     This uses the same media file_id, so media is preserved.
+  let userSendOk = null;
   if (feedbackChatId) {
     console.log(`[pipeline] sending final post to user ${feedbackChatId}`);
-    await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+    userSendOk = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
       text: formattedText,
       mediaType: content.mediaType,
       mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
     });
+    traceStep("send_to_user", userSendOk.ok, userSendOk.ok ? "ok" : userSendOk.description || "failed");
+    if (!userSendOk.ok) {
+      console.warn(`[pipeline] send to user failed: ${userSendOk.description}`);
+      // If user send fails (e.g. HTML parse error), try sending a plain-text version
+      // so at least they see SOMETHING and we can diagnose
+      console.warn("[pipeline] retrying user send with plain text...");
+      const plainRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
+        `⚠️ <b>Formatted post failed to render (HTML parse error)</b>\n\n<b>Raw text (unformatted):</b>\n\n${escapeHtmlForTg(finalText)}`,
+        { disable_web_page_preview: true }
+      ).catch(e => ({ ok: false, description: e.message }));
+      traceStep("send_to_user_retry", plainRes.ok, plainRes.ok ? "ok" : plainRes.description || "failed");
+    }
   }
 
   // 5b: Publish to the target channel
@@ -620,6 +669,7 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     mediaFileId: content.mediaFileId,
     extra: { parse_mode: parseMode, disable_web_page_preview: false },
   });
+  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? "ok" : publishRes.description || "failed");
 
   // ---------- STEP 6: STATS + FEEDBACK ----------
   if (publishRes.ok) {
@@ -631,34 +681,70 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     }
     console.log(`[pipeline] published OK in ${Date.now() - startTime}ms`);
 
-    // Send a brief status message (the full post was already sent above)
-    if (feedbackChatId) {
-      await sendMessage(
-        env.BOT_TOKEN,
-        feedbackChatId,
+    // Edit the processing message → final status (cleaner UX than sending a new message)
+    const totalMs = Date.now() - startTime;
+    const statusLine = aiError
+      ? `⚠️ AI failed (${aiError.slice(0, 50)}) — used format-only fallback`
+      : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
+
+    if (feedbackChatId && processingMsgId) {
+      await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
         [
-          `✅ <b>Published</b> to <code>${targetChannel}</code>`,
-          `<b>Type:</b> <code>${decision.content_type} / ${effectiveRewriteMode}</code> · <b>AI:</b> <code>${wasRewritten ? "yes" : "no"}</code>`,
+          `✅ <b>Done</b> — published to <code>${targetChannel}</code>`,
+          ``,
+          `<blockquote><b>Type:</b> ${decision.content_type} / ${effectiveRewriteMode}`,
+          `${statusLine}`,
+          `<b>Total time:</b> ${totalMs}ms</blockquote>`,
         ].join("\n"),
+        { disable_web_page_preview: true }
+      ).catch(() => {}); // ignore edit failures (e.g. message too old)
+    } else if (feedbackChatId) {
+      // Fallback: send a new status message
+      await sendMessage(env.BOT_TOKEN, feedbackChatId,
+        `✅ <b>Published</b> to <code>${targetChannel}</code>\n${statusLine} · ${totalMs}ms`,
         { disable_web_page_preview: true }
       );
     }
-    if (update) await logUpdate(SETTINGS, update, "ok", `published: ${decision.content_type}/${effectiveRewriteMode}`);
+    if (update) await logUpdate(SETTINGS, update, "ok", `published: ${decision.content_type}/${effectiveRewriteMode} (${totalMs}ms)`);
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
     await bumpGlobalStats(SETTINGS, "failed");
     console.error("[pipeline] publish failed:", publishRes.description);
     await logError(SETTINGS, new Error(`Publish failed: ${publishRes.description}`), `target=${targetChannel}`);
 
-    if (feedbackChatId) {
-      await sendMessage(
-        env.BOT_TOKEN,
-        feedbackChatId,
+    // Edit processing message → error status
+    if (feedbackChatId && processingMsgId) {
+      await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+        [
+          `❌ <b>Publish failed</b>`,
+          ``,
+          `<blockquote><b>Error:</b> ${escapeHtmlForTg(publishRes.description || "unknown")}`,
+          `<b>Channel:</b> ${targetChannel}</blockquote>`,
+          ``,
+          `Make sure the bot is an admin in <code>${targetChannel}</code> with permission to post messages.`,
+        ].join("\n"),
+        { disable_web_page_preview: true }
+      ).catch(() => {});
+    } else if (feedbackChatId) {
+      await sendMessage(env.BOT_TOKEN, feedbackChatId,
         `❌ <b>Publish failed:</b> <code>${publishRes.description || "unknown error"}</code>\n\nMake sure the bot is an admin in <code>${targetChannel}</code> with permission to post messages.`
       );
     }
     if (update) await logUpdate(SETTINGS, update, "error", `publish: ${publishRes.description}`);
   }
+
+  // Log the full trace for debugging (stored in recent updates detail)
+  const traceSummary = trace.map(t => `${t.step}:${t.ok ? "✓" : "✗"}`).join(" → ");
+  console.log(`[pipeline trace summary] ${traceSummary}`);
+  if (update) {
+    // Update the log entry with the trace summary (overwrites the earlier "published" detail)
+    // This is best-effort; we don't re-log to avoid duplicates
+  }
+}
+
+/** Minimal HTML escaper for displaying error text inside Telegram HTML messages */
+function escapeHtmlForTg(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // ============================================================
