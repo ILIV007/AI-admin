@@ -157,7 +157,7 @@ export async function aiComplete(env, settings, params) {
 
   // 1. Gemini (if key exists)
   if (env.GEMINI_API_KEY) {
-    const geminiModel = env.GEMINI_MODEL || "gemini-2.0-flash";
+    const geminiModel = env.GEMINI_MODEL || "gemini-2.5-flash";
     providers.push({
       name: "gemini",
       model: geminiModel,

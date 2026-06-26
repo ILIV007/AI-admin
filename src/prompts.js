@@ -83,26 +83,27 @@ ${CORE_IDENTITY}
 TASK: Rewrite the given Telegram post according to the specified mode and personality.
 
 REWRITE INTENSITY:
-- "light"  → slight rewording only, keep structure
-- "normal" → moderate rewriting for clarity and flow
+- "light"  → slight rewording only, keep structure and tone
+- "normal" → moderate rewriting for clarity, flow, and readability
 
-LANGUAGE RULE:
-- "auto" → keep the input language exactly
+CRITICAL LANGUAGE RULE (READ CAREFULLY):
+- "auto" → YOU MUST KEEP THE INPUT LANGUAGE EXACTLY AS-IS. If the input is Persian, your output MUST be Persian. If the input is English, your output MUST be English. NEVER translate to another language. NEVER change the script. NEVER switch to English when the input is Persian.
 - "fa"   → output in Persian only
 - "en"   → output in English only
-- NEVER translate unless the mode forces it
+- TRANSLATION IS STRICTLY FORBIDDEN unless the mode explicitly forces a specific language.
+
+REWRITE MEANING:
+- You MUST actually rewrite/improve the text — do NOT just echo the input unchanged.
+- Improve clarity, fix grammar, make it more readable and engaging.
+- Remove spam, ads, attribution tags, and promo content.
+- PRESERVE all technical content: GitHub links, documentation URLs, download links, API references, installation steps, code blocks.
+- KEEP the original meaning 100% intact — only improve the presentation.
 
 PERSONALITY (apply subtly, do NOT announce it):
 - "friendly"     → warm, conversational
 - "professional" → clean, neutral, business-like
 - "technical"    → precise, terminology-friendly
 - "news"         → concise, fact-first
-
-CONTENT RULES:
-- PRESERVE all GitHub links, documentation URLs, download links, API references, installation steps
-- REMOVE: channel mentions (@something) used as promo, "join/follow/subscribe", attribution lines like "@DevTwitter | <Author>"
-- REMOVE spam hashtags and ad footers
-- KEEP the technical meaning 100% intact
 
 FORMATTING RULES:
 - Do NOT wrap links in HTML tags yourself — the formatter does that
@@ -111,8 +112,9 @@ FORMATTING RULES:
 - Do NOT add a footer — the formatter appends it
 - Do NOT add markdown code fences around your output
 - Do NOT add prefixes like "Here is the rewritten post:"
+- Do NOT add any explanation, commentary, or metadata
 
-OUTPUT: Return ONLY the final post text. Nothing else.
+OUTPUT: Return ONLY the final post text in the SAME LANGUAGE as the input. Nothing else.
 `.trim();
 
 // ============================================================
@@ -123,16 +125,18 @@ ${CORE_IDENTITY}
 
 TASK: Summarize the given Telegram post into a short, dense, channel-ready version.
 
+CRITICAL LANGUAGE RULE:
+- YOU MUST KEEP THE INPUT LANGUAGE EXACTLY AS-IS. If the input is Persian, your output MUST be Persian. If the input is English, your output MUST be English. NEVER translate to another language.
+
 RULES:
 - Keep 3-5 key points maximum
-- Preserve all technical links and repository URLs verbatim
+- Preserve all technical links and repository URLs verbatim (write each URL on its own line)
 - Remove all promotional content, attribution tags, and spam
-- Write each URL on its own line (do not wrap in HTML — the formatter handles that)
-- Match input language (or use the forced language mode)
 - Output should be 30-60% shorter than the input
-- Do NOT add a footer, do NOT add explanations
+- Do NOT add a footer, do NOT add explanations, do NOT add metadata
+- Do NOT wrap links in HTML tags — the formatter does that
 
-OUTPUT: Return ONLY the summarized post text. Nothing else.
+OUTPUT: Return ONLY the summarized post text in the SAME LANGUAGE as the input. Nothing else.
 `.trim();
 
 // ============================================================

@@ -25,7 +25,9 @@ FOOTER_TEXT = "🌀 @ILIVIR3"
 DEFAULT_AI_PROVIDER = "openrouter"
 
 # Gemini model (free tier)
-GEMINI_MODEL = "gemini-2.0-flash"
+# Use gemini-2.5-flash (stable, reliable, free quota available)
+# Alternatives: gemini-2.5-flash-lite (cheapest), gemini-2.0-flash (legacy)
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # OpenRouter primary model (special auto-router — picks best available free model)
 OPENROUTER_MODEL = "openrouter/free"

@@ -16,6 +16,48 @@ const LINK_REGEX = /https?:\/\/[^\s<>"']+/gi;
 // Promo @usernames are removed separately by the @-handling regex below.
 // We do NOT blanket-remove t.me/ links because some are legitimate resources.
 
+// Patterns for spam/promo links that should be removed (but NOT technical links)
+const SPAM_LINK_PATTERNS = [
+  /https?:\/\/t\.me\/(?:joinchat|\/+joinchat)\S*/gi,  // Telegram invite links
+  /https?:\/\/t\.me\/\+\S*/gi,                          // Telegram invite links (new format)
+  /https?:\/\/t\.me\/(?:addstickers|addemoji)\S*/gi,   // Telegram sticker/emoji packs (usually promo)
+];
+
+// Patterns for links to KEEP (never remove — these are technical resources)
+const TECH_LINK_PATTERNS = [
+  /github\.com/i,
+  /gist\.github/i,
+  /raw\.githubusercontent/i,
+  /gitlab\.com/i,
+  /bitbucket\.org/i,
+  /docs?\.\w+/i,
+  /readthedocs/i,
+  /stack?overflow/i,
+  /developer\.\w+/i,
+  /npmjs\.com/i,
+  /pypi\.org/i,
+  /crates\.io/i,
+  /hub\.docker\.com/i,
+  /wikipedia\.org/i,
+  /arxiv\.org/i,
+  /huggingface\.co/i,
+];
+
+function isSpamLink(url) {
+  // Check if URL matches spam patterns
+  for (const pat of SPAM_LINK_PATTERNS) {
+    if (pat.test(url)) return true;
+  }
+  return false;
+}
+
+function isTechLink(url) {
+  for (const pat of TECH_LINK_PATTERNS) {
+    if (pat.test(url)) return true;
+  }
+  return false;
+}
+
 // ============================================================
 // DETECT: is this username part of a tech URL or a promo?
 // ============================================================
@@ -45,9 +87,16 @@ export function cleanContent(rawText) {
     return `__INLINE_CODE_${inlineCodes.length - 1}__`;
   });
 
-  // 2. Protect URLs (GitHub, docs, etc.)
+  // 2. Protect URLs (GitHub, docs, etc.) — but REMOVE spam links first.
+  //    Spam links: Telegram invite links (t.me/joinchat, t.me/+xxx), sticker packs
+  //    Tech links: GitHub, docs, npm, etc. (always preserved)
   const urls = [];
   text = text.replace(LINK_REGEX, (m) => {
+    if (isSpamLink(m) && !isTechLink(m)) {
+      // Spam link — remove it (return empty string)
+      console.log(`[cleaner] removing spam link: ${m.slice(0, 60)}`);
+      return "";
+    }
     urls.push(m);
     return `__URL_${urls.length - 1}__`;
   });

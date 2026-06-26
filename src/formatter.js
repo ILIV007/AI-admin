@@ -28,6 +28,10 @@ const LINK_REGEX = /https?:\/\/[^\s<>"']+/gi;
 // ============================================================
 // HTML ENGINE (default — most compatible with Telegram)
 // ============================================================
+// Improved URL regex: stops at the next "https://" or "http://" so that
+// URLs stuck together (e.g. "https://a.comhttps://b.com") are split correctly.
+const URL_SPLIT_REGEX = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'])+/gi;
+
 const htmlEngine = {
   name: "html",
   parseMode: "HTML",
@@ -63,9 +67,10 @@ const htmlEngine = {
     // 3. Escape HTML in the remaining text
     work = this.escape(work);
 
-    // 4. Replace each URL with a blockquote-wrapped link
-    //    Each URL gets its own block (rule: "if multiple links → separate blockquotes")
-    work = work.replace(LINK_REGEX, (url) => this.wrapLink(url));
+    // 4. Replace each URL with a blockquote-wrapped link.
+    //    Use URL_SPLIT_REGEX which stops at the next "https://" so that
+    //    multiple URLs stuck together get split into separate blockquotes.
+    work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
 
     // 5. Restore inline code as <code>...</code>
     work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
@@ -138,7 +143,7 @@ const richMarkdownEngine = {
     });
 
     work = this.escape(work);
-    work = work.replace(LINK_REGEX, (url) => this.wrapLink(url));
+    work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
     work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
     work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
     work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
@@ -218,5 +223,5 @@ export function formatPost(text, ctx = {}) {
  * Quick helper: detect all URLs in text (used for logging/stats)
  */
 export function extractUrls(text) {
-  return [...new Set(text.match(LINK_REGEX) || [])];
+  return [...new Set(text.match(URL_SPLIT_REGEX) || [])];
 }

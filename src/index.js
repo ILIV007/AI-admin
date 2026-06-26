@@ -386,7 +386,7 @@ async function runMediaGroupPipeline(env, items, update) {
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
 
-  const effectiveLang = settings.language_mode === "auto" ? detectLanguage(combinedText) : settings.language_mode;
+  const effectiveLang = settings.language_mode === "auto" ? "auto" : settings.language_mode;
   const cleanedText = cleanContent(combinedText);
 
   let finalText = cleanedText;
@@ -572,8 +572,12 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const SETTINGS = env.SETTINGS;
   const adminId = content.fromId || env.ADMIN_ID;
 
-  const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
-  console.log(`[pipeline] lang=${effectiveLang}`);
+  // When settings.language_mode is "auto", pass "auto" to AI (NOT detected lang).
+  // The prompt interprets "auto" as "keep input language exactly".
+  // Passing "fa" or "en" would make some models translate, which is wrong.
+  const detectedLang = detectLanguage(rawText);
+  const effectiveLang = settings.language_mode === "auto" ? "auto" : settings.language_mode;
+  console.log(`[pipeline] lang=${effectiveLang} (settings=${settings.language_mode}, detected=${detectedLang})`);
 
   // Reply context
   let replyContext = "";
@@ -753,7 +757,7 @@ async function runChannelEditPipeline(env, content, update) {
   const rawText = content.text || "";
   if (!rawText && !content.mediaFileId) return;
 
-  const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
+  const effectiveLang = settings.language_mode === "auto" ? "auto" : settings.language_mode;
 
   let decision;
   try {
