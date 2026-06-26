@@ -232,7 +232,7 @@ export function buildClassifyUserMessage(text) {
 // ============================================================
 // Helper: build the full rewrite user message
 // ============================================================
-export function buildRewriteUserMessage(text, mode, language, personality) {
+export function buildRewriteUserMessage(text, mode, language, personality, editIntensity = 50, emojiLevel = 2) {
   const personalityGuide = {
     friendly: `Write like a REAL HUMAN posting to their own Telegram channel. Imagine you're a tech-savvy friend sharing something interesting you found.
 
@@ -259,11 +259,40 @@ EXAMPLE of ROBOTIC tone (AVOID):
     news: "Concise, fact-first. Journalistic tone. Lead with the most important information.",
   };
 
+  const emojiGuide = {
+    0: "Do NOT add any emojis. The post must be emoji-free.",
+    1: "Add at most 1-2 emojis, only where they naturally fit (e.g. 🔥 for excitement, ✅ for confirmation).",
+    2: "Add 3-5 emojis naturally throughout the post to make it engaging. Use them at section starts, key points, or to convey emotion. Don't overdo it.",
+    3: "Add lots of emojis! Make the post visually rich and exciting. Use emojis liberally — at start, between sections, at key points, at end. Examples: 🚀🔥💡✨👍🎯⚡🌟💪🎉",
+  };
+
+  const intensityGuide = editIntensity >= 80
+    ? "INTENSITY: MAXIMUM (80-100%). Feel free to significantly restructure the post. Add compelling hooks, reorganize content, use rich formatting (bold, italic, quotes, lists). Make it look like a professionally curated post."
+    : editIntensity >= 60
+    ? "INTENSITY: STRONG (60-79%). Make noticeable improvements to structure and flow. Add some formatting (bold, lists). Substantially improve readability."
+    : editIntensity >= 40
+    ? "INTENSITY: NORMAL (40-59%). Moderate rewrite. Improve clarity and flow. Add basic formatting where helpful."
+    : editIntensity >= 20
+    ? "INTENSITY: LIGHT (20-39%). Minimal changes. Fix grammar, smooth sentences. Keep original structure mostly intact."
+    : "INTENSITY: MINIMAL (0-19%). Almost no changes. Just clean up obvious issues. Preserve everything else exactly.";
+
   return [
     `REWRITE_MODE: ${mode}`,
     `LANGUAGE_MODE: ${language}`,
     `PERSONALITY: ${personality}`,
     `PERSONALITY_GUIDE: ${personalityGuide[personality] || personalityGuide.friendly}`,
+    `EDIT_INTENSITY: ${editIntensity}%`,
+    `INTENSITY_GUIDE: ${intensityGuide}`,
+    `EMOJI_LEVEL: ${emojiLevel}`,
+    `EMOJI_GUIDE: ${emojiGuide[emojiLevel] || emojiGuide[2]}`,
+    ``,
+    `EMOTIONAL TONE PRESERVATION:`,
+    `- DETECT the emotional tone of the original post (excited, angry, sad, neutral, sarcastic, urgent, etc.)`,
+    `- PRESERVE that emotional tone in your rewrite`,
+    `- If the original is excited/enthusiastic → keep it excited`,
+    `- If the original is serious/angry → keep it serious (don't make it cheerful)`,
+    `- If the original is neutral → keep it neutral`,
+    `- NEVER flatten an emotional post into a dry, robotic tone`,
     ``,
     `POST TO PROCESS:`,
     `----`,

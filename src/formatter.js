@@ -100,10 +100,13 @@ const htmlEngine = {
     // 11. Convert markdown bullet lists (• or - or *) → proper bullet
     work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
 
-    // 12. QUOTE PARAGRAPHS: wrap long paragraphs (>60 chars, no URL, no HTML tag) in <blockquote>
-    // This makes the post visually engaging — key text blocks stand out.
-    // Only quote paragraphs that are NOT already in a blockquote (URLs) and
-    // don't contain HTML tags (to avoid nesting issues).
+    // 12. QUOTE PARAGRAPHS: wrap ONLY long multi-sentence paragraphs in <blockquote>.
+    // Do NOT quote: headings, short lines, list items, single-sentence lines.
+    // A paragraph qualifies for quoting only if:
+    //   - It's substantial (>= 120 chars)
+    //   - It contains multiple sentences (>= 2 periods/exclamation/question marks)
+    //   - It's NOT a heading (doesn't start with <b>... but is short)
+    //   - It's NOT already in a blockquote or has HTML tags
     const lines = work.split("\n");
     const quotedLines = lines.map((line) => {
       const trimmed = line.trim();
@@ -111,15 +114,18 @@ const htmlEngine = {
       if (!trimmed) return line;
       // Skip lines that are already blockquotes (URLs)
       if (trimmed.startsWith("<blockquote>")) return line;
-      // Skip lines that contain HTML tags (already formatted)
+      // Skip lines that contain HTML tags (already formatted — headings, bold, etc.)
       if (/<[a-z/]/i.test(trimmed)) return line;
-      // Skip short lines (< 50 chars) — too short to quote
-      if (trimmed.length < 50) return line;
+      // Skip short lines (< 120 chars) — headings, short intros, etc.
+      if (trimmed.length < 120) return line;
       // Skip lines that look like list items (start with bullet or number)
       if (/^[•\-\*\d]/.test(trimmed)) return line;
       // Skip lines that are part of code blocks
       if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
-      // This is a substantial paragraph — quote it!
+      // Skip lines that are single sentences (only one period/exclamation)
+      const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
+      if (sentenceEnds < 2) return line;
+      // This is a substantial multi-sentence paragraph — quote it!
       return `<blockquote>${trimmed}</blockquote>`;
     });
     work = quotedLines.join("\n");

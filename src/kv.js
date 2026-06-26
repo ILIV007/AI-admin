@@ -13,6 +13,8 @@ export const DEFAULTS = Object.freeze({
   footer_text: "🌀 @ILIVIR3",
   ai_provider: "openrouter", // Default to OpenRouter (Gemini often hits 429 on free tier)
   channel_editing_enabled: false,
+  edit_intensity: 50, // 0-100: controls how much the bot changes the post (0=Minimal, 100=Maximum)
+  emoji_level: 2, // 0=none, 1=minimal, 2=moderate, 3=heavy
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 

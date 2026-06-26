@@ -409,7 +409,7 @@ async function runMediaGroupPipeline(env, items, update) {
 
   if (shouldRewrite) {
     try {
-      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
+      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 50, settings.emoji_level ?? 2);
       if (res.ok && res.text) {
         finalText = res.text;
         wasRewritten = true;
@@ -648,7 +648,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
           traceStep("ai_summarize", false, res.error || "unknown");
         }
       } else {
-        const res = await aiRewrite(env, settings, textForAI, finalMode, effectiveLang, settings.personality_mode || "friendly");
+        const res = await aiRewrite(env, settings, textForAI, finalMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 50, settings.emoji_level ?? 2);
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
@@ -795,7 +795,7 @@ async function runChannelEditPipeline(env, content, update) {
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
-      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
+      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 50, settings.emoji_level ?? 2);
       if (res.ok && res.text) {
         finalText = res.text;
         wasRewritten = true;

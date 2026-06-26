@@ -1,32 +1,6 @@
 /**
  * src/admin.js
  * Telegram-based admin panel with inline keyboard buttons.
- *
- * Only the configured ADMIN_ID can interact. Everyone else is silently ignored.
- *
- * Per spec (PROMPT 3), the inline menu exposes 8 entries:
- *   ⚙️ Settings       → refresh current settings view
- *   🧠 AI Mode        → combined AI behavior submenu (provider + rewrite intensity)
- *   🌐 Language       → language mode submenu
- *   ✍️ Rewrite Level  → rewrite intensity submenu
- *   🎭 Personality    → personality submenu
- *   📢 Footer         → footer editor (prompt)
- *   🤖 AI Provider    → provider submenu
- *   📊 Stats          → statistics view
- *
- * Commands:
- *   /start            → open the admin panel (main menu)
- *   /footer <text>    → change footer text
- *   /help             → show help
- *
- * Callbacks (button clicks):
- *   menu:main | menu:settings | menu:aimode | menu:language | menu:rewrite |
- *   menu:personality | menu:footer | menu:provider | menu:stats
- *   set:lang:auto|fa|en
- *   set:rw:none|light|normal|summary
- *   set:pers:friendly|professional|technical|news
- *   set:prov:gemini|openrouter
- *   set:aimode:<provider>:<rw>   (combined AI mode shortcut)
  */
 
 import { getSettings, updateSetting, getGlobalStats } from "./kv.js";
@@ -48,11 +22,10 @@ export function isAuthorized(env, userId) {
 // MENU BUILDERS
 // ============================================================
 
-/**
- * Main menu — 8 entries per spec, in a 3-row grid.
- * Order matches PROMPT 3 exactly.
- */
-function mainMenuKeyboard() {
+function mainMenuKeyboard(settings) {
+  const channelEditLabel = settings?.channel_editing_enabled
+    ? "📺 Channel Edit: ON ✅"
+    : "📺 Channel Edit: OFF";
   return {
     inline_keyboard: [
       [
@@ -65,11 +38,18 @@ function mainMenuKeyboard() {
       ],
       [
         { text: "🎭 Personality", callback_data: "menu:personality" },
+        { text: "🎨 Intensity", callback_data: "menu:intensity" },
+      ],
+      [
         { text: "📢 Footer", callback_data: "menu:footer" },
+        { text: "😀 Emoji Level", callback_data: "menu:emoji" },
       ],
       [
         { text: "🤖 AI Provider", callback_data: "menu:provider" },
         { text: "📊 Stats", callback_data: "menu:stats" },
+      ],
+      [
+        { text: channelEditLabel, callback_data: "toggle:channeledit" },
       ],
     ],
   };
@@ -117,6 +97,35 @@ function personalityKeyboard(current) {
   };
 }
 
+function intensityKeyboard(current) {
+  const mk = (val, label) => ({
+    text: `${current === val ? "✅ " : ""}${label}`,
+    callback_data: `set:intensity:${val}`,
+  });
+  return {
+    inline_keyboard: [
+      [mk("20", "20% (Minimal)"), mk("40", "40% (Light)")],
+      [mk("50", "50% (Normal)"), mk("70", "70% (Strong)")],
+      [mk("100", "100% (Maximum)"), mk("0", "0% (Format only)")],
+      [{ text: "← Back", callback_data: "menu:main" }],
+    ],
+  };
+}
+
+function emojiKeyboard(current) {
+  const mk = (val, label) => ({
+    text: `${current === val ? "✅ " : ""}${label}`,
+    callback_data: `set:emoji:${val}`,
+  });
+  return {
+    inline_keyboard: [
+      [mk("0", "None 🚫"), mk("1", "Minimal 🙂")],
+      [mk("2", "Moderate 😎"), mk("3", "Heavy 🤩")],
+      [{ text: "← Back", callback_data: "menu:main" }],
+    ],
+  };
+}
+
 function providerKeyboard(current) {
   const mk = (val, label) => ({
     text: `${current === val ? "✅ " : ""}${label}`,
@@ -131,29 +140,6 @@ function providerKeyboard(current) {
   };
 }
 
-/**
- * Combined AI Mode submenu — quick presets combining provider + rewrite intensity.
- * Lets the admin pick a behavioral profile in one tap.
- */
-function aiModeKeyboard(provider, rewrite) {
-  // Each preset: [label, provider, rewrite]
-  const presets = [
-    ["🚀 Fast & Free",       "gemini",     "light"],
-    ["✨ Balanced",          "gemini",     "normal"],
-    ["📝 Summarize",         "gemini",     "summary"],
-    ["🛡️ No AI (format only)","gemini",    "none"],
-    ["🔁 Fallback: OpenRouter","openrouter","normal"],
-  ];
-
-  const rows = presets.map(([label, p, r]) => {
-    const active = provider === p && rewrite === r;
-    return [{ text: `${active ? "✅ " : ""}${label}`, callback_data: `set:aimode:${p}:${r}` }];
-  });
-
-  rows.push([{ text: "← Back", callback_data: "menu:main" }]);
-  return { inline_keyboard: rows };
-}
-
 function backOnlyKeyboard() {
   return { inline_keyboard: [[{ text: "← Back", callback_data: "menu:main" }]] };
 }
@@ -164,38 +150,50 @@ function backOnlyKeyboard() {
 
 function mainMenuText(settings) {
   return [
-    `<b>⚙️ ILIVIR3 AI Admin — Settings</b>`,
+    `<b>⚙️ AI Admin — Settings</b>`,
     ``,
     `<b>Current configuration:</b>`,
     `🌐 Language: <code>${settings.language_mode}</code>`,
     `✍️ Rewrite: <code>${settings.rewrite_mode}</code>`,
+    `🎨 Intensity: <code>${settings.edit_intensity ?? 50}%</code>`,
+    `😀 Emoji: <code>${["None", "Minimal", "Moderate", "Heavy"][settings.emoji_level ?? 2]}</code>`,
     `🎭 Personality: <code>${settings.personality_mode}</code>`,
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
+    `📺 Channel Edit: <code>${settings.channel_editing_enabled ? "ON" : "OFF"}</code>`,
     ``,
     `<i>Send any post to this bot to process and publish it.</i>`,
   ].join("\n");
 }
 
-function settingsMenuText(settings) {
-  // Same as main menu — "Settings" button just refreshes the view
-  return mainMenuText(settings);
+function intensityMenuText(current) {
+  return [
+    `<b>🎨 Edit Intensity</b>`,
+    ``,
+    `Current: <code>${current ?? 50}%</code>`,
+    ``,
+    `<i>Controls how much the bot changes each post:</i>`,
+    `<b>0%</b> = format only (no rewrite, just links + footer)`,
+    `<b>20%</b> = minimal (only quote links/footer)`,
+    `<b>40%</b> = light rewrite`,
+    `<b>50%</b> = normal balanced rewrite`,
+    `<b>70%</b> = strong rewrite with more formatting`,
+    `<b>100%</b> = maximum rewrite + heavy emoji + full markdown`,
+  ].join("\n");
 }
 
-function aiModeMenuText(provider, rewrite) {
+function emojiMenuText(current) {
+  const labels = ["None", "Minimal", "Moderate", "Heavy"];
   return [
-    `<b>🧠 AI Mode</b>`,
+    `<b>😀 Emoji Level</b>`,
     ``,
-    `Current provider: <code>${provider}</code>`,
-    `Current rewrite:  <code>${rewrite}</code>`,
+    `Current: <code>${labels[current ?? 2]}</code>`,
     ``,
-    `<i>Quick presets — pick a behavioral profile:</i>`,
-    ``,
-    `🚀 <b>Fast &amp; Free</b> — Gemini + light edit`,
-    `✨ <b>Balanced</b> — Gemini + normal rewrite`,
-    `📝 <b>Summarize</b> — Gemini + summary`,
-    `🛡️ <b>No AI</b> — format only, no AI calls`,
-    `🔁 <b>Fallback</b> — OpenRouter + normal rewrite`,
+    `<i>Controls how many emojis are added to posts:</i>`,
+    `<b>None</b> = no emojis at all`,
+    `<b>Minimal</b> = 1-2 emojis max`,
+    `<b>Moderate</b> = 3-5 emojis, natural placement`,
+    `<b>Heavy</b> = lots of emojis for visual impact`,
   ].join("\n");
 }
 
@@ -282,14 +280,14 @@ async function statsMenuText(SETTINGS, settings) {
 export async function handleStart(env, SETTINGS, msg) {
   const settings = await getSettings(SETTINGS, msg.from.id);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, mainMenuText(settings), {
-    reply_markup: mainMenuKeyboard(),
+    reply_markup: mainMenuKeyboard(settings),
   });
 }
 
 // ============================================================
 // COMMAND: /footer <text>
 // ============================================================
-const FOOTER_MAX_LEN = 200; // Telegram caption limit is 1024, but footer should be short
+const FOOTER_MAX_LEN = 200;
 
 export async function handleFooterCommand(env, SETTINGS, msg, args) {
   if (!args || !args.trim()) {
@@ -300,35 +298,24 @@ export async function handleFooterCommand(env, SETTINGS, msg, args) {
     return;
   }
   const newFooter = args.trim();
-
-  // Validation: footer is MANDATORY per spec (PROMPT 4 rule 8).
-  // Reject empty / too-long values to prevent silent footer loss.
   if (newFooter.length === 0) {
-    await sendMessage(
-      env.BOT_TOKEN,
-      msg.chat.id,
-      "❌ Footer cannot be empty. The footer is mandatory per the system spec.\n\nTry: `/footer 🌀 @ILIVIR3`",
-      { reply_markup: backOnlyKeyboard() }
-    );
+    await sendMessage(env.BOT_TOKEN, msg.chat.id, "❌ Footer cannot be empty.", {
+      reply_markup: backOnlyKeyboard(),
+    });
     return;
   }
   if (newFooter.length > FOOTER_MAX_LEN) {
-    await sendMessage(
-      env.BOT_TOKEN,
-      msg.chat.id,
-      `❌ Footer too long (${newFooter.length} chars, max ${FOOTER_MAX_LEN}).`,
-      { reply_markup: backOnlyKeyboard() }
-    );
+    await sendMessage(env.BOT_TOKEN, msg.chat.id, `❌ Footer too long (${newFooter.length} chars, max ${FOOTER_MAX_LEN}).`, {
+      reply_markup: backOnlyKeyboard(),
+    });
     return;
   }
-
   await updateSetting(SETTINGS, msg.from.id, "footer_text", newFooter);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, `✅ Footer updated to:\n<code>${escapeHtml(newFooter)}</code>`, {
     reply_markup: backOnlyKeyboard(),
   });
 }
 
-/** Minimal HTML escaper for user-provided strings shown in <code> tags */
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -355,11 +342,14 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
 
   // ----- Navigation menus -----
   if (data === "menu:main" || data === "menu:settings") {
-    newText = settingsMenuText(settings);
-    newKb = mainMenuKeyboard();
-  } else if (data === "menu:aimode") {
-    newText = aiModeMenuText(settings.ai_provider, settings.rewrite_mode);
-    newKb = aiModeKeyboard(settings.ai_provider, settings.rewrite_mode);
+    newText = mainMenuText(settings);
+    newKb = mainMenuKeyboard(settings);
+  } else if (data === "menu:intensity") {
+    newText = intensityMenuText(settings.edit_intensity);
+    newKb = intensityKeyboard(settings.edit_intensity);
+  } else if (data === "menu:emoji") {
+    newText = emojiMenuText(settings.emoji_level);
+    newKb = emojiKeyboard(settings.emoji_level);
   } else if (data === "menu:language") {
     newText = languageMenuText(settings.language_mode);
     newKb = languageKeyboard(settings.language_mode);
@@ -378,6 +368,14 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   } else if (data === "menu:stats") {
     newText = await statsMenuText(SETTINGS, settings);
     newKb = backOnlyKeyboard();
+  }
+  // ----- Toggle channel editing -----
+  else if (data === "toggle:channeledit") {
+    const newVal = !settings.channel_editing_enabled;
+    const updated = await updateSetting(SETTINGS, userId, "channel_editing_enabled", newVal);
+    newText = mainMenuText(updated);
+    newKb = mainMenuKeyboard(updated);
+    toast = newVal ? "✅ Channel editing ON" : "✅ Channel editing OFF";
   }
   // ----- Setting changes -----
   else if (data.startsWith("set:")) {
@@ -399,19 +397,21 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
       newText = personalityMenuText(updated.personality_mode);
       newKb = personalityKeyboard(updated.personality_mode);
       toast = "✅ Personality updated";
+    } else if (scope === "intensity") {
+      const updated = await updateSetting(SETTINGS, userId, "edit_intensity", parseInt(value));
+      newText = intensityMenuText(updated.edit_intensity);
+      newKb = intensityKeyboard(updated.edit_intensity);
+      toast = `✅ Intensity: ${value}%`;
+    } else if (scope === "emoji") {
+      const updated = await updateSetting(SETTINGS, userId, "emoji_level", parseInt(value));
+      newText = emojiMenuText(updated.emoji_level);
+      newKb = emojiKeyboard(updated.emoji_level);
+      toast = `✅ Emoji: ${["None", "Minimal", "Moderate", "Heavy"][updated.emoji_level]}`;
     } else if (scope === "prov") {
       const updated = await updateSetting(SETTINGS, userId, "ai_provider", value);
       newText = providerMenuText(updated.ai_provider);
       newKb = providerKeyboard(updated.ai_provider);
       toast = "✅ Provider updated";
-    } else if (scope === "aimode") {
-      // Combined preset: value = "<provider>:<rewrite>"
-      const [prov, rw] = value.split(":");
-      let updated = await updateSetting(SETTINGS, userId, "ai_provider", prov);
-      updated = await updateSetting(SETTINGS, userId, "rewrite_mode", rw);
-      newText = aiModeMenuText(updated.ai_provider, updated.rewrite_mode);
-      newKb = aiModeKeyboard(updated.ai_provider, updated.rewrite_mode);
-      toast = `✅ AI Mode: ${prov} / ${rw}`;
     } else {
       await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown setting");
       return;
@@ -421,19 +421,15 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
     return;
   }
 
-  // Update the menu message in place (don't send a new one — UX rule: minimal messages).
-  // Fallback: if editMessageText fails (e.g. message is older than 48h, or content is
-  // unchanged), send a fresh message so the admin still sees the updated menu.
+  // Update the menu message in place
   if (newText && newKb) {
     const editRes = await editMessageText(env.BOT_TOKEN, chatId, messageId, newText, {
       reply_markup: newKb,
     });
     if (!editRes.ok) {
-      console.warn(`[admin] editMessageText failed (${editRes.error_code}); falling back to sendMessage`);
       await sendMessage(env.BOT_TOKEN, chatId, newText, { reply_markup: newKb });
     }
   }
 
-  // Always answer the callback query to clear the loading spinner
   await answerCallbackQuery(env.BOT_TOKEN, cq.id, toast);
 }

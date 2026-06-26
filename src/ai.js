@@ -269,11 +269,11 @@ export async function aiClassify(env, settings, text) {
 // ============================================================
 // REWRITE
 // ============================================================
-export async function aiRewrite(env, settings, text, mode, language, personality) {
+export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
   const { REWRITE_PROMPT, buildRewriteUserMessage } = await import("./prompts.js");
   const res = await aiComplete(env, settings, {
     system: REWRITE_PROMPT,
-    user: buildRewriteUserMessage(text, mode, language, personality),
+    user: buildRewriteUserMessage(text, mode, language, personality, editIntensity ?? 50, emojiLevel ?? 2),
   });
 
   if (!res.ok) return { ok: false, error: res.error };
