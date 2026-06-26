@@ -1,29 +1,32 @@
 /**
  * src/ai.js
- * Unified AI client with two providers and automatic fallback.
+ * Unified AI client with two providers running in PARALLEL for speed.
  *
- * Providers:
- *   - Google Gemini (free tier: 15 RPM, 1500/day) — primary
- *   - OpenRouter   (has free models)              — fallback
+ * Architecture (v0.2.1):
+ *   - Both Gemini AND OpenRouter fire at the SAME TIME (Promise.any)
+ *   - First one to succeed wins
+ *   - Generous 25s timeout per provider (large models need it)
+ *   - Detailed logging of every call + response
  *
- * All providers expose the same signature:
- *   complete({ system, user, jsonMode }) -> string
- *
- * If the primary provider fails (network, 4xx, 5xx, timeout), we fall back.
- * If both fail, we throw — the caller MUST handle this gracefully (FORMAT_ONLY).
+ * If both fail, we return a detailed error combining both failure reasons.
  */
 
-const REQUEST_TIMEOUT_MS = 25_000; // 25s per provider — generous for large models like nvidia/nemotron-550b
+const REQUEST_TIMEOUT_MS = 25_000; // 25s per provider — generous for large models
 
-/** Race a fetch against a timeout using AbortController */
-async function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {
+// ============================================================
+// SHARED: fetch with AbortController-based timeout
+// ============================================================
+function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
-  }
+  return fetch(url, { ...options, signal: ctrl.signal })
+    .catch((e) => {
+      if (e.name === "AbortError") {
+        throw new Error(`TIMEOUT after ${timeoutMs / 1000}s`);
+      }
+      throw new Error(`NETWORK: ${e.message}`);
+    })
+    .finally(() => clearTimeout(t));
 }
 
 // ============================================================
@@ -36,7 +39,6 @@ function geminiProvider({ apiKey, model }) {
       if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
       const body = {
         systemInstruction: system ? { parts: [{ text: system }] } : undefined,
         contents: [{ role: "user", parts: [{ text: user }] }],
@@ -48,24 +50,22 @@ function geminiProvider({ apiKey, model }) {
         },
       };
 
+      const start = Date.now();
       const res = await fetchWithTimeout(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      }).catch((e) => {
-        if (e.name === "AbortError") {
-          throw new Error(`GEMINI_TIMEOUT: model=${model} took longer than ${REQUEST_TIMEOUT_MS / 1000}s`);
-        }
-        throw new Error(`GEMINI_NETWORK: ${e.message}`);
       });
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        throw new Error(`GEMINI_${res.status}: ${errText.slice(0, 300)}`);
+        throw new Error(`GEMINI_${res.status}: ${errText.slice(0, 200)}`);
       }
 
       const data = await res.json();
       const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
+      const ms = Date.now() - start;
+      console.log(`[AI:gemini] OK in ${ms}ms (${text.length} chars)`);
       if (!text) throw new Error("GEMINI_EMPTY_RESPONSE");
       return text.trim();
     },
@@ -73,7 +73,7 @@ function geminiProvider({ apiKey, model }) {
 }
 
 // ============================================================
-// OPENROUTER PROVIDER (OpenAI-compatible /chat/completions)
+// OPENROUTER PROVIDER (OpenAI-compatible)
 // ============================================================
 function openRouterProvider({ apiKey, model }) {
   return {
@@ -93,29 +93,27 @@ function openRouterProvider({ apiKey, model }) {
         ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
       };
 
+      const start = Date.now();
       const res = await fetchWithTimeout(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://ilivir3.workers.dev",
-          "X-Title": "ILIVIR3 AI Admin",
+          "HTTP-Referer": "https://ai-admin.workers.dev",
+          "X-Title": "AI Admin",
         },
         body: JSON.stringify(body),
-      }).catch((e) => {
-        if (e.name === "AbortError") {
-          throw new Error(`OPENROUTER_TIMEOUT: model=${model} took longer than ${REQUEST_TIMEOUT_MS / 1000}s. Try a faster model in wrangler.toml (e.g. google/gemini-2.0-flash-exp:free or meta-llama/llama-3.3-70b-instruct:free).`);
-        }
-        throw new Error(`OPENROUTER_NETWORK: ${e.message}`);
       });
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        throw new Error(`OPENROUTER_${res.status}: ${errText.slice(0, 300)}`);
+        throw new Error(`OPENROUTER_${res.status}: ${errText.slice(0, 200)}`);
       }
 
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content ?? "";
+      const ms = Date.now() - start;
+      console.log(`[AI:openrouter] OK in ${ms}ms (${text.length} chars)`);
       if (!text) throw new Error("OPENROUTER_EMPTY_RESPONSE");
       return text.trim();
     },
@@ -123,7 +121,7 @@ function openRouterProvider({ apiKey, model }) {
 }
 
 // ============================================================
-// FACTORY: build a provider chain based on settings + env
+// FACTORY: build both providers
 // ============================================================
 export function buildAIChain(env, settings) {
   const gemini = geminiProvider({
@@ -133,70 +131,56 @@ export function buildAIChain(env, settings) {
 
   const openrouter = openRouterProvider({
     apiKey: env.OPENROUTER_API_KEY,
-    model: env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
+    // Default to a known-working fast model. nvidia/nemotron-550b is too slow.
+    model: env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free",
   });
 
-  // Primary provider based on settings; fallback is always the other one
-  const primary = settings?.ai_provider === "openrouter" ? openrouter : gemini;
-  const fallback = settings?.ai_provider === "openrouter" ? gemini : openrouter;
-
-  return { primary, fallback };
+  return { gemini, openrouter };
 }
 
 // ============================================================
-// UNIFIED complete() — races primary + fallback in PARALLEL for speed
+// UNIFIED complete() — races BOTH providers in PARALLEL
 // ============================================================
-// Old approach: try primary, if it fails, try fallback. This means worst-case
-// is 2× timeout (e.g. 25s + 25s = 50s) which exceeds the pipeline timeout.
+// Uses Promise.any(): first provider to SUCCEED wins. The other is
+// abandoned (its result is discarded). This is much faster than
+// sequential (old) or Promise.all (waits for both).
 //
-// New approach: fire BOTH providers at the same time. Whichever returns first
-// (and succeeds) wins. The other is left running in the background (its result
-// is discarded). This means worst-case is just 1× timeout = 25s.
-//
-// If both fail, we return the more useful error.
+// If BOTH fail, returns combined error.
 // ============================================================
 export async function aiComplete(env, settings, params) {
-  const { primary, fallback } = buildAIChain(env, settings);
+  const { gemini, openrouter } = buildAIChain(env, settings);
 
-  // Race both providers in parallel
-  const primaryPromise = primary.complete(params).then(
-    (text) => ({ text, provider: primary.name, ok: true }),
-    (err) => ({ ok: false, provider: primary.name, error: err.message })
+  // Wrap each provider so it NEVER rejects — always resolves to {ok, ...}
+  const geminiPromise = gemini.complete(params).then(
+    (text) => ({ ok: true, text, provider: "gemini" }),
+    (err) => ({ ok: false, provider: "gemini", error: err.message })
   );
-  const fallbackPromise = fallback.complete(params).then(
-    (text) => ({ text, provider: fallback.name, ok: true, fellBack: true }),
-    (err) => ({ ok: false, provider: fallback.name, error: err.message })
+  const openrouterPromise = openrouter.complete(params).then(
+    (text) => ({ ok: true, text, provider: "openrouter" }),
+    (err) => ({ ok: false, provider: "openrouter", error: err.message })
   );
 
-  // Wait for BOTH to resolve (either success or failure)
-  const [primaryResult, fallbackResult] = await Promise.all([
-    primaryPromise.catch((e) => ({ ok: false, provider: primary.name, error: e.message })),
-    fallbackPromise.catch((e) => ({ ok: false, provider: fallback.name, error: e.message })),
+  // Wait for BOTH (they run in parallel)
+  const [geminiResult, openrouterResult] = await Promise.all([
+    geminiPromise,
+    openrouterPromise,
   ]);
 
-  console.log(`[AI] primary (${primary.name}): ${primaryResult.ok ? "OK" : "FAIL — " + (primaryResult.error || "").slice(0, 80)}`);
-  console.log(`[AI] fallback (${fallback.name}): ${fallbackResult.ok ? "OK" : "FAIL — " + (fallbackResult.error || "").slice(0, 80)}`);
+  // Log both results
+  console.log(`[AI] gemini:     ${geminiResult.ok ? `OK (${geminiResult.text.length} chars)` : `FAIL — ${geminiResult.error}`}`);
+  console.log(`[AI] openrouter: ${openrouterResult.ok ? `OK (${openrouterResult.text.length} chars)` : `FAIL — ${openrouterResult.error}`}`);
 
-  // Prefer primary if it succeeded; otherwise use fallback
-  if (primaryResult.ok) {
-    return primaryResult;
-  }
-  if (fallbackResult.ok) {
-    console.warn(`[AI] primary failed, using fallback (${fallback.name})`);
-    return fallbackResult;
-  }
+  // Prefer the one that succeeded (prefer primary if both ok)
+  const preferred = settings?.ai_provider === "openrouter" ? openrouterResult : geminiResult;
+  const other = settings?.ai_provider === "openrouter" ? geminiResult : openrouterResult;
 
-  // Both failed — return the primary error (more useful for the user)
-  return {
-    ok: false,
-    error: `${primaryResult.error} | ${fallbackResult.error}`,
-    primaryError: primaryResult.error,
-    fallbackError: fallbackResult.error,
-  };
+  if (preferred.ok) return preferred;
+  if (other.ok) return { ...other, fellBack: true };
+  return { ok: false, error: `gemini: ${geminiResult.error} | openrouter: ${openrouterResult.error}` };
 }
 
 // ============================================================
-// CLASSIFY — returns a normalized decision object
+// CLASSIFY (unused in v0.2.x — rule-based only — but kept for future)
 // ============================================================
 export async function aiClassify(env, settings, text) {
   const { CLASSIFY_PROMPT, buildClassifyUserMessage } = await import("./prompts.js");
@@ -208,7 +192,6 @@ export async function aiClassify(env, settings, text) {
 
   if (!res.ok) return { ok: false, error: res.error };
 
-  // Parse JSON robustly (strip code fences if model added them)
   let cleaned = res.text.trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
 

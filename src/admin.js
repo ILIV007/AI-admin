@@ -49,12 +49,10 @@ export function isAuthorized(env, userId) {
 // ============================================================
 
 /**
- * Main menu — 8 entries per spec + 1 toggle for channel editing.
+ * Main menu — 8 entries per spec, in a 3-row grid.
+ * Order matches PROMPT 3 exactly.
  */
-function mainMenuKeyboard(settings) {
-  const channelEditLabel = settings?.channel_editing_enabled
-    ? "📺 Channel Edit: ON ✅"
-    : "📺 Channel Edit: OFF";
+function mainMenuKeyboard() {
   return {
     inline_keyboard: [
       [
@@ -72,9 +70,6 @@ function mainMenuKeyboard(settings) {
       [
         { text: "🤖 AI Provider", callback_data: "menu:provider" },
         { text: "📊 Stats", callback_data: "menu:stats" },
-      ],
-      [
-        { text: channelEditLabel, callback_data: "toggle:channeledit" },
       ],
     ],
   };
@@ -176,7 +171,6 @@ function mainMenuText(settings) {
     `🎭 Personality: <code>${settings.personality_mode}</code>`,
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
-    `📺 Channel Edit: <code>${settings.channel_editing_enabled ? "ON" : "OFF"}</code>`,
     ``,
     `<i>Send any post to this bot to process and publish it.</i>`,
   ].join("\n");
@@ -286,7 +280,7 @@ async function statsMenuText(SETTINGS, settings) {
 export async function handleStart(env, SETTINGS, msg) {
   const settings = await getSettings(SETTINGS, msg.from.id);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, mainMenuText(settings), {
-    reply_markup: mainMenuKeyboard(settings),
+    reply_markup: mainMenuKeyboard(),
   });
 }
 
@@ -360,7 +354,7 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   // ----- Navigation menus -----
   if (data === "menu:main" || data === "menu:settings") {
     newText = settingsMenuText(settings);
-    newKb = mainMenuKeyboard(settings);
+    newKb = mainMenuKeyboard();
   } else if (data === "menu:aimode") {
     newText = aiModeMenuText(settings.ai_provider, settings.rewrite_mode);
     newKb = aiModeKeyboard(settings.ai_provider, settings.rewrite_mode);
@@ -382,14 +376,6 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   } else if (data === "menu:stats") {
     newText = await statsMenuText(SETTINGS, settings);
     newKb = backOnlyKeyboard();
-  }
-  // ----- Toggle (channel editing on/off) -----
-  else if (data === "toggle:channeledit") {
-    const newVal = !settings.channel_editing_enabled;
-    const updated = await updateSetting(SETTINGS, userId, "channel_editing_enabled", newVal);
-    newText = settingsMenuText(updated);
-    newKb = mainMenuKeyboard(updated);
-    toast = newVal ? "✅ Channel editing ON" : "✅ Channel editing OFF";
   }
   // ----- Setting changes -----
   else if (data.startsWith("set:")) {

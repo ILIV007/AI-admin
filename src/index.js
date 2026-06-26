@@ -1,22 +1,14 @@
 /**
  * src/index.js
- * AI Admin — Cloudflare Worker entry point.
+ * AI Admin — Cloudflare Worker entry point (v0.2.1)
  *
- * Endpoints:
- *   GET  /                  → health check
- *   GET  /debug             → HTML debug dashboard (comprehensive diagnostics)
- *   GET  /debug/api/status  → JSON: full status (env, KV, bot, webhook, recent logs)
- *   POST /debug/api/test/*  → run diagnostic tests (message, kv, ai)
- *   POST /debug/api/clear   → clear debug logs
- *   GET  /webhook/info      → bot info + webhook status (legacy debug)
- *   POST /webhook           → Telegram webhook (messages + callback queries)
- *
- * Pipeline (per incoming message):
- *   RECEIVE → EXTRACT → CLASSIFY → CLEAN → [REWRITE/SUMMARIZE] → FORMAT → PUBLISH
- *
- * Failure handling:
- *   If AI fails at any stage → fallback to FORMAT_ONLY mode (clean + format + publish).
- *   We NEVER drop a post.
+ * Features:
+ *   - Pipeline with 55s timeout + AbortController
+ *   - Parallel AI providers (Gemini + OpenRouter race)
+ *   - Media group buffering (per-item KV keys, leader election)
+ *   - Reply chain context
+ *   - Debug dashboard at /debug
+ *   - Raw request logging
  */
 
 import {
@@ -56,45 +48,38 @@ import {
   debugHTML,
 } from "./debug.js";
 
-const VERSION = "0.1.1";
+const VERSION = "0.2.1";
 
 // ============================================================
-// MAIN EXPORT — Cloudflare Worker fetch handler
+// MAIN EXPORT
 // ============================================================
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // ----- GET / : health check -----
+    // GET / : health check
     if (request.method === "GET" && url.pathname === "/") {
-      return json({
-        ok: true,
-        name: "AI Admin",
-        version: VERSION,
-        time: new Date().toISOString(),
-        debug: "/debug",
-      });
+      return json({ ok: true, name: "AI Admin", version: VERSION, time: new Date().toISOString() });
     }
 
-    // ----- /debug/* : debug dashboard + API -----
+    // /debug/* routes
     if (url.pathname === "/debug" || url.pathname.startsWith("/debug/")) {
       return handleDebugRoute(request, url, env);
     }
 
-    // ----- GET /webhook/info : legacy debug -----
+    // GET /webhook/info
     if (request.method === "GET" && url.pathname === "/webhook/info") {
       const me = await getMe(env.BOT_TOKEN);
       return json({ ok: me.ok, bot: me.result });
     }
 
-    // ----- POST /webhook : Telegram updates -----
+    // POST /webhook
     if (request.method === "POST" && url.pathname === "/webhook") {
       const SETTINGS = env.SETTINGS;
       const secret = request.headers.get("x-telegram-bot-api-secret-token");
       const hasSecretCheck = !!env.WEBHOOK_SECRET;
       const secretMatches = !hasSecretCheck || secret === env.WEBHOOK_SECRET;
 
-      // Try to read body as JSON (we'll need it for both logging and processing)
       let update = null;
       let bodyParseError = null;
       let bodySize = 0;
@@ -106,83 +91,45 @@ export default {
         bodyParseError = e.message;
       }
 
-      // Extract info from the update for the raw log (BEFORE we make any decision)
       const updateInfo = extractUpdateInfoForLog(update);
 
-      // ===== SECRET TOKEN VERIFICATION =====
       if (hasSecretCheck && !secretMatches) {
-        console.warn(
-          `[webhook] 403 — secret mismatch.\n` +
-            `  Expected: ${env.WEBHOOK_SECRET.slice(0, 3)}…${env.WEBHOOK_SECRET.slice(-3)}\n` +
-            `  Got:      ${secret ? `"${secret.slice(0, 3)}…${secret.slice(-3)}"` : "(missing)"}\n` +
-            `  Fix: npm run fix:webhook -- https://your-worker.workers.dev`
-        );
-        // LOG the rejected request so the dashboard shows it
-        ctx.waitUntil(
-          logRawRequest(SETTINGS, {
-            method: request.method,
-            path: url.pathname,
-            hasSecret: !!secret,
-            secretMatch: false,
-            bodySize,
-            updateType: updateInfo.updateType,
-            fromId: updateInfo.fromId,
-            chatId: updateInfo.chatId,
-            textPreview: updateInfo.textPreview,
-            status: "rejected_403",
-            detail: `Expected ${env.WEBHOOK_SECRET.slice(0, 3)}…${env.WEBHOOK_SECRET.slice(-3)}, got ${secret ? secret.slice(0, 3) + "…" + secret.slice(-3) : "(missing)"}`,
-          })
-        );
-        return new Response("Forbidden — secret mismatch", { status: 403 });
+        console.warn(`[webhook] 403 — secret mismatch`);
+        ctx.waitUntil(logRawRequest(SETTINGS, {
+          method: request.method, path: url.pathname,
+          hasSecret: !!secret, secretMatch: false, bodySize,
+          updateType: updateInfo.updateType, fromId: updateInfo.fromId,
+          chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
+          status: "rejected_403",
+          detail: `Expected ${env.WEBHOOK_SECRET.slice(0, 3)}…, got ${secret ? secret.slice(0, 3) + "…" : "(missing)"}`,
+        }));
+        return new Response("Forbidden", { status: 403 });
       }
 
-      // ===== INVALID JSON =====
       if (!update) {
-        console.warn("[webhook] 400 — invalid JSON:", bodyParseError);
-        ctx.waitUntil(
-          logRawRequest(SETTINGS, {
-            method: request.method,
-            path: url.pathname,
-            hasSecret: !!secret,
-            secretMatch: secretMatches,
-            bodySize,
-            updateType: "invalid_json",
-            fromId: null,
-            chatId: null,
-            textPreview: bodyParseError,
-            status: "rejected_400",
-            detail: "Could not parse request body as JSON",
-          })
-        );
+        console.warn("[webhook] 400 — invalid JSON");
+        ctx.waitUntil(logRawRequest(SETTINGS, {
+          method: request.method, path: url.pathname,
+          hasSecret: !!secret, secretMatch: secretMatches, bodySize,
+          updateType: "invalid_json", fromId: null, chatId: null,
+          textPreview: bodyParseError, status: "rejected_400",
+          detail: "Invalid JSON",
+        }));
         return new Response("Bad Request", { status: 400 });
       }
 
-      // ===== SUCCESS — log raw request, then process in background =====
-      console.log(
-        `[webhook] 200 — type=${updateInfo.updateType} from=${updateInfo.fromId} chat=${updateInfo.chatId} preview="${updateInfo.textPreview.slice(0, 30)}"`
-      );
+      console.log(`[webhook] 200 — type=${updateInfo.updateType} from=${updateInfo.fromId}`);
 
-      // Use ctx.waitUntil so we can return 200 immediately (Telegram needs 200 within 5s)
-      ctx.waitUntil(
-        (async () => {
-          // 1. Log the raw request (always, even on success — for the dashboard)
-          await logRawRequest(SETTINGS, {
-            method: request.method,
-            path: url.pathname,
-            hasSecret: !!secret,
-            secretMatch: secretMatches,
-            bodySize,
-            updateType: updateInfo.updateType,
-            fromId: updateInfo.fromId,
-            chatId: updateInfo.chatId,
-            textPreview: updateInfo.textPreview,
-            status: "ok",
-            detail: "processed",
-          });
-          // 2. Process the update
-          await handleUpdate(update, env);
-        })()
-      );
+      ctx.waitUntil((async () => {
+        await logRawRequest(SETTINGS, {
+          method: request.method, path: url.pathname,
+          hasSecret: !!secret, secretMatch: secretMatches, bodySize,
+          updateType: updateInfo.updateType, fromId: updateInfo.fromId,
+          chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
+          status: "ok", detail: "processed",
+        });
+        await handleUpdate(update, env);
+      })());
       return new Response("ok", { status: 200 });
     }
 
@@ -195,310 +142,170 @@ export default {
 // ============================================================
 function handleDebugRoute(request, url, env) {
   const SETTINGS = env.SETTINGS;
-
-  // Auth check (optional DEBUG_TOKEN)
   const auth = checkDebugAuth(request, env);
-  if (!auth.ok) {
-    return new Response("Forbidden — set ?token=XXX", { status: 403 });
-  }
+  if (!auth.ok) return new Response("Forbidden", { status: 403 });
 
-  // GET /debug → HTML page
   if (request.method === "GET" && url.pathname === "/debug") {
-    return new Response(debugHTML(), {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
+    return new Response(debugHTML(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
 
-  // GET /debug/api/ping — ultra-fast liveness check (no KV, no API calls)
   if (request.method === "GET" && url.pathname === "/debug/api/ping") {
     return json({
-      ok: true,
-      time: new Date().toISOString(),
-      has_bot_token: !!env.BOT_TOKEN,
-      has_admin_id: !!env.ADMIN_ID,
-      has_kv: !!SETTINGS,
-      has_webhook_secret: !!env.WEBHOOK_SECRET,
+      ok: true, time: new Date().toISOString(),
+      has_bot_token: !!env.BOT_TOKEN, has_admin_id: !!env.ADMIN_ID,
+      has_kv: !!SETTINGS, has_webhook_secret: !!env.WEBHOOK_SECRET,
     });
   }
 
-  // GET /debug/api/status
   if (request.method === "GET" && url.pathname === "/debug/api/status") {
     return getStatus(env, SETTINGS).then(
       (data) => json(data),
-      (e) => {
-        console.error("[debug] getStatus failed:", e.message);
-        return json({ ok: false, error: e.message, stack: e.stack?.split("\n").slice(0, 5).join("\n") }, 500);
-      }
+      (e) => json({ ok: false, error: e.message }, 500)
     );
   }
 
-  // POST /debug/api/test/message
   if (request.method === "POST" && url.pathname === "/debug/api/test/message") {
-    return sendTestMessage(env).then(
-      (data) => json(data),
-      (e) => json({ ok: false, error: e.message }, 500)
-    );
+    return sendTestMessage(env).then((d) => json(d), (e) => json({ ok: false, error: e.message }, 500));
   }
-
-  // POST /debug/api/test/kv
   if (request.method === "POST" && url.pathname === "/debug/api/test/kv") {
-    return testKV(SETTINGS).then(
-      (data) => json(data),
-      (e) => json({ ok: false, error: e.message }, 500)
-    );
+    return testKV(SETTINGS).then((d) => json(d), (e) => json({ ok: false, error: e.message }, 500));
   }
-
-  // POST /debug/api/test/ai
   if (request.method === "POST" && url.pathname === "/debug/api/test/ai") {
-    return testAI(env).then(
-      (data) => json(data),
-      (e) => json({ ok: false, error: e.message }, 500)
-    );
+    return testAI(env).then((d) => json(d), (e) => json({ ok: false, error: e.message }, 500));
   }
-
-  // POST /debug/api/clear
   if (request.method === "POST" && url.pathname === "/debug/api/clear") {
-    return clearDebugLogs(SETTINGS).then(
-      () => json({ ok: true, msg: "Debug logs cleared" }),
-      (e) => json({ ok: false, error: e.message }, 500)
-    );
+    return clearDebugLogs(SETTINGS).then(() => json({ ok: true }), (e) => json({ ok: false, error: e.message }, 500));
   }
 
   return new Response("Not Found", { status: 404 });
 }
 
 // ============================================================
-// UPDATE HANDLER — dispatches based on update type
+// UPDATE INFO EXTRACTOR (for raw logging)
 // ============================================================
-/**
- * Extract a small summary of the update for the raw request log.
- * Used BEFORE we decide whether to accept or reject the request.
- * Returns safe defaults if the update is null/unparseable.
- */
 function extractUpdateInfoForLog(update) {
   if (!update) return { updateType: "invalid", fromId: null, chatId: null, textPreview: "" };
   if (update.callback_query) {
-    return {
-      updateType: "callback_query",
-      fromId: update.callback_query.from?.id,
-      chatId: update.callback_query.message?.chat?.id,
-      textPreview: update.callback_query.data || "",
-    };
+    return { updateType: "callback_query", fromId: update.callback_query.from?.id, chatId: update.callback_query.message?.chat?.id, textPreview: update.callback_query.data || "" };
   }
   if (update.message) {
-    return {
-      updateType: "message",
-      fromId: update.message.from?.id,
-      chatId: update.message.chat?.id,
-      textPreview: update.message.text || update.message.caption || "",
-    };
+    return { updateType: "message", fromId: update.message.from?.id, chatId: update.message.chat?.id, textPreview: update.message.text || update.message.caption || "" };
   }
   if (update.channel_post) {
-    return {
-      updateType: "channel_post",
-      fromId: update.channel_post.from?.id || update.channel_post.sender_chat?.id,
-      chatId: update.channel_post.chat?.id,
-      textPreview: update.channel_post.text || update.channel_post.caption || "",
-    };
+    return { updateType: "channel_post", fromId: update.channel_post.from?.id || update.channel_post.sender_chat?.id, chatId: update.channel_post.chat?.id, textPreview: update.channel_post.text || update.channel_post.caption || "" };
   }
   return { updateType: "other", fromId: null, chatId: null, textPreview: "" };
 }
 
 // ============================================================
-// UPDATE HANDLER — dispatches based on update type
+// UPDATE HANDLER
 // ============================================================
 async function handleUpdate(update, env) {
   const SETTINGS = env.SETTINGS;
   const startTime = Date.now();
 
-  // Log every update for the debug dashboard
-  console.log(`[update] type=${update.callback_query ? "callback" : update.message ? "message" : update.channel_post ? "channel_post" : "other"} from=${update.callback_query?.from?.id || update.message?.from?.id || update.channel_post?.from?.id || "?"}`);
-
   try {
-    // 1. Callback query (admin panel button click)
     if (update.callback_query) {
       const cq = update.callback_query;
       if (!isAuthorized(env, cq.from.id)) {
-        console.warn(`[update] callback unauthorized: from=${cq.from.id} (expected ADMIN_ID=${env.ADMIN_ID || "unset"})`);
         await answerCallbackQuery(env.BOT_TOKEN, cq.id, "⛔ Unauthorized");
-        await logUpdate(SETTINGS, update, "unauthorized", `from=${cq.from.id} does not match ADMIN_ID=${env.ADMIN_ID || "unset"}`);
+        await logUpdate(SETTINGS, update, "unauthorized", `from=${cq.from.id}`);
         return;
       }
       await handleCallbackQuery(env, SETTINGS, cq);
       await logUpdate(SETTINGS, update, "ok", `callback: ${cq.data}`);
-      console.log(`[update] callback processed in ${Date.now() - startTime}ms`);
       return;
     }
 
-    // 2. Message or channel post
     const content = extractContent(update);
-    if (!content) {
-      console.log("[update] no content extracted, skipping");
+    if (!content) return;
+
+    // Media group handling
+    if (content.mediaGroupId) {
+      console.log(`[update] media group: ${content.mediaGroupId}`);
+      await handleMediaGroupUpdate(env, content, update);
       return;
     }
 
-    // 2.5. MEDIA GROUP HANDLING
-    // If this message is part of a media group (album), buffer it and let the
-    // first-arriving invocation process the whole group together.
-    if (content.mediaGroupId) {
-      console.log(`[update] media group detected: ${content.mediaGroupId} (item type=${content.mediaType})`);
-      const handled = await handleMediaGroupUpdate(env, content, update);
-      if (handled) return; // either buffered, or fully processed as a group
-    }
-
-    // 3. If it's a private message, treat as admin interaction
     if (content.chatType === "private") {
       await handlePrivateMessage(env, content, update);
       return;
     }
 
-    // 4. If it's a channel/group post, check if channel editing is enabled
     if (content.chatType === "channel" || content.chatType === "supergroup" || content.chatType === "group") {
       const settings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
-
-      // Default OFF: if channel_editing_enabled is false, do NOT touch channel posts
       if (!settings.channel_editing_enabled) {
-        console.log(`[update] channel post ignored (channel_editing_enabled=false) from ${content.chatType}:${content.chatId}`);
-        await logUpdate(SETTINGS, update, "ignored", "channel editing is OFF");
+        await logUpdate(SETTINGS, update, "ignored", "channel editing OFF");
         return;
       }
-
-      // Loop prevention: skip posts sent by the bot itself (e.g., when the bot
-      // publishes a post to the channel, we don't want to re-process it)
       const botId = await getBotId(env);
       if (botId && content.fromId === botId) {
-        console.log("[update] skipping channel post from bot itself (loop prevention)");
-        await logUpdate(SETTINGS, update, "ignored", "self-post (loop prevention)");
+        await logUpdate(SETTINGS, update, "ignored", "self-post");
         return;
       }
-
-      // Channel editing is ON → edit the original post in place
       await runChannelEditPipeline(env, content, update);
       return;
     }
-
-    console.log(`[update] unhandled chat type: ${content.chatType}`);
   } catch (e) {
-    console.error("[update] unhandled error:", e.message, e.stack);
-    await logError(SETTINGS, e, `handleUpdate for update type ${update.callback_query ? "callback" : "message"}`);
+    console.error("[update] error:", e.message, e.stack);
+    await logError(SETTINGS, e, "handleUpdate");
     await logUpdate(SETTINGS, update, "error", e.message);
   }
 }
 
 // ============================================================
-// PRIVATE MESSAGE HANDLER (admin commands + posts to bot)
+// PRIVATE MESSAGE HANDLER
 // ============================================================
 async function handlePrivateMessage(env, content, update) {
   const SETTINGS = env.SETTINGS;
 
-  // ---- DEBUG-FRIENDLY AUTHORIZATION ----
-  // If ADMIN_ID is not configured at all, tell the user (critical misconfig).
   if (!env.ADMIN_ID) {
-    console.error("[auth] ADMIN_ID is not set in env — all messages will be rejected");
-    await sendMessage(
-      env.BOT_TOKEN,
-      content.chatId,
-      [
-        "⚠️ <b>Configuration Error</b>",
-        "",
-        "<code>ADMIN_ID</code> is not set.",
-        "",
-        "Fix: Cloudflare Dashboard → Workers &amp; Pages → ai-admin → Settings → Variables",
-        "Add a plain-text variable <code>ADMIN_ID</code> with your Telegram user ID.",
-        "",
-        "Your Telegram ID: <code>" + content.fromId + "</code>",
-      ].join("\n")
-    );
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `⚠️ <b>Configuration Error</b>\n\n<code>ADMIN_ID</code> is not set.\n\nYour Telegram ID: <code>${content.fromId}</code>`);
     await logUpdate(SETTINGS, update, "error", "ADMIN_ID not set");
     return;
   }
 
-  // Authorization check — but now we tell the user their ID so they can fix it.
   if (!isAuthorized(env, content.fromId)) {
-    console.warn(`[auth] unauthorized: from=${content.fromId} expected=${env.ADMIN_ID}`);
-    await sendMessage(
-      env.BOT_TOKEN,
-      content.chatId,
-      [
-        "⛔ <b>Unauthorized</b>",
-        "",
-        "Your Telegram ID: <code>" + content.fromId + "</code>",
-        "Configured ADMIN_ID: <code>" + env.ADMIN_ID + "</code>",
-        "",
-        "These don't match. To fix:",
-        "1. If this is your account, update <code>ADMIN_ID</code> in the Cloudflare dashboard to <code>" + content.fromId + "</code>",
-        "2. If this is not your account, ignore this message — the bot is working correctly.",
-      ].join("\n")
-    );
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `⛔ <b>Unauthorized</b>\n\nYour ID: <code>${content.fromId}</code>\nConfigured ADMIN_ID: <code>${env.ADMIN_ID}</code>`);
     await logUpdate(SETTINGS, update, "unauthorized", `from=${content.fromId} expected=${env.ADMIN_ID}`);
     return;
   }
 
   const text = content.text || "";
 
-  // Send typing indicator IMMEDIATELY so the user sees the bot is alive
-  // (this is the #1 UX signal that the bot received the message)
+  // Typing indicator immediately
   if (content.chatId) {
     await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
   }
 
-  // /start → admin panel
   if (/^\/start\b/i.test(text)) {
-    console.log("[cmd] /start");
     await handleStart(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
     await logUpdate(SETTINGS, update, "ok", "/start");
     return;
   }
 
-  // /footer <text>
   if (/^\/footer\b/i.test(text)) {
-    console.log("[cmd] /footer");
     const args = text.replace(/^\/footer\s*/i, "");
     await handleFooterCommand(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } }, args);
     await logUpdate(SETTINGS, update, "ok", "/footer");
     return;
   }
 
-  // /help
   if (/^\/help\b/i.test(text)) {
-    console.log("[cmd] /help");
-    await sendMessage(
-      env.BOT_TOKEN,
-      content.chatId,
-      [
-        `<b>AI Admin — Help</b>`,
-        ``,
-        `Send me any post (text, photo, video, document) and I will:`,
-        `• Clean spam and attribution tags`,
-        `• Preserve technical links and resources`,
-        `• Optionally rewrite using AI`,
-        `• Publish to <code>${env.TARGET_CHANNEL || "(not set)"}</code>`,
-        ``,
-        `<b>Commands:</b>`,
-        `/start — Open admin panel`,
-        `/footer &lt;text&gt; — Change footer text`,
-        `/help — This message`,
-        ``,
-        `<b>Debug:</b>`,
-        `Open <code>${new URL("", "").origin || "https://your-worker.workers.dev"}/debug</code> for diagnostics`,
-      ].join("\n")
-    );
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/help — This message`);
     await logUpdate(SETTINGS, update, "ok", "/help");
     return;
   }
 
-  // Otherwise: treat as content to process and publish
-  // Pass content.chatId as feedbackChatId so the user gets the final post + status
-  console.log("[cmd] content for pipeline");
+  // Content pipeline
   await runPipeline(env, content, content.chatId, update);
 }
 
 // ============================================================
-// MEDIA GROUP HANDLER
-// ============================================================
-// Each photo in an album gets its own unique KV key (no overwrite race).
-// ALL invocations wait for the group to assemble, then the LEADER
-// (smallest message_id) processes the whole group. Others return early.
+// MEDIA GROUP HANDLER (per-item keys + leader election)
 // ============================================================
 const MEDIA_GROUP_WAIT_MS = 2500;
 
@@ -506,8 +313,6 @@ async function handleMediaGroupUpdate(env, content, update) {
   const SETTINGS = env.SETTINGS;
   const mgId = content.mediaGroupId;
 
-  // Save THIS item under its own unique key (mg:<groupId>:<messageId>)
-  // No race condition — each key is unique!
   const myItem = {
     fileId: content.mediaFileId,
     type: content.mediaType === "video" ? "video" : "photo",
@@ -518,82 +323,69 @@ async function handleMediaGroupUpdate(env, content, update) {
     messageId: content.messageId,
     replyToMessage: content.replyToMessage,
   };
-  await saveMediaGroupItem(SETTINGS, mgId, content.messageId, myItem);
-  console.log(`[media-group] saved item ${content.messageId} for group ${mgId}`);
 
-  // ALL invocations wait for the rest of the group to arrive
+  await saveMediaGroupItem(SETTINGS, mgId, content.messageId, myItem);
+  console.log(`[media-group] saved item ${content.messageId} for ${mgId}`);
+
   await new Promise((r) => setTimeout(r, MEDIA_GROUP_WAIT_MS));
 
-  // List all items in this group
   const fullGroup = await listMediaGroupItems(SETTINGS, mgId);
-  console.log(`[media-group] group ${mgId} has ${fullGroup.length} items after wait`);
+  console.log(`[media-group] ${mgId} has ${fullGroup.length} items`);
 
-  if (fullGroup.length === 0) {
-    console.log(`[media-group] group ${mgId} empty after wait, skipping`);
-    return true;
-  }
+  if (fullGroup.length === 0) return;
 
-  // LEADER ELECTION: only the item with the SMALLEST message_id processes
-  const leader = fullGroup[0]; // sorted by messageId asc
+  // Leader election: smallest messageId processes
+  const leader = fullGroup[0];
   if (leader.messageId !== content.messageId) {
-    console.log(`[media-group] I am item ${content.messageId}, leader is ${leader.messageId} — deferring`);
-    return true; // not the leader, let the leader handle it
+    console.log(`[media-group] deferring to leader ${leader.messageId}`);
+    return;
   }
 
-  // I AM THE LEADER — process the group
-  console.log(`[media-group] I am the LEADER (item ${content.messageId}), processing ${fullGroup.length} items`);
+  console.log(`[media-group] LEADER processing ${fullGroup.length} items`);
   try {
     await runMediaGroupPipeline(env, fullGroup, update);
   } catch (e) {
-    console.error(`[media-group] pipeline error: ${e.message}`);
+    console.error(`[media-group] error: ${e.message}`);
     await logError(SETTINGS, e, `media group ${mgId}`);
   }
 
-  // Cleanup
   await deleteMediaGroup(SETTINGS, mgId);
-  return true;
 }
 
 // ============================================================
-// MEDIA GROUP PIPELINE — processes a buffered album
+// MEDIA GROUP PIPELINE
 // ============================================================
 async function runMediaGroupPipeline(env, items, update) {
   const SETTINGS = env.SETTINGS;
   const adminId = items[0].fromId || env.ADMIN_ID;
   const startTime = Date.now();
 
-  // Combine all captions into one text for processing
-  // (Telegram only allows caption on the first item of a media group)
   const combinedText = items
     .map((it, i) => (it.caption ? (items.length > 1 ? `[Photo ${i + 1}]: ${it.caption}` : it.caption) : ""))
     .filter(Boolean)
     .join("\n\n");
 
-  console.log(`[mg-pipeline] start — ${items.length} items, combined text: ${combinedText.length} chars`);
+  console.log(`[mg-pipeline] ${items.length} items, ${combinedText.length} chars`);
 
   let settings;
   try {
     settings = await getSettings(SETTINGS, adminId);
   } catch (e) {
-    console.error("[mg-pipeline] KV getSettings failed:", e.message);
+    console.error("[mg-pipeline] getSettings failed:", e.message);
     return;
   }
 
-  // Use the FIRST item's chatId for feedback (all items have the same chatId)
   const feedbackChatId = items[0].chatType === "private" ? items[0].chatId : null;
 
-  // Send processing message
   let processingMsgId = null;
   if (feedbackChatId) {
     const procRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
-      `⏳ <b>Processing album</b> (${items.length} photos)\n\n<i>Cleaning → AI rewrite → publishing...</i>`,
-      { disable_web_page_preview: true }
-    ).catch(() => ({ ok: false }));
+      `⏳ <b>Processing album</b> (${items.length} photos)`,
+      { disable_web_page_preview: true }).catch(() => ({ ok: false }));
     if (procRes.ok) processingMsgId = procRes.result?.message_id;
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
 
-  // Process the combined text (clean → AI rewrite → format)
   const effectiveLang = settings.language_mode === "auto" ? detectLanguage(combinedText) : settings.language_mode;
   const cleanedText = cleanContent(combinedText);
 
@@ -602,8 +394,7 @@ async function runMediaGroupPipeline(env, items, update) {
   let aiProvider = "none";
   let aiError = null;
 
-  const decision = { content_type: "album", rewrite_mode: settings.rewrite_mode || "normal", needs_rewrite: true };
-  const effectiveRewriteMode = decision.rewrite_mode || "light";
+  const effectiveRewriteMode = settings.rewrite_mode || "normal";
   const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
 
   if (shouldRewrite) {
@@ -613,10 +404,10 @@ async function runMediaGroupPipeline(env, items, update) {
         finalText = res.text;
         wasRewritten = true;
         aiProvider = res.provider;
-        console.log(`[mg-pipeline] AI rewrite OK (${res.provider})`);
+        console.log(`[mg-pipeline] AI OK (${res.provider})`);
       } else {
         aiError = res.error;
-        console.warn(`[mg-pipeline] AI rewrite failed: ${res.error}`);
+        console.warn(`[mg-pipeline] AI failed: ${res.error}`);
       }
     } catch (e) {
       aiError = e.message;
@@ -624,46 +415,30 @@ async function runMediaGroupPipeline(env, items, update) {
     }
   }
 
-  // Format with footer
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text,
-    engineName: "html",
+    footer: settings.footer_text, engineName: "html",
   });
 
-  // Build media items for sendMediaGroup
-  // Only the first item gets the caption (Telegram API requirement)
   const mediaItems = items.map((it, i) => ({
-    type: it.type,
-    fileId: it.fileId,
+    type: it.type, fileId: it.fileId,
     caption: i === 0 ? formattedText : undefined,
   }));
 
-  // Send to user (feedback) and channel
   const targetChannel = env.TARGET_CHANNEL;
   let publishOk = false;
-  let publishErr = null;
 
   if (feedbackChatId) {
-    const userRes = await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, {
-      parse_mode: parseMode,
-    });
-    if (!userRes.ok) {
-      console.warn(`[mg-pipeline] send to user failed: ${userRes.description}`);
-    }
+    await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, { parse_mode: parseMode });
   }
 
   if (targetChannel) {
-    const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
-      parse_mode: parseMode,
-    });
+    const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
     publishOk = pubRes.ok;
-    publishErr = pubRes.description;
-    console.log(`[mg-pipeline] publish to channel: ${publishOk ? "OK" : publishErr}`);
+    console.log(`[mg-pipeline] publish: ${publishOk ? "OK" : pubRes.description}`);
   } else {
-    publishOk = true; // No channel configured; treat as ok
+    publishOk = true;
   }
 
-  // Stats
   if (publishOk) {
     await bumpStats(SETTINGS, adminId, "processed");
     await bumpGlobalStats(SETTINGS, "processed");
@@ -674,31 +449,24 @@ async function runMediaGroupPipeline(env, items, update) {
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
     await bumpGlobalStats(SETTINGS, "failed");
-    await logError(SETTINGS, new Error(`Media group publish failed: ${publishErr}`), `target=${targetChannel}`);
   }
 
-  // Edit processing message → final status
   if (feedbackChatId && processingMsgId) {
     const totalMs = Date.now() - startTime;
     const statusLine = aiError
-      ? `⚠️ AI failed — used format-only fallback`
-      : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
+      ? `⚠️ AI failed — format-only fallback`
+      : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no"}`;
     await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-      `✅ <b>Album published</b> (${items.length} photos) → <code>${targetChannel || "(no channel)"}</code>\n${statusLine} · ${totalMs}ms`,
-      { disable_web_page_preview: true }
-    ).catch(() => {});
+      `✅ <b>Album published</b> (${items.length} photos) → <code>${targetChannel || "(none)"}</code>\n${statusLine} · ${totalMs}ms`,
+      { disable_web_page_preview: true }).catch(() => {});
   }
 
   if (update) await logUpdate(SETTINGS, update, publishOk ? "ok" : "error", `media-group: ${items.length} items, AI: ${wasRewritten ? "yes" : "no"}`);
 }
 
 // ============================================================
-// CONTENT PIPELINE — the heart of the system
+// CONTENT PIPELINE (with 55s timeout + AbortController)
 // ============================================================
-// Wrapped with a 55s hard timeout. Cloudflare Workers free tier:
-//   - Initial response: must be under 30s (we return 200 immediately via ctx.waitUntil)
-//   - Background tasks (ctx.waitUntil): can run up to 30s wall time, often more
-// We give the pipeline 55s to finish. If it doesn't, we abort and show error.
 const PIPELINE_TIMEOUT_MS = 55_000;
 
 async function runPipeline(env, content, feedbackChatId = null, update = null) {
@@ -709,73 +477,61 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
   let pipelineError = null;
   let pipelineResult = null;
 
-  // Pipeline trace log — captures each step's result for debugging
   const trace = [];
   const traceStep = (step, ok, detail = "") => {
     const entry = { step, ok: !!ok, detail: detail.slice(0, 200), ms: Date.now() - startTime };
     trace.push(entry);
-    console.log(`[pipeline trace] ${step}: ${ok ? "OK" : "FAIL"}${detail ? " — " + detail.slice(0, 100) : ""} (${entry.ms}ms)`);
-    return entry;
+    console.log(`[trace] ${step}: ${ok ? "✓" : "✗"}${detail ? " " + detail.slice(0, 80) : ""} (${entry.ms}ms)`);
   };
 
-  console.log(`[pipeline] start — from=${adminId} hasText=${!!content.text} hasMedia=${!!content.mediaFileId}`);
+  console.log(`[pipeline] start — from=${adminId}`);
 
-  // Send IMMEDIATE "processing" message — this happens BEFORE the timeout-protected inner pipeline
-  // so the user always sees feedback, even if the inner pipeline times out.
   let settings;
   try {
     settings = await getSettings(SETTINGS, adminId);
     traceStep("getSettings", true, `provider=${settings.ai_provider} rw=${settings.rewrite_mode}`);
   } catch (e) {
-    console.error("[pipeline] KV getSettings failed:", e.message);
+    console.error("[pipeline] getSettings failed:", e.message);
     traceStep("getSettings", false, e.message);
     await logError(SETTINGS, e, "getSettings");
     if (feedbackChatId) {
-      await sendMessage(env.BOT_TOKEN, feedbackChatId,
-        `❌ <b>KV Error:</b> Cannot read settings.\n\n<code>${e.message}</code>\n\nCheck that KV namespace <code>SETTINGS</code> is bound in the dashboard.`);
+      await sendMessage(env.BOT_TOKEN, feedbackChatId, `❌ <b>KV Error:</b> <code>${e.message}</code>`);
     }
-    if (update) await logUpdate(SETTINGS, update, "error", `KV getSettings: ${e.message}`);
+    if (update) await logUpdate(SETTINGS, update, "error", `getSettings: ${e.message}`);
     return;
   }
 
   const rawText = content.text || "";
   if (!rawText && !content.mediaFileId) {
-    console.log("[pipeline] nothing to publish (no text, no media)");
-    if (update) await logUpdate(SETTINGS, update, "ignored", "empty content");
+    if (update) await logUpdate(SETTINGS, update, "ignored", "empty");
     return;
   }
 
-  // Send the processing message (kept OUTSIDE the timeout wrapper so it always sends)
+  // Processing message
   if (feedbackChatId) {
     const procRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
       [
         `⏳ <b>Processing your post</b>`,
         ``,
-        `<blockquote>🔄 Analyzing content type...</blockquote>`,
-        `<blockquote>🧹 Cleaning spam &amp; attribution...</blockquote>`,
-        `<blockquote>✍️ AI rewrite (if needed)...</blockquote>`,
-        `<blockquote>📝 Formatting &amp; publishing...</blockquote>`,
-        ``,
-        `<i>Can take up to 30-40 seconds for large AI models.</i>`,
+        `<blockquote>🔄 Analyzing...</blockquote>`,
+        `<blockquote>🧹 Cleaning...</blockquote>`,
+        `<blockquote>✍️ AI rewrite...</blockquote>`,
+        `<blockquote>📝 Publishing...</blockquote>`,
       ].join("\n"),
       { disable_web_page_preview: true }
-    ).catch((e) => ({ ok: false, error: e.message }));
+    ).catch(() => ({ ok: false }));
     if (procRes.ok) processingMsgId = procRes.result?.message_id;
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
 
-  // Run the inner pipeline with a hard timeout.
-  // IMPORTANT: We use AbortController so that when the timeout fires, the inner
-  // pipeline's in-flight fetch() calls get cancelled — otherwise they keep running
-  // in the background and Cloudflare kills the worker.
+  // Inner pipeline with timeout
   const abortCtrl = new AbortController();
-  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime, abortCtrl.signal);
+  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime);
   const timeoutPromise = new Promise((_, reject) => {
     const t = setTimeout(() => {
-      abortCtrl.abort(); // Cancel in-flight fetches inside the inner pipeline
+      abortCtrl.abort();
       reject(new Error(`PIPELINE_TIMEOUT after ${PIPELINE_TIMEOUT_MS}ms`));
     }, PIPELINE_TIMEOUT_MS);
-    // Clear the timeout if the inner pipeline finishes first
     innerPromise.finally(() => clearTimeout(t));
   });
 
@@ -784,85 +540,69 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
   } catch (e) {
     pipelineError = e;
     console.error(`[pipeline] ${e.message}`);
-    traceStep("pipeline_aborted", false, e.message);
-    await logError(SETTINGS, e, "pipeline timeout/abort");
+    traceStep("aborted", false, e.message);
+    await logError(SETTINGS, e, "pipeline timeout");
 
-    // Edit the processing message to show timeout error
     if (feedbackChatId && processingMsgId) {
       await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
         [
           `⏱️ <b>Pipeline timed out</b>`,
           ``,
-          `<blockquote>The pipeline took longer than ${PIPELINE_TIMEOUT_MS / 1000}s and was aborted.</blockquote>`,
+          `<blockquote>Took longer than ${PIPELINE_TIMEOUT_MS / 1000}s.</blockquote>`,
           ``,
-          `<i>This usually means the AI provider is slow. Try:</i>`,
-          `• Use a faster model (e.g. <code>meta-llama/llama-3.3-70b-instruct:free</code>)`,
-          `• Or set rewrite mode to "none" (format only)`,
+          `<i>Try a faster model or set rewrite to "none".</i>`,
         ].join("\n"),
-        { disable_web_page_preview: true }
-      ).catch(() => {});
+        { disable_web_page_preview: true }).catch(() => {});
     }
   }
 
-  // Finally: always log the update + trace summary
   const traceSummary = trace.map(t => `${t.step}:${t.ok ? "✓" : "✗"}`).join(" → ");
-  console.log(`[pipeline trace summary] ${traceSummary}`);
+  console.log(`[pipeline] ${traceSummary}`);
   if (update) {
     const status = pipelineError ? "error" : (pipelineResult?.ok ? "ok" : "error");
-    const detail = pipelineError
-      ? `aborted: ${pipelineError.message}`
-      : pipelineResult?.detail || traceSummary;
+    const detail = pipelineError ? `aborted: ${pipelineError.message}` : pipelineResult?.detail || traceSummary;
     await logUpdate(SETTINGS, update, status, detail);
   }
 }
 
 // ============================================================
-// INNER PIPELINE — the actual processing (wrapped by timeout above)
+// INNER PIPELINE
 // ============================================================
-async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime, abortSignal) {
+async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime) {
   const SETTINGS = env.SETTINGS;
   const adminId = content.fromId || env.ADMIN_ID;
 
-  // Determine effective language mode
   const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
-  console.log(`[pipeline] lang=${effectiveLang} (settings=${settings.language_mode})`);
+  console.log(`[pipeline] lang=${effectiveLang}`);
 
-  // ---------- STEP 0: REPLY CONTEXT ----------
-  // If the message is a reply to another message, include the original message
-  // as context for the AI. This preserves reply chains.
+  // Reply context
   let replyContext = "";
   if (content.replyToMessage) {
     const orig = content.replyToMessage;
     const origText = orig.text || orig.caption || "";
     if (origText) {
       replyContext = `[Original message being replied to]\n${origText}\n\n[Reply message]\n`;
-      console.log(`[pipeline] reply context: ${origText.length} chars from msg ${orig.message_id}`);
       traceStep("reply_context", true, `${origText.length} chars`);
     }
   }
 
-  // ---------- STEP 1: CLASSIFY (rule-based only — fast, no AI) ----------
+  // Classify (rule-based only)
   let decision;
-  let classifySource = "rules";
   try {
     const cls = await classify(env, settings, rawText);
     decision = cls.decision;
-    classifySource = cls.source;
-    traceStep("classify", true, `type=${decision.content_type} mode=${decision.rewrite_mode} src=${cls.source}`);
+    traceStep("classify", true, `type=${decision.content_type} mode=${decision.rewrite_mode}`);
   } catch (e) {
-    console.warn("[pipeline] classify failed:", e.message);
     traceStep("classify", false, e.message);
-    await logError(SETTINGS, e, "classify");
     decision = { content_type: "other", rewrite_mode: "light", needs_rewrite: true, language_mode: effectiveLang };
   }
 
-  // ---------- STEP 2: CLEAN ----------
+  // Clean
   const cleanedText = cleanContent(rawText);
-  // Include reply context in the text that goes to AI (so AI can understand the conversation)
   const textForAI = replyContext + cleanedText;
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${replyContext ? ` (+${replyContext.length} reply ctx)` : ""}`);
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
 
-  // ---------- STEP 3: REWRITE / SUMMARIZE (or skip) ----------
+  // AI rewrite
   let finalText = cleanedText;
   let wasRewritten = false;
   let aiProvider = "none";
@@ -880,95 +620,64 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
           finalText = res.text;
           wasRewritten = true;
           aiProvider = res.provider;
-          traceStep("ai_summarize", true, `provider=${res.provider} len=${res.text.length}`);
+          traceStep("ai_summarize", true, `provider=${res.provider}`);
         } else {
           aiError = res.error;
           traceStep("ai_summarize", false, res.error || "unknown");
-          await logError(SETTINGS, new Error(`AI summarize failed: ${res.error}`), "aiSummarize");
         }
       } else {
-        const res = await aiRewrite(
-          env,
-          settings,
-          textForAI,
-          effectiveRewriteMode,
-          effectiveLang,
-          settings.personality_mode || "friendly"
-        );
+        const res = await aiRewrite(env, settings, textForAI, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
           aiProvider = res.provider;
-          traceStep("ai_rewrite", true, `provider=${res.provider} mode=${effectiveRewriteMode} len=${res.text.length}`);
+          traceStep("ai_rewrite", true, `provider=${res.provider} mode=${effectiveRewriteMode}`);
         } else {
           aiError = res.error;
           traceStep("ai_rewrite", false, res.error || "unknown");
-          await logError(SETTINGS, new Error(`AI rewrite failed: ${res.error}`), "aiRewrite");
         }
       }
     } catch (e) {
-      console.error("[pipeline] AI step error:", e.message);
       aiError = e.message;
       traceStep("ai_exception", false, e.message);
-      await logError(SETTINGS, e, "AI rewrite/summarize");
     }
   } else {
-    traceStep("ai_skip", true, `mode=${effectiveRewriteMode} should=${shouldRewrite}`);
+    traceStep("ai_skip", true, `mode=${effectiveRewriteMode}`);
   }
 
-  // ---------- STEP 4: FORMAT ----------
+  // Format
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text,
-    engineName: "html",
+    footer: settings.footer_text, engineName: "html",
   });
-  traceStep("format", true, `${formattedText.length} chars, parseMode=${parseMode}`);
+  traceStep("format", true, `${formattedText.length} chars`);
 
-  // ---------- STEP 5: PUBLISH ----------
+  // Publish
   const targetChannel = env.TARGET_CHANNEL;
   if (!targetChannel) {
-    console.error("[pipeline] TARGET_CHANNEL not set");
     traceStep("publish", false, "TARGET_CHANNEL not set");
-    if (feedbackChatId) {
-      await sendMessage(env.BOT_TOKEN, feedbackChatId, "❌ <code>TARGET_CHANNEL</code> not configured.");
-    }
+    if (feedbackChatId) await sendMessage(env.BOT_TOKEN, feedbackChatId, "❌ <code>TARGET_CHANNEL</code> not configured.");
     return { ok: false, detail: "TARGET_CHANNEL not set" };
   }
 
-  // 5a: Send the FINAL post to the user (so they see exactly what was published)
-  //     This uses the same media file_id, so media is preserved.
-  let userSendOk = null;
+  // Send to user
   if (feedbackChatId) {
-    console.log(`[pipeline] sending final post to user ${feedbackChatId}`);
-    userSendOk = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
-      text: formattedText,
-      mediaType: content.mediaType,
-      mediaFileId: content.mediaFileId,
+    const userRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+      text: formattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
     });
-    traceStep("send_to_user", userSendOk.ok, userSendOk.ok ? "ok" : userSendOk.description || "failed");
-    if (!userSendOk.ok) {
-      console.warn(`[pipeline] send to user failed: ${userSendOk.description}`);
-      // If user send fails (e.g. HTML parse error), try sending a plain-text version
-      // so at least they see SOMETHING and we can diagnose
-      console.warn("[pipeline] retrying user send with plain text...");
-      const plainRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
-        `⚠️ <b>Formatted post failed to render (HTML parse error)</b>\n\n<b>Raw text (unformatted):</b>\n\n${escapeHtmlForTg(finalText)}`,
-        { disable_web_page_preview: true }
-      ).catch(e => ({ ok: false, description: e.message }));
-      traceStep("send_to_user_retry", plainRes.ok, plainRes.ok ? "ok" : plainRes.description || "failed");
+    traceStep("send_to_user", userRes.ok, userRes.ok ? "ok" : userRes.description);
+    if (!userRes.ok) {
+      console.warn(`[pipeline] send to user failed: ${userRes.description}`);
     }
   }
 
-  // 5b: Publish to the target channel
+  // Publish to channel
   const publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-    text: formattedText,
-    mediaType: content.mediaType,
-    mediaFileId: content.mediaFileId,
+    text: formattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
     extra: { parse_mode: parseMode, disable_web_page_preview: false },
   });
-  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? "ok" : publishRes.description || "failed");
+  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? "ok" : publishRes.description);
 
-  // ---------- STEP 6: STATS + FEEDBACK ----------
   if (publishRes.ok) {
     await bumpStats(SETTINGS, adminId, "processed");
     await bumpGlobalStats(SETTINGS, "processed");
@@ -976,12 +685,10 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       await bumpStats(SETTINGS, adminId, "rewritten");
       await bumpGlobalStats(SETTINGS, "rewritten");
     }
-    console.log(`[pipeline] published OK in ${Date.now() - startTime}ms`);
 
-    // Edit the processing message → final status (cleaner UX than sending a new message)
     const totalMs = Date.now() - startTime;
     const statusLine = aiError
-      ? `⚠️ AI failed (${aiError.slice(0, 50)}) — used format-only fallback`
+      ? `⚠️ AI failed — format-only fallback`
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
 
     if (feedbackChatId && processingMsgId) {
@@ -991,97 +698,58 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
           ``,
           `<blockquote><b>Type:</b> ${decision.content_type} / ${effectiveRewriteMode}`,
           `${statusLine}`,
-          `<b>Total time:</b> ${totalMs}ms</blockquote>`,
+          `<b>Time:</b> ${totalMs}ms</blockquote>`,
         ].join("\n"),
-        { disable_web_page_preview: true }
-      ).catch(() => {}); // ignore edit failures (e.g. message too old)
-    } else if (feedbackChatId) {
-      // Fallback: send a new status message
-      await sendMessage(env.BOT_TOKEN, feedbackChatId,
-        `✅ <b>Published</b> to <code>${targetChannel}</code>\n${statusLine} · ${totalMs}ms`,
-        { disable_web_page_preview: true }
-      );
+        { disable_web_page_preview: true }).catch(() => {});
     }
+    return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
     await bumpGlobalStats(SETTINGS, "failed");
     console.error("[pipeline] publish failed:", publishRes.description);
-    await logError(SETTINGS, new Error(`Publish failed: ${publishRes.description}`), `target=${targetChannel}`);
 
-    // Edit processing message → error status
     if (feedbackChatId && processingMsgId) {
       await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-        [
-          `❌ <b>Publish failed</b>`,
-          ``,
-          `<blockquote><b>Error:</b> ${escapeHtmlForTg(publishRes.description || "unknown")}`,
-          `<b>Channel:</b> ${targetChannel}</blockquote>`,
-          ``,
-          `Make sure the bot is an admin in <code>${targetChannel}</code> with permission to post messages.`,
-        ].join("\n"),
-        { disable_web_page_preview: true }
-      ).catch(() => {});
-    } else if (feedbackChatId) {
-      await sendMessage(env.BOT_TOKEN, feedbackChatId,
-        `❌ <b>Publish failed:</b> <code>${publishRes.description || "unknown error"}</code>\n\nMake sure the bot is an admin in <code>${targetChannel}</code> with permission to post messages.`
-      );
+        `❌ <b>Publish failed:</b> <code>${publishRes.description || "unknown"}</code>`,
+        { disable_web_page_preview: true }).catch(() => {});
     }
+    return { ok: false, detail: `publish: ${publishRes.description}` };
   }
-
-  // Return result so the outer wrapper knows the outcome
-  return {
-    ok: publishRes.ok,
-    detail: `published: ${decision.content_type}/${effectiveRewriteMode}`,
-  };
-}
-
-/** Minimal HTML escaper for displaying error text inside Telegram HTML messages */
-function escapeHtmlForTg(s) {
-  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // ============================================================
-// CHANNEL EDIT PIPELINE — edits the original channel post in place
+// CHANNEL EDIT PIPELINE
 // ============================================================
 async function runChannelEditPipeline(env, content, update) {
   const SETTINGS = env.SETTINGS;
   const adminId = env.ADMIN_ID;
   const startTime = Date.now();
 
-  console.log(`[channel-edit] start — chat=${content.chatId} msg=${content.messageId} hasMedia=${!!content.mediaFileId}`);
+  console.log(`[channel-edit] msg=${content.messageId}`);
 
   let settings;
   try {
     settings = await getSettings(SETTINGS, adminId);
   } catch (e) {
-    console.error("[channel-edit] KV getSettings failed:", e.message);
-    await logError(SETTINGS, e, "getSettings");
+    console.error("[channel-edit] getSettings failed:", e.message);
     return;
   }
 
   const rawText = content.text || "";
-  if (!rawText && !content.mediaFileId) {
-    console.log("[channel-edit] nothing to edit (no text, no media)");
-    return;
-  }
+  if (!rawText && !content.mediaFileId) return;
 
   const effectiveLang = settings.language_mode === "auto" ? detectLanguage(rawText) : settings.language_mode;
 
-  // CLASSIFY
   let decision;
   try {
     const cls = await classify(env, settings, rawText);
     decision = cls.decision;
-    console.log(`[channel-edit] classify: type=${decision.content_type} mode=${decision.rewrite_mode} src=${cls.source}`);
-  } catch (e) {
-    console.warn("[channel-edit] classify failed:", e.message);
+  } catch {
     decision = { content_type: "other", rewrite_mode: "light", needs_rewrite: true, language_mode: effectiveLang };
   }
 
-  // CLEAN
   const cleanedText = cleanContent(rawText);
 
-  // REWRITE
   let finalText = cleanedText;
   let wasRewritten = false;
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
@@ -1089,36 +757,25 @@ async function runChannelEditPipeline(env, content, update) {
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
-      if (effectiveRewriteMode === "summary") {
-        const res = await aiSummarize(env, settings, cleanedText, effectiveLang);
-        if (res.ok && res.text) { finalText = res.text; wasRewritten = true; }
-      } else {
-        const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
-        if (res.ok && res.text) { finalText = res.text; wasRewritten = true; }
+      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
+      if (res.ok && res.text) {
+        finalText = res.text;
+        wasRewritten = true;
       }
     } catch (e) {
       console.error("[channel-edit] AI error:", e.message);
     }
   }
 
-  // FORMAT
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text,
-    engineName: "html",
+    footer: settings.footer_text, engineName: "html",
   });
 
-  // EDIT THE ORIGINAL POST IN PLACE
   let editRes;
   if (content.mediaType) {
-    // Post has media → use editMessageCaption (only the caption changes)
-    editRes = await editMessageCaption(env.BOT_TOKEN, content.chatId, content.messageId, formattedText, {
-      parse_mode: parseMode,
-    });
+    editRes = await editMessageCaption(env.BOT_TOKEN, content.chatId, content.messageId, formattedText, { parse_mode: parseMode });
   } else {
-    // Text-only post → use editMessageText
-    editRes = await editMessageText(env.BOT_TOKEN, content.chatId, content.messageId, formattedText, {
-      parse_mode: parseMode,
-    });
+    editRes = await editMessageText(env.BOT_TOKEN, content.chatId, content.messageId, formattedText, { parse_mode: parseMode });
   }
 
   if (editRes.ok) {
@@ -1128,35 +785,24 @@ async function runChannelEditPipeline(env, content, update) {
       await bumpStats(SETTINGS, adminId, "rewritten");
       await bumpGlobalStats(SETTINGS, "rewritten");
     }
-    console.log(`[channel-edit] edited OK in ${Date.now() - startTime}ms`);
-
-    // Brief notification to admin
-    await sendMessage(
-      env.BOT_TOKEN, adminId,
-      `✏️ <b>Edited channel post</b> #${content.messageId} in <code>${content.chatId}</code>\n` +
-      `<b>Type:</b> <code>${decision.content_type} / ${effectiveRewriteMode}</code> · <b>AI:</b> <code>${wasRewritten ? "yes" : "no"}</code>`,
-      { disable_web_page_preview: true }
-    );
+    console.log(`[channel-edit] OK in ${Date.now() - startTime}ms`);
+    await sendMessage(env.BOT_TOKEN, adminId,
+      `✏️ <b>Edited channel post</b> #${content.messageId}\nType: ${decision.content_type}/${effectiveRewriteMode} · AI: ${wasRewritten ? "yes" : "no"}`,
+      { disable_web_page_preview: true }).catch(() => {});
     if (update) await logUpdate(SETTINGS, update, "ok", `channel-edit: ${decision.content_type}/${effectiveRewriteMode}`);
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
     await bumpGlobalStats(SETTINGS, "failed");
-    console.error("[channel-edit] edit failed:", editRes.description);
-    await logError(SETTINGS, new Error(`Channel edit failed: ${editRes.description}`), `chat=${content.chatId} msg=${content.messageId}`);
-
-    // Notify admin of failure
-    await sendMessage(
-      env.BOT_TOKEN, adminId,
-      `❌ <b>Channel edit failed:</b> <code>${editRes.description || "unknown"}</code>\n` +
-      `Post #${content.messageId} in <code>${content.chatId}</code>`,
-      { disable_web_page_preview: true }
-    );
+    console.error("[channel-edit] failed:", editRes.description);
+    await sendMessage(env.BOT_TOKEN, adminId,
+      `❌ <b>Channel edit failed:</b> <code>${editRes.description || "unknown"}</code>`,
+      { disable_web_page_preview: true }).catch(() => {});
     if (update) await logUpdate(SETTINGS, update, "error", `channel-edit: ${editRes.description}`);
   }
 }
 
 // ============================================================
-// BOT ID CACHE — used for loop prevention in channel editing
+// BOT ID CACHE
 // ============================================================
 let _cachedBotId = null;
 async function getBotId(env) {

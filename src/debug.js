@@ -1,71 +1,27 @@
 /**
  * src/debug.js
- * Debug dashboard and logging utilities for AI Admin.
- *
- * Endpoints (routed from src/index.js):
- *   GET  /debug                    → HTML dashboard (self-contained, no deps)
- *   GET  /debug/api/status         → JSON: env check, KV check, bot info, webhook info, recent logs
- *   POST /debug/api/test/message   → Send a test message to ADMIN_ID
- *   POST /debug/api/test/kv        → Test KV read/write
- *   POST /debug/api/test/ai        → Test AI provider (Gemini/OpenRouter)
- *   POST /debug/api/test/pipeline  → Run the full pipeline on sample text
- *   POST /debug/api/clear          → Clear debug logs
- *
- * Security:
- *   If DEBUG_TOKEN env var is set, all /debug/* requests require ?token=XXX to match.
- *   If not set, the dashboard is open (fine for debugging, lock it down for production).
- *
- * Logging:
- *   Updates and errors are stored in KV (last 30 each) so the dashboard can show
- *   them even after the worker has finished processing.
+ * Debug dashboard + logging utilities for AI Admin.
  */
 
 const DEBUG_MAX_ENTRIES = 30;
 const KEY_DEBUG_UPDATES = "debug:updates";
 const KEY_DEBUG_ERRORS = "debug:errors";
-const KEY_DEBUG_RAW = "debug:raw_requests"; // raw incoming requests (before any processing)
+const KEY_DEBUG_RAW = "debug:raw_requests";
 
 // ============================================================
-// LOGGING — store in KV for the dashboard
+// LOGGING
 // ============================================================
-
 export async function logUpdate(SETTINGS, update, status, detail = "") {
   if (!SETTINGS) return;
   try {
     const entry = {
       time: new Date().toISOString(),
-      type: update.callback_query
-        ? "callback_query"
-        : update.message
-        ? "message"
-        : update.channel_post
-        ? "channel_post"
-        : "other",
-      fromId:
-        update.callback_query?.from?.id ||
-        update.message?.from?.id ||
-        update.channel_post?.from?.id ||
-        null,
-      chatId:
-        update.callback_query?.message?.chat?.id ||
-        update.message?.chat?.id ||
-        update.channel_post?.chat?.id ||
-        null,
-      chatType:
-        update.callback_query?.message?.chat?.type ||
-        update.message?.chat?.type ||
-        update.channel_post?.chat?.type ||
-        null,
-      textPreview: (
-        update.callback_query?.data ||
-        update.message?.text ||
-        update.channel_post?.text ||
-        update.message?.caption ||
-        update.channel_post?.caption ||
-        ""
-      ).slice(0, 120),
-      status, // "ok" | "error" | "ignored" | "unauthorized"
-      detail,
+      type: update.callback_query ? "callback_query" : update.message ? "message" : update.channel_post ? "channel_post" : "other",
+      fromId: update.callback_query?.from?.id || update.message?.from?.id || update.channel_post?.from?.id || null,
+      chatId: update.callback_query?.message?.chat?.id || update.message?.chat?.id || update.channel_post?.chat?.id || null,
+      chatType: update.callback_query?.message?.chat?.type || update.message?.chat?.type || update.channel_post?.chat?.type || null,
+      textPreview: (update.callback_query?.data || update.message?.text || update.channel_post?.text || update.message?.caption || update.channel_post?.caption || "").slice(0, 120),
+      status, detail,
     };
     const raw = await SETTINGS.get(KEY_DEBUG_UPDATES);
     const list = raw ? JSON.parse(raw) : [];
@@ -94,47 +50,17 @@ export async function logError(SETTINGS, error, context = "") {
   }
 }
 
-export async function getRecentUpdates(SETTINGS) {
-  if (!SETTINGS) return [];
-  try {
-    const raw = await SETTINGS.get(KEY_DEBUG_UPDATES);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-export async function getRecentErrors(SETTINGS) {
-  if (!SETTINGS) return [];
-  try {
-    const raw = await SETTINGS.get(KEY_DEBUG_ERRORS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Log a RAW incoming HTTP request — before any processing.
- * This is THE key diagnostic: if this doesn't appear, the request never reached the Worker
- * (or was rejected before reaching here).
- */
 export async function logRawRequest(SETTINGS, info) {
   if (!SETTINGS) return;
   try {
     const entry = {
       time: new Date().toISOString(),
-      method: info.method,
-      path: info.path,
-      hasSecret: info.hasSecret,
-      secretMatch: info.secretMatch,
-      bodySize: info.bodySize,
-      updateType: info.updateType, // "message" | "callback_query" | "channel_post" | "other"
-      fromId: info.fromId,
-      chatId: info.chatId,
+      method: info.method, path: info.path,
+      hasSecret: info.hasSecret, secretMatch: info.secretMatch,
+      bodySize: info.bodySize, updateType: info.updateType,
+      fromId: info.fromId, chatId: info.chatId,
       textPreview: (info.textPreview || "").slice(0, 80),
-      status: info.status, // "ok" | "rejected_403" | "rejected_400" | "error"
-      detail: info.detail,
+      status: info.status, detail: info.detail,
     };
     const raw = await SETTINGS.get(KEY_DEBUG_RAW);
     const list = raw ? JSON.parse(raw) : [];
@@ -145,14 +71,28 @@ export async function logRawRequest(SETTINGS, info) {
   }
 }
 
+export async function getRecentUpdates(SETTINGS) {
+  if (!SETTINGS) return [];
+  try {
+    const raw = await SETTINGS.get(KEY_DEBUG_UPDATES);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+export async function getRecentErrors(SETTINGS) {
+  if (!SETTINGS) return [];
+  try {
+    const raw = await SETTINGS.get(KEY_DEBUG_ERRORS);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
 export async function getRecentRawRequests(SETTINGS) {
   if (!SETTINGS) return [];
   try {
     const raw = await SETTINGS.get(KEY_DEBUG_RAW);
     return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 export async function clearDebugLogs(SETTINGS) {
@@ -163,20 +103,18 @@ export async function clearDebugLogs(SETTINGS) {
 }
 
 // ============================================================
-// AUTH — optional token-based protection
+// AUTH
 // ============================================================
-
 export function checkDebugAuth(request, env) {
-  if (!env.DEBUG_TOKEN) return { ok: true }; // No token set → open access
+  if (!env.DEBUG_TOKEN) return { ok: true };
   const url = new URL(request.url);
   const token = url.searchParams.get("token") || url.searchParams.get("t");
   return { ok: token === env.DEBUG_TOKEN, required: true };
 }
 
 // ============================================================
-// STATUS GATHERER
+// STATUS GATHERER (parallel)
 // ============================================================
-
 function maskValue(val) {
   if (val === undefined || val === null || val === "") return { set: false };
   const s = String(val);
@@ -202,158 +140,62 @@ export async function getStatus(env, SETTINGS) {
     DEBUG_TOKEN: maskValue(env.DEBUG_TOKEN),
   };
 
-  // === PARALLEL: run all independent operations at once with a 8s timeout ===
-  // This is THE fix for the dashboard being stuck in loading — previously these
-  // were all sequential, which could take 15-30s if Telegram API was slow.
   const fetchWithTimeout = (url, ms = 8000) => {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), ms);
     return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
   };
 
-  const kvTestPromise = (async () => {
-    const kvStatus = { bound: !!SETTINGS, readable: false, writable: false, error: null };
-    if (!SETTINGS) return kvStatus;
-    try {
-      await SETTINGS.get("__debug_kv_test__");
-      kvStatus.readable = true;
-    } catch (e) {
-      kvStatus.error = `read: ${e.message}`;
-    }
-    try {
-      await SETTINGS.put("__debug_kv_test__", String(Date.now()));
-      kvStatus.writable = true;
-    } catch (e) {
-      kvStatus.error = (kvStatus.error ? kvStatus.error + " | " : "") + `write: ${e.message}`;
-    }
-    return kvStatus;
-  })();
-
-  const botInfoPromise = (async () => {
-    if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
-    try {
-      const res = await fetchWithTimeout(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`);
-      return await res.json();
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  })();
-
-  const webhookInfoPromise = (async () => {
-    if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
-    try {
-      const res = await fetchWithTimeout(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`);
-      return await res.json();
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  })();
-
-  const updatesPromise = getRecentUpdates(SETTINGS);
-  const errorsPromise = getRecentErrors(SETTINGS);
-  const rawPromise = getRecentRawRequests(SETTINGS);
-
-  // Wait for everything in parallel
   const [kvStatus, botInfo, webhookInfo, recentUpdates, recentErrors, recentRawRequests] = await Promise.all([
-    kvTestPromise,
-    botInfoPromise,
-    webhookInfoPromise,
-    updatesPromise,
-    errorsPromise,
-    rawPromise,
+    (async () => {
+      const s = { bound: !!SETTINGS, readable: false, writable: false, error: null };
+      if (!SETTINGS) return s;
+      try { await SETTINGS.get("__debug_kv_test__"); s.readable = true; } catch (e) { s.error = `read: ${e.message}`; }
+      try { await SETTINGS.put("__debug_kv_test__", String(Date.now())); s.writable = true; } catch (e) { s.error = (s.error ? s.error + " | " : "") + `write: ${e.message}`; }
+      return s;
+    })(),
+    (async () => {
+      if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
+      try { const r = await fetchWithTimeout(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`); return await r.json(); }
+      catch (e) { return { ok: false, error: e.message }; }
+    })(),
+    (async () => {
+      if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
+      try { const r = await fetchWithTimeout(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`); return await r.json(); }
+      catch (e) { return { ok: false, error: e.message }; }
+    })(),
+    getRecentUpdates(SETTINGS),
+    getRecentErrors(SETTINGS),
+    getRecentRawRequests(SETTINGS),
   ]);
 
-  // Diagnosis — auto-detect common issues
   const issues = [];
-  if (!env.ADMIN_ID) issues.push({ severity: "critical", msg: "ADMIN_ID is not set. Bot will ignore all messages." });
-  else if (botInfo.ok && String(env.ADMIN_ID) === String(botInfo.result.id))
-    issues.push({ severity: "warning", msg: "ADMIN_ID is set to the BOT's own ID. It should be YOUR personal Telegram user ID." });
-  if (!env.TARGET_CHANNEL) issues.push({ severity: "warning", msg: "TARGET_CHANNEL is not set. Publishing will fail." });
-  if (!SETTINGS) issues.push({ severity: "critical", msg: "KV namespace 'SETTINGS' is not bound. Settings cannot be read/written." });
-  else if (!kvStatus.readable || !kvStatus.writable)
-    issues.push({ severity: "critical", msg: `KV read/write failed: ${kvStatus.error}` });
-
-  // === WEBHOOK 403 DIAGNOSIS (most common silent failure cause) ===
+  if (!env.ADMIN_ID) issues.push({ severity: "critical", msg: "ADMIN_ID is not set." });
+  if (!env.TARGET_CHANNEL) issues.push({ severity: "warning", msg: "TARGET_CHANNEL is not set." });
+  if (!SETTINGS) issues.push({ severity: "critical", msg: "KV 'SETTINGS' not bound." });
+  else if (!kvStatus.readable || !kvStatus.writable) issues.push({ severity: "critical", msg: `KV failed: ${kvStatus.error}` });
   if (webhookInfo?.ok && webhookInfo.result.last_error_message) {
-    const errMsg = webhookInfo.result.last_error_message;
-    const is403 = /403|forbidden/i.test(errMsg);
-
-    if (is403 && env.WEBHOOK_SECRET) {
-      // Worker has WEBHOOK_SECRET set, but Telegram is getting 403.
-      // This happens when setWebhook was called WITHOUT the secret_token parameter,
-      // so Telegram doesn't send the x-telegram-bot-api-secret-token header.
-      issues.push({
-        severity: "critical",
-        msg: `Webhook returns 403 Forbidden. The Worker has WEBHOOK_SECRET set, but Telegram was NOT configured to send the secret_token header. Run: node scripts/fix-webhook.mjs https://your-worker.workers.dev (the script reads WEBHOOK_SECRET from .dev.vars and re-registers the webhook with the correct secret_token).`,
-      });
-    } else if (is403 && !env.WEBHOOK_SECRET) {
-      issues.push({
-        severity: "critical",
-        msg: `Webhook returns 403 Forbidden but WEBHOOK_SECRET is NOT set in the Worker. This may indicate a deployment issue. Try: npm run deploy && node scripts/fix-webhook.mjs https://your-worker.workers.dev`,
-      });
-    } else {
-      issues.push({ severity: "warning", msg: `Telegram reports webhook error: ${errMsg}` });
-    }
+    issues.push({ severity: "warning", msg: `Webhook error: ${webhookInfo.result.last_error_message}` });
   }
-
-  // Pending updates = telegram is retrying but failing
-  if (webhookInfo?.ok && webhookInfo.result.pending_update_count > 0) {
-    issues.push({
-      severity: "warning",
-      msg: `${webhookInfo.result.pending_update_count} pending updates queued in Telegram. These will keep retrying (and failing) until the webhook is fixed. The fix-webhook.mjs script drops them.`,
-    });
-  }
-
-  if (!env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY)
-    issues.push({ severity: "warning", msg: "No AI API keys set. Only FORMAT_ONLY mode will work." });
-
-  // === RAW REQUEST DIAGNOSIS ===
-  // This is the #1 silent failure detector: if the user sends a message to the bot
-  // but no raw request appears in the log, the webhook is broken (URL wrong, secret
-  // mismatch, or the worker is crashing on boot).
-  const rawCount = recentRawRequests?.length || 0;
-  if (rawCount === 0 && webhookInfo?.ok && webhookInfo.result.url) {
-    issues.push({
-      severity: "warning",
-      msg: "No raw requests logged yet. Send a message to your bot — if nothing appears in 'Recent Raw Requests' below, your webhook isn't delivering updates to the Worker (check webhook URL & secret).",
-    });
-  } else if (rawCount > 0) {
-    const rejected = recentRawRequests.filter((r) => r.status && r.status.startsWith("rejected")).length;
-    if (rejected > 0) {
-      issues.push({
-        severity: "critical",
-        msg: `${rejected} of ${rawCount} recent requests were REJECTED (403/400). This means Telegram is delivering updates but the Worker is rejecting them — check WEBHOOK_SECRET mismatch in the raw request log below.`,
-      });
-    }
-  }
+  if (!env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY) issues.push({ severity: "warning", msg: "No AI keys set." });
 
   return {
-    time: new Date().toISOString(),
-    envVars,
-    secrets,
-    kv: kvStatus,
-    botInfo,
-    webhookInfo,
-    recentUpdates,
-    recentErrors,
-    recentRawRequests,
-    issues,
+    time: new Date().toISOString(), envVars, secrets, kv: kvStatus,
+    botInfo, webhookInfo, recentUpdates, recentErrors, recentRawRequests, issues,
   };
 }
 
 // ============================================================
 // TEST ACTIONS
 // ============================================================
-
 export async function sendTestMessage(env) {
-  if (!env.ADMIN_ID) return { ok: false, error: "ADMIN_ID is not set" };
-  if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN is not set" };
+  if (!env.ADMIN_ID) return { ok: false, error: "ADMIN_ID not set" };
+  if (!env.BOT_TOKEN) return { ok: false, error: "BOT_TOKEN not set" };
   const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: env.ADMIN_ID,
-      text: "🧪 <b>Debug Test from AI Admin</b>\n\nIf you received this message, then:\n✅ <code>BOT_TOKEN</code> is correct\n✅ <code>ADMIN_ID</code> matches your Telegram ID\n✅ Bot can send messages to you",
+      text: "🧪 <b>Debug Test</b>\n\nIf you got this, BOT_TOKEN + ADMIN_ID are correct.",
       parse_mode: "HTML",
     }),
   });
@@ -362,482 +204,205 @@ export async function sendTestMessage(env) {
 
 export async function testKV(SETTINGS) {
   if (!SETTINGS) return { ok: false, error: "KV not bound" };
-  const testKey = `__kv_test_${Date.now()}__`;
-  const testValue = `hello-${Date.now()}`;
+  const k = `__kv_test_${Date.now()}__`;
+  const v = `hello-${Date.now()}`;
   try {
-    await SETTINGS.put(testKey, testValue);
-    const readBack = await SETTINGS.get(testKey);
-    await SETTINGS.delete(testKey);
-    if (readBack === testValue) {
-      return { ok: true, msg: "KV read/write/delete all succeeded" };
-    }
-    return { ok: false, error: `Value mismatch: wrote "${testValue}", read "${readBack}"` };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+    await SETTINGS.put(k, v);
+    const r = await SETTINGS.get(k);
+    await SETTINGS.delete(k);
+    return r === v ? { ok: true, msg: "KV read/write/delete OK" } : { ok: false, error: "Value mismatch" };
+  } catch (e) { return { ok: false, error: e.message }; }
 }
 
-/**
- * Test BOTH AI providers in parallel and report timing for each.
- * This is the key diagnostic — shows which provider is slow/fast and any errors.
- */
 export async function testAI(env) {
   const geminiModel = env.GEMINI_MODEL || "gemini-2.0-flash";
-  const openrouterModel = env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
-
+  const openrouterModel = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free";
   const userMsg = "Reply with exactly: AI_OK";
   const systemMsg = "You are a test endpoint. Reply with exactly: AI_OK";
 
-  // Test Gemini
   const geminiTest = (async () => {
-    if (!env.GEMINI_API_KEY) return { ok: false, provider: "gemini", model: geminiModel, error: "GEMINI_API_KEY not set", ms: 0 };
+    if (!env.GEMINI_API_KEY) return { ok: false, provider: "gemini", model: geminiModel, error: "key not set", ms: 0 };
     const start = Date.now();
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 25000);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${env.GEMINI_API_KEY}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${env.GEMINI_API_KEY}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemMsg }] },
           contents: [{ role: "user", parts: [{ text: userMsg }] }],
           generationConfig: { temperature: 0, maxOutputTokens: 50 },
-        }),
-        signal: ctrl.signal,
-      }).catch((e) => {
-        if (e.name === "AbortError") throw new Error(`TIMEOUT after 25s`);
-        throw e;
-      }).finally(() => clearTimeout(t));
+        }), signal: ctrl.signal,
+      }).catch((e) => { if (e.name === "AbortError") throw new Error("TIMEOUT 25s"); throw e; }).finally(() => clearTimeout(t));
       const data = await res.json();
       const ms = Date.now() - start;
-      if (!res.ok) return { ok: false, provider: "gemini", model: geminiModel, error: `HTTP ${res.status}: ${JSON.stringify(data.error || data).slice(0, 200)}`, ms };
+      if (!res.ok) return { ok: false, provider: "gemini", model: geminiModel, error: `${res.status}: ${JSON.stringify(data.error || data).slice(0, 200)}`, ms };
       const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
       return { ok: true, provider: "gemini", model: geminiModel, response: text.trim().slice(0, 200), ms };
-    } catch (e) {
-      return { ok: false, provider: "gemini", model: geminiModel, error: e.message, ms: Date.now() - start };
-    }
+    } catch (e) { return { ok: false, provider: "gemini", model: geminiModel, error: e.message, ms: Date.now() - start }; }
   })();
 
-  // Test OpenRouter
   const openrouterTest = (async () => {
-    if (!env.OPENROUTER_API_KEY) return { ok: false, provider: "openrouter", model: openrouterModel, error: "OPENROUTER_API_KEY not set", ms: 0 };
+    if (!env.OPENROUTER_API_KEY) return { ok: false, provider: "openrouter", model: openrouterModel, error: "key not set", ms: 0 };
     const start = Date.now();
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 25000);
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-          "HTTP-Referer": "https://ai-admin.workers.dev",
-          "X-Title": "AI Admin Debug",
-        },
-        body: JSON.stringify({
-          model: openrouterModel,
-          messages: [{ role: "system", content: systemMsg }, { role: "user", content: userMsg }],
-          temperature: 0,
-          max_tokens: 50,
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "HTTP-Referer": "https://ai-admin.workers.dev", "X-Title": "AI Admin" },
+        body: JSON.stringify({ model: openrouterModel, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userMsg }], temperature: 0, max_tokens: 50 }),
         signal: ctrl.signal,
-      }).catch((e) => {
-        if (e.name === "AbortError") throw new Error(`TIMEOUT after 25s`);
-        throw e;
-      }).finally(() => clearTimeout(t));
+      }).catch((e) => { if (e.name === "AbortError") throw new Error("TIMEOUT 25s"); throw e; }).finally(() => clearTimeout(t));
       const data = await res.json();
       const ms = Date.now() - start;
-      if (!res.ok) return { ok: false, provider: "openrouter", model: openrouterModel, error: `HTTP ${res.status}: ${JSON.stringify(data.error || data).slice(0, 200)}`, ms };
+      if (!res.ok) return { ok: false, provider: "openrouter", model: openrouterModel, error: `${res.status}: ${JSON.stringify(data.error || data).slice(0, 200)}`, ms };
       const text = data?.choices?.[0]?.message?.content ?? "";
       return { ok: true, provider: "openrouter", model: openrouterModel, response: text.trim().slice(0, 200), ms };
-    } catch (e) {
-      return { ok: false, provider: "openrouter", model: openrouterModel, error: e.message, ms: Date.now() - start };
-    }
+    } catch (e) { return { ok: false, provider: "openrouter", model: openrouterModel, error: e.message, ms: Date.now() - start }; }
   })();
 
-  // Run both in parallel
   const [gemini, openrouter] = await Promise.all([geminiTest, openrouterTest]);
-
   return {
-    ok: gemini.ok || openrouter.ok,
-    gemini,
-    openrouter,
-    recommendation: !gemini.ok && !openrouter.ok
-      ? "Both providers failed. Check API keys and quotas."
-      : !gemini.ok
-      ? "Gemini failed — using OpenRouter as primary."
-      : !openrouter.ok
-      ? "OpenRouter failed — using Gemini as primary."
-      : (gemini.ms < openrouter.ms
-        ? `Both OK. Gemini faster (${gemini.ms}ms vs ${openrouter.ms}ms).`
-        : `Both OK. OpenRouter faster (${openrouter.ms}ms vs ${gemini.ms}ms).`),
+    ok: gemini.ok || openrouter.ok, gemini, openrouter,
+    recommendation: !gemini.ok && !openrouter.ok ? "Both failed." : !gemini.ok ? "Use OpenRouter." : !openrouter.ok ? "Use Gemini." : (gemini.ms < openrouter.ms ? `Gemini faster (${gemini.ms}ms).` : `OpenRouter faster (${openrouter.ms}ms).`),
   };
 }
 
 // ============================================================
-// HTML DASHBOARD (self-contained, no external deps)
+// HTML DASHBOARD
 // ============================================================
-
-export function debugHTML(baseUrl = "") {
+export function debugHTML() {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Admin — Debug Dashboard</title>
+<title>AI Admin — Debug</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #0d1117; color: #c9d1d9; line-height: 1.6; padding: 20px;
-  }
-  .container { max-width: 1100px; margin: 0 auto; }
-  h1 { color: #58a6ff; margin-bottom: 8px; font-size: 1.8em; }
-  .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 0.9em; }
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-  .refresh-btn {
-    background: #238636; color: white; border: none; padding: 8px 16px;
-    border-radius: 6px; cursor: pointer; font-size: 0.9em;
-  }
-  .refresh-btn:hover { background: #2ea043; }
-  .section {
-    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-    padding: 16px; margin-bottom: 16px;
-  }
-  .section h2 { color: #58a6ff; font-size: 1.1em; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
-  .card {
-    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px;
-  }
-  .card-label { color: #8b949e; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-  .card-value { font-family: 'SF Mono', Consolas, monospace; font-size: 0.9em; word-break: break-all; }
-  .status-ok { color: #3fb950; }
-  .status-fail { color: #f85149; }
-  .status-warn { color: #d29922; }
-  .issues { list-style: none; }
-  .issues li { padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; font-size: 0.9em; }
-  .issue-critical { background: rgba(248,81,73,0.15); border-left: 3px solid #f85149; }
-  .issue-warning { background: rgba(210,153,34,0.15); border-left: 3px solid #d29922; }
-  .actions { display: flex; gap: 10px; flex-wrap: wrap; }
-  .btn {
-    background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 8px 14px;
-    border-radius: 6px; cursor: pointer; font-size: 0.85em; font-family: inherit;
-  }
-  .btn:hover { background: #30363d; border-color: #8b949e; }
-  .btn-primary { background: #1f6feb; border-color: #1f6feb; color: white; }
-  .btn-primary:hover { background: #388bfd; }
-  .btn-danger { background: #da3633; border-color: #da3633; color: white; }
-  .btn-danger:hover { background: #f85149; }
-  .result {
-    margin-top: 10px; padding: 10px; background: #0d1117; border: 1px solid #30363d;
-    border-radius: 4px; font-family: 'SF Mono', Consolas, monospace; font-size: 0.85em;
-    white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto;
-    display: none;
-  }
-  .result.show { display: block; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #30363d; vertical-align: top; }
-  th { color: #8b949e; font-weight: 600; text-transform: uppercase; font-size: 0.8em; }
-  tr:hover { background: rgba(88,166,255,0.05); }
-  .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;
-    font-weight: 600;
-  }
-  .badge-ok { background: rgba(63,185,80,0.2); color: #3fb950; }
-  .badge-error { background: rgba(248,81,73,0.2); color: #f85149; }
-  .badge-ignored { background: rgba(139,148,158,0.2); color: #8b949e; }
-  .badge-unauthorized { background: rgba(248,81,73,0.2); color: #f85149; }
-  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .empty { color: #8b949e; font-style: italic; text-align: center; padding: 20px; }
-  .timestamp { color: #8b949e; font-size: 0.8em; font-family: monospace; }
-  details { margin-top: 8px; }
-  summary { cursor: pointer; color: #58a6ff; font-size: 0.85em; }
-  details pre { margin-top: 8px; font-size: 0.8em; color: #8b949e; white-space: pre-wrap; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; line-height: 1.6; }
+.container { max-width: 1100px; margin: 0 auto; }
+h1 { color: #58a6ff; margin-bottom: 8px; }
+.subtitle { color: #8b949e; margin-bottom: 24px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+.refresh-btn { background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+.section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.section h2 { color: #58a6ff; font-size: 1.1em; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
+.card-label { color: #8b949e; font-size: 0.8em; text-transform: uppercase; margin-bottom: 4px; }
+.card-value { font-family: monospace; font-size: 0.9em; word-break: break-all; }
+.status-ok { color: #3fb950; } .status-fail { color: #f85149; } .status-warn { color: #d29922; }
+.issues li { padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; list-style: none; }
+.issue-critical { background: rgba(248,81,73,0.15); border-left: 3px solid #f85149; }
+.issue-warning { background: rgba(210,153,34,0.15); border-left: 3px solid #d29922; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85em; }
+.btn:hover { background: #30363d; }
+.btn-primary { background: #1f6feb; border-color: #1f6feb; color: white; }
+.btn-danger { background: #da3633; border-color: #da3633; color: white; }
+.result { margin-top: 10px; padding: 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; font-family: monospace; font-size: 0.85em; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; display: none; }
+.result.show { display: block; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #30363d; vertical-align: top; }
+th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; }
+.badge-ok { background: rgba(63,185,80,0.2); color: #3fb950; }
+.badge-error { background: rgba(248,81,73,0.2); color: #f85149; }
+.badge-ignored { background: rgba(139,148,158,0.2); color: #8b949e; }
+.empty { color: #8b949e; font-style: italic; text-align: center; padding: 20px; }
+.timestamp { color: #8b949e; font-size: 0.8em; font-family: monospace; }
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <div>
-      <h1>🔧 AI Admin — Debug Dashboard</h1>
-      <div class="subtitle">v0.1.1 · Live diagnostics for your Telegram bot</div>
-    </div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.2.1</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
-
-  <div id="issues" class="section" style="display:none;">
-    <h2>⚠️ Detected Issues</h2>
-    <ul class="issues" id="issues-list"></ul>
-  </div>
-
-  <div class="section">
-    <h2>📊 Status Overview</h2>
-    <div class="grid" id="status-grid">
-      <div class="card"><div class="card-label">Loading...</div></div>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>🧪 Quick Actions</h2>
-    <div class="actions">
-      <button class="btn btn-primary" onclick="runTest('message')">📤 Send Test Message</button>
-      <button class="btn" onclick="runTest('kv')">💾 Test KV</button>
-      <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
-      <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
-    </div>
-    <div id="action-result" class="result"></div>
-  </div>
-
-  <div class="section">
-    <h2>📜 Recent Updates (last 30)</h2>
-    <div id="updates-table"><div class="empty">Loading...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>📡 Recent Raw Requests (last 30) <span style="color:#8b949e;font-size:0.7em;font-weight:normal;">— THE key diagnostic</span></h2>
-    <div id="raw-table"><div class="empty">Loading...</div></div>
-    <p style="margin-top:10px;color:#8b949e;font-size:0.85em;">
-      If you send a message to your bot and <strong>nothing appears here</strong>, the webhook is broken (URL or secret mismatch).<br>
-      If requests appear with <strong>status <code>rejected_403</code></strong>, the WEBHOOK_SECRET doesn't match.<br>
-      If requests appear with <strong>status <code>ok</code></strong> but the bot still doesn't respond, check "Recent Updates" and "Recent Errors" below.
-    </p>
-  </div>
-
-  <div class="section">
-    <h2>❌ Recent Errors (last 30)</h2>
-    <div id="errors-table"><div class="empty">Loading...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>🔧 Bot Info</h2>
-    <div id="bot-info"><div class="empty">Loading...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>🔗 Webhook Info</h2>
-    <div id="webhook-info"><div class="empty">Loading...</div></div>
-  </div>
+  <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
+  <div class="section"><h2>📊 Status</h2><div class="grid" id="status-grid"><div class="card"><div class="card-label">Loading...</div></div></div></div>
+  <div class="section"><h2>🧪 Actions</h2><div class="actions">
+    <button class="btn btn-primary" onclick="runTest('message')">📤 Test Message</button>
+    <button class="btn" onclick="runTest('kv')">💾 Test KV</button>
+    <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
+    <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
+  </div><div id="action-result" class="result"></div></div>
+  <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>
+  <div class="section"><h2>📜 Recent Updates</h2><div id="updates-table"><div class="empty">Loading...</div></div></div>
+  <div class="section"><h2>❌ Recent Errors</h2><div id="errors-table"><div class="empty">Loading...</div></div></div>
+  <div class="section"><h2>🔧 Bot Info</h2><div id="bot-info"><div class="empty">Loading...</div></div></div>
+  <div class="section"><h2>🔗 Webhook</h2><div id="webhook-info"><div class="empty">Loading...</div></div></div>
 </div>
-
 <script>
-// Preserve the ?token=XXX query param from the URL so all API calls stay authenticated
-// (if DEBUG_TOKEN is set, every /debug/api/* call needs the token too).
 const urlParams = new URLSearchParams(window.location.search);
-const TOKEN_PARAM = urlParams.get("token") || urlParams.get("t");
-const TOKEN_QS = TOKEN_PARAM ? "?token=" + encodeURIComponent(TOKEN_PARAM) : "";
+const TOKEN = urlParams.get("token") || urlParams.get("t");
+const QS = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
 const BASE = "";
-
 let lastStatus = null;
-
 async function loadStatus() {
   try {
-    const res = await fetch(BASE + "/debug/api/status" + TOKEN_QS);
-    if (!res.ok) {
-      throw new Error("HTTP " + res.status);
-    }
+    const res = await fetch(BASE + "/debug/api/status" + QS);
+    if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     lastStatus = data;
     renderStatus(data);
   } catch (e) {
-    document.getElementById("status-grid").innerHTML =
-      '<div class="card"><div class="card-label">Error</div><div class="card-value status-fail">' + e.message + '</div></div>';
+    document.getElementById("status-grid").innerHTML = '<div class="card"><div class="card-label">Error</div><div class="card-value status-fail">' + e.message + '</div></div>';
   }
 }
-
-function esc(s) {
-  if (s === null || s === undefined) return "";
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-}
-
-function fmtTime(ts) {
-  if (!ts) return "";
-  try {
-    const d = new Date(ts);
-    return d.toLocaleString();
-  } catch { return ts; }
-}
-
-function badge(status) {
-  const cls = status === "ok" ? "badge-ok" : (status === "error" ? "badge-error" : (status === "unauthorized" ? "badge-unauthorized" : "badge-ignored"));
-  return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
-}
-
+function esc(s) { if (s === null || s === undefined) return ""; return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function fmtTime(ts) { if (!ts) return ""; try { return new Date(ts).toLocaleString(); } catch { return ts; } }
+function badge(s) { const cls = s === "ok" ? "badge-ok" : (s === "error" || s.startsWith("rejected") ? "badge-error" : "badge-ignored"); return '<span class="badge ' + cls + '">' + esc(s) + '</span>'; }
+function card(label, value) { return '<div class="card"><div class="card-label">' + label + '</div><div class="card-value">' + value + '</div></div>'; }
 function renderStatus(data) {
-  // Issues
   const issuesEl = document.getElementById("issues");
   const issuesList = document.getElementById("issues-list");
   if (data.issues && data.issues.length > 0) {
     issuesEl.style.display = "block";
-    issuesList.innerHTML = data.issues.map(i =>
-      '<li class="issue-' + i.severity + '"><strong>' + i.severity.toUpperCase() + ':</strong> ' + esc(i.msg) + '</li>'
-    ).join("");
-  } else {
-    issuesEl.style.display = "none";
-  }
-
-  // Status grid
+    issuesList.innerHTML = data.issues.map(i => '<li class="issue-' + i.severity + '"><strong>' + i.severity.toUpperCase() + ':</strong> ' + esc(i.msg) + '</li>').join("");
+  } else { issuesEl.style.display = "none"; }
   const cards = [];
-
-  // ADMIN_ID
-  const adminId = data.envVars.ADMIN_ID;
-  cards.push(card("ADMIN_ID",
-    adminId.set
-      ? '<span class="status-ok">✓ Set</span> → <code>' + esc(adminId.value) + '</code>'
-      : '<span class="status-fail">✗ NOT SET</span>'
-  ));
-
-  // TARGET_CHANNEL
-  const ch = data.envVars.TARGET_CHANNEL;
-  cards.push(card("TARGET_CHANNEL",
-    ch.set
-      ? '<span class="status-ok">✓ Set</span> → <code>' + esc(ch.value) + '</code>'
-      : '<span class="status-warn">⚠ Not set</span>'
-  ));
-
-  // KV
+  const a = data.envVars.ADMIN_ID; cards.push(card("ADMIN_ID", a.set ? '<span class="status-ok">✓</span> <code>' + esc(a.value) + '</code>' : '<span class="status-fail">✗ NOT SET</span>'));
+  const c = data.envVars.TARGET_CHANNEL; cards.push(card("TARGET_CHANNEL", c.set ? '<span class="status-ok">✓</span> <code>' + esc(c.value) + '</code>' : '<span class="status-warn">⚠ Not set</span>'));
   const kv = data.kv;
-  if (kv.bound) {
-    const rOk = kv.readable ? '<span class="status-ok">read ✓</span>' : '<span class="status-fail">read ✗</span>';
-    const wOk = kv.writable ? '<span class="status-ok">write ✓</span>' : '<span class="status-fail">write ✗</span>';
-    cards.push(card("KV (SETTINGS)", rOk + " " + wOk + (kv.error ? '<br><small class="status-fail">' + esc(kv.error) + '</small>' : "")));
-  } else {
-    cards.push(card("KV (SETTINGS)", '<span class="status-fail">✗ NOT BOUND</span><br><small>Bind a KV namespace with variable name <code>SETTINGS</code></small>'));
-  }
-
-  // Secrets
-  for (const [name, info] of Object.entries(data.secrets)) {
-    if (name === "DEBUG_TOKEN" && !info.set) continue;
-    cards.push(card(name,
-      info.set
-        ? '<span class="status-ok">✓ Set</span> <small>(' + info.length + ' chars, ' + esc(info.preview) + ')</small>'
-        : '<span class="status-fail">✗ Not set</span>'
-    ));
-  }
-
+  if (kv.bound) { cards.push(card("KV", (kv.readable ? '<span class="status-ok">read ✓</span>' : '<span class="status-fail">read ✗</span>') + " " + (kv.writable ? '<span class="status-ok">write ✓</span>' : '<span class="status-fail">write ✗</span>'))); }
+  else { cards.push(card("KV", '<span class="status-fail">✗ NOT BOUND</span>')); }
+  for (const [name, info] of Object.entries(data.secrets)) { if (name === "DEBUG_TOKEN" && !info.set) continue; cards.push(card(name, info.set ? '<span class="status-ok">✓</span> <small>(' + info.length + ' chars)</small>' : '<span class="status-fail">✗</span>')); }
   document.getElementById("status-grid").innerHTML = cards.join("");
-
-  // Updates table
-  const updates = data.recentUpdates || [];
-  if (updates.length === 0) {
-    document.getElementById("updates-table").innerHTML = '<div class="empty">No updates received yet. Send a message to your bot to see it here.</div>';
-  } else {
-    document.getElementById("updates-table").innerHTML =
-      '<table><thead><tr><th>Time</th><th>Type</th><th>From</th><th>Chat</th><th>Preview</th><th>Status</th></tr></thead><tbody>' +
-      updates.map(u =>
-        '<tr><td class="timestamp">' + esc(fmtTime(u.time)) + '</td><td>' + esc(u.type) + '</td><td>' + esc(u.fromId) + '</td><td>' + esc(u.chatType) + ' ' + esc(u.chatId) + '</td><td>' + esc(u.textPreview) + (u.detail ? '<br><small>' + esc(u.detail) + '</small>' : '') + '</td><td>' + badge(u.status) + '</td></tr>'
-      ).join("") + '</tbody></table>';
-  }
-
-  // Errors table
-  const errors = data.recentErrors || [];
-  if (errors.length === 0) {
-    document.getElementById("errors-table").innerHTML = '<div class="empty">No errors recorded. 🎉</div>';
-  } else {
-    document.getElementById("errors-table").innerHTML =
-      '<table><thead><tr><th>Time</th><th>Error</th><th>Context</th></tr></thead><tbody>' +
-      errors.map(e =>
-        '<tr><td class="timestamp">' + esc(fmtTime(e.time)) + '</td><td><strong>' + esc(e.error) + '</strong>' + (e.stack ? '<details><summary>stack</summary><pre>' + esc(e.stack) + '</pre></details>' : '') + '</td><td>' + esc(e.context) + '</td></tr>'
-      ).join("") + '</tbody></table>';
-  }
-
-  // Raw requests table — THE KEY DIAGNOSTIC
   const raws = data.recentRawRequests || [];
-  if (raws.length === 0) {
-    document.getElementById("raw-table").innerHTML =
-      '<div class="empty">⚠️ No raw requests logged yet.<br><br>' +
-      'Send a message to your bot now. If nothing appears here after a few seconds, your webhook is broken.<br>' +
-      'If requests appear with <code>rejected_403</code>, the WEBHOOK_SECRET does not match.</div>';
-  } else {
-    const statusBadge = (s) => {
-      const cls = s === "ok" ? "badge-ok" : (s.startsWith("rejected") ? "badge-error" : "badge-ignored");
-      return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
-    };
-    document.getElementById("raw-table").innerHTML =
-      '<table><thead><tr><th>Time</th><th>Type</th><th>From</th><th>Chat</th><th>Secret</th><th>Size</th><th>Preview</th><th>Status</th></tr></thead><tbody>' +
-      raws.map(r =>
-        '<tr><td class="timestamp">' + esc(fmtTime(r.time)) + '</td>' +
-        '<td>' + esc(r.updateType) + '</td>' +
-        '<td>' + esc(r.fromId) + '</td>' +
-        '<td>' + esc(r.chatId) + '</td>' +
-        '<td>' + (r.hasSecret ? (r.secretMatch ? '<span class="status-ok">✓ match</span>' : '<span class="status-fail">✗ mismatch</span>') : '<span class="status-warn">none</span>') + '</td>' +
-        '<td>' + esc(r.bodySize) + '</td>' +
-        '<td>' + esc(r.textPreview) + (r.detail && r.detail !== "processed" ? '<br><small class="status-fail">' + esc(r.detail) + '</small>' : '') + '</td>' +
-        '<td>' + statusBadge(r.status) + '</td></tr>'
-      ).join("") + '</tbody></table>';
-  }
-
-  // Bot info
-  if (data.botInfo && data.botInfo.ok) {
-    const b = data.botInfo.result;
-    document.getElementById("bot-info").innerHTML =
-      '<div class="grid">' +
-      card("Bot ID", '<code>' + esc(b.id) + '</code>') +
-      card("Username", '@' + esc(b.username)) +
-      card("First Name", esc(b.first_name)) +
-      card("Can Join Groups", b.can_join_groups ? '<span class="status-ok">yes</span>' : '<span class="status-fail">no</span>') +
-      card("Can Read All Group Msgs", b.can_read_all_group_messages ? '<span class="status-ok">yes</span>' : '<span class="status-fail">no</span>') +
-      '</div>';
-  } else {
-    document.getElementById("bot-info").innerHTML = '<div class="status-fail">Bot info unavailable: ' + esc(data.botInfo?.error || "unknown") + '</div>';
-  }
-
-  // Webhook info
-  if (data.webhookInfo && data.webhookInfo.ok) {
-    const w = data.webhookInfo.result;
-    const lastErr = w.last_error_message;
-    const lastErrDate = w.last_error_date ? new Date(w.last_error_date * 1000).toLocaleString() : null;
-    document.getElementById("webhook-info").innerHTML =
-      '<div class="grid">' +
-      card("URL", '<code>' + esc(w.url) + '</code>') +
-      card("Pending Updates", '<code>' + esc(w.pending_update_count) + '</code>') +
-      card("Max Connections", '<code>' + esc(w.max_connections) + '</code>') +
-      card("Custom Cert", w.has_custom_certificate ? 'yes' : 'no') +
-      card("IP Address", '<code>' + esc(w.ip_address || 'n/a') + '</code>') +
-      (lastErr ? card("Last Error", '<span class="status-fail">' + esc(lastErr) + '</span><br><small>' + esc(lastErrDate) + '</small>') : card("Last Error", '<span class="status-ok">none 🎉</span>')) +
-      '</div>';
-  } else {
-    document.getElementById("webhook-info").innerHTML = '<div class="status-fail">Webhook info unavailable: ' + esc(data.webhookInfo?.error || "unknown") + '</div>';
-  }
+  if (raws.length === 0) { document.getElementById("raw-table").innerHTML = '<div class="empty">No raw requests yet. Send a message to your bot.</div>'; }
+  else { document.getElementById("raw-table").innerHTML = '<table><thead><tr><th>Time</th><th>Type</th><th>From</th><th>Secret</th><th>Preview</th><th>Status</th></tr></thead><tbody>' + raws.map(r => '<tr><td class="timestamp">' + esc(fmtTime(r.time)) + '</td><td>' + esc(r.updateType) + '</td><td>' + esc(r.fromId) + '</td><td>' + (r.secretMatch ? '<span class="status-ok">✓</span>' : '<span class="status-fail">✗</span>') + '</td><td>' + esc(r.textPreview) + '</td><td>' + badge(r.status) + '</td></tr>').join("") + '</tbody></table>'; }
+  const ups = data.recentUpdates || [];
+  if (ups.length === 0) { document.getElementById("updates-table").innerHTML = '<div class="empty">No updates yet.</div>'; }
+  else { document.getElementById("updates-table").innerHTML = '<table><thead><tr><th>Time</th><th>Type</th><th>From</th><th>Preview</th><th>Status</th></tr></thead><tbody>' + ups.map(u => '<tr><td class="timestamp">' + esc(fmtTime(u.time)) + '</td><td>' + esc(u.type) + '</td><td>' + esc(u.fromId) + '</td><td>' + esc(u.textPreview) + (u.detail ? '<br><small>' + esc(u.detail) + '</small>' : '') + '</td><td>' + badge(u.status) + '</td></tr>').join("") + '</tbody></table>'; }
+  const errs = data.recentErrors || [];
+  if (errs.length === 0) { document.getElementById("errors-table").innerHTML = '<div class="empty">No errors. 🎉</div>'; }
+  else { document.getElementById("errors-table").innerHTML = '<table><thead><tr><th>Time</th><th>Error</th><th>Context</th></tr></thead><tbody>' + errs.map(e => '<tr><td class="timestamp">' + esc(fmtTime(e.time)) + '</td><td><strong>' + esc(e.error) + '</strong></td><td>' + esc(e.context) + '</td></tr>').join("") + '</tbody></table>'; }
+  if (data.botInfo && data.botInfo.ok) { const b = data.botInfo.result; document.getElementById("bot-info").innerHTML = '<div class="grid">' + card("Bot ID", '<code>' + esc(b.id) + '</code>') + card("Username", '@' + esc(b.username)) + '</div>'; }
+  else { document.getElementById("bot-info").innerHTML = '<div class="status-fail">Unavailable</div>'; }
+  if (data.webhookInfo && data.webhookInfo.ok) { const w = data.webhookInfo.result; document.getElementById("webhook-info").innerHTML = '<div class="grid">' + card("URL", '<code>' + esc(w.url) + '</code>') + card("Pending", '<code>' + esc(w.pending_update_count) + '</code>') + (w.last_error_message ? card("Last Error", '<span class="status-fail">' + esc(w.last_error_message) + '</span>') : card("Last Error", '<span class="status-ok">none 🎉</span>')) + '</div>'; }
+  else { document.getElementById("webhook-info").innerHTML = '<div class="status-fail">Unavailable</div>'; }
 }
-
-function card(label, valueHtml) {
-  return '<div class="card"><div class="card-label">' + label + '</div><div class="card-value">' + valueHtml + '</div></div>';
-}
-
 async function runTest(type) {
-  const resultEl = document.getElementById("action-result");
-  resultEl.classList.add("show");
-  resultEl.innerHTML = '<span class="spinner"></span> Running test...';
-  try {
-    const res = await fetch(BASE + "/debug/api/test/" + type + TOKEN_QS, { method: "POST" });
-    const data = await res.json();
-    resultEl.innerHTML = JSON.stringify(data, null, 2);
-  } catch (e) {
-    resultEl.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>';
-  }
-  // Refresh status after test
+  const r = document.getElementById("action-result");
+  r.classList.add("show");
+  r.innerHTML = '<span class="spinner"></span> Running...';
+  try { const res = await fetch(BASE + "/debug/api/test/" + type + QS, { method: "POST" }); const data = await res.json(); r.innerHTML = JSON.stringify(data, null, 2); }
+  catch (e) { r.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>'; }
   setTimeout(loadStatus, 500);
 }
-
 async function clearLogs() {
-  if (!confirm("Clear all debug logs?")) return;
-  const resultEl = document.getElementById("action-result");
-  resultEl.classList.add("show");
-  resultEl.innerHTML = '<span class="spinner"></span> Clearing...';
-  try {
-    const res = await fetch(BASE + "/debug/api/clear" + TOKEN_QS, { method: "POST" });
-    const data = await res.json();
-    resultEl.innerHTML = JSON.stringify(data, null, 2);
-  } catch (e) {
-    resultEl.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>';
-  }
+  if (!confirm("Clear all logs?")) return;
+  const r = document.getElementById("action-result");
+  r.classList.add("show");
+  r.innerHTML = 'Clearing...';
+  try { const res = await fetch(BASE + "/debug/api/clear" + QS, { method: "POST" }); const data = await res.json(); r.innerHTML = JSON.stringify(data, null, 2); }
+  catch (e) { r.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>'; }
   setTimeout(loadStatus, 500);
 }
-
-// Auto-load on page open
 loadStatus();
-// Auto-refresh every 15 seconds
 setInterval(loadStatus, 15000);
 </script>
 </body>
