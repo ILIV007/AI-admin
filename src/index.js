@@ -623,14 +623,16 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiError = null;
 
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
-  // AUTO-SUMMARIZE: if the input is very long (>1200 chars), force summary mode
-  // to avoid Telegram's 4096 char limit and make the post readable.
-  // This applies REGARDLESS of the admin's rewrite_mode setting — long posts
-  // MUST be summarized or they'll fail to publish.
-  const LONG_TEXT_THRESHOLD = 1200;
+
+  // AUTO-SUMMARIZE: if the input is long, force summary mode.
+  // Threshold depends on whether the post has media:
+  //   - Media post (photo/video) → caption limit is 1024 chars, so threshold is 800
+  //   - Text-only post → message limit is 4096 chars, so threshold is 1200
+  const hasMedia = !!content.mediaFileId;
+  const LONG_TEXT_THRESHOLD = hasMedia ? 800 : 1200;
   const finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""})`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""}${hasMedia ? " [MEDIA]" : ""})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
@@ -670,16 +672,22 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     footer: settings.footer_text, engineName: "html",
   });
 
-  // SAFETY: if the formatted text is still too long for Telegram (>4000 chars),
-  // truncate it to avoid "message too long" errors.
-  const TELEGRAM_MSG_LIMIT = 4000;
+  // SAFETY: truncate to avoid Telegram limits.
+  // IMPORTANT: Telegram has DIFFERENT limits for text vs captions:
+  //   - Text message: 4096 chars
+  //   - Media caption: 1024 chars
+  // If the post has media, we MUST stay under 1024 or publishing will fail.
+  const TELEGRAM_TEXT_LIMIT = 4000;
+  const TELEGRAM_CAPTION_LIMIT = 1000; // leave room for footer + tags
+  const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
+
   let safeFormattedText = formattedText;
-  if (formattedText.length > TELEGRAM_MSG_LIMIT) {
-    console.warn(`[pipeline] formatted text too long (${formattedText.length} > ${TELEGRAM_MSG_LIMIT}), truncating`);
-    safeFormattedText = formattedText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n<i>…(truncated)</i>";
-    traceStep("truncate", true, `${formattedText.length}→${safeFormattedText.length} chars`);
+  if (formattedText.length > effectiveLimit) {
+    console.warn(`[pipeline] formatted text too long (${formattedText.length} > ${effectiveLimit}${hasMedia ? " [CAPTION]" : ""}), truncating`);
+    safeFormattedText = formattedText.slice(0, effectiveLimit - 50) + "\n\n<i>…(truncated)</i>";
+    traceStep("truncate", true, `${formattedText.length}→${safeFormattedText.length} chars${hasMedia ? " [CAPTION]" : ""}`);
   }
-  traceStep("format", true, `${safeFormattedText.length} chars`);
+  traceStep("format", true, `${safeFormattedText.length} chars${hasMedia ? " [CAPTION]" : ""}`);
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;

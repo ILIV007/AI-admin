@@ -96,7 +96,8 @@ function rewriteKeyboard(current) {
   return {
     inline_keyboard: [
       [mk("none", "None (format only)"), mk("light", "Light edit")],
-      [mk("normal", "Normal edit"), mk("summary", "Summary")],
+      [mk("normal", "Normal edit"), mk("deep", "Deep edit")],
+      [mk("summary", "Summary")],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -216,9 +217,10 @@ function rewriteMenuText(current) {
     `Current: <code>${current}</code>`,
     ``,
     `<i>None = format only (no AI)</i>`,
-    `<i>Light = slight rewording</i>`,
-    `<i>Normal = moderate rewrite</i>`,
-    `<i>Summary = shorten long content</i>`,
+    `<i>Light = minimal changes (~10-15%)</i>`,
+    `<i>Normal = moderate rewrite (~20-30%)</i>`,
+    `<i>Deep = significant rewrite (~30-50%)</i>`,
+    `<i>Summary = condense long content</i>`,
   ].join("\n");
 }
 

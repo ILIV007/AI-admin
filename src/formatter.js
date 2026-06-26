@@ -64,21 +64,29 @@ const htmlEngine = {
       return `__INLINE_${inlineCodes.length - 1}__`;
     });
 
-    // 3. Escape HTML in the remaining text
+    // 3. Convert markdown-style links [text](url) → "text\nurl"
+    //    This way the text stays as a clickable reference and the URL gets
+    //    its own blockquote from the URL replacement step below.
+    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1\n$2");
+
+    // 4. Remove angle brackets around URLs (<https://...> → https://...)
+    work = work.replace(/<(https?:\/\/[^\s>]+)>/g, "$1");
+
+    // 5. Escape HTML in the remaining text
     work = this.escape(work);
 
-    // 4. Replace each URL with a blockquote-wrapped link.
+    // 6. Replace each URL with a blockquote-wrapped link.
     //    Use URL_SPLIT_REGEX which stops at the next "https://" so that
     //    multiple URLs stuck together get split into separate blockquotes.
     work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
 
-    // 5. Restore inline code as <code>...</code>
+    // 7. Restore inline code as <code>...</code>
     work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
 
-    // 6. Restore code blocks as <pre><code>...</code></pre>
+    // 8. Restore code blocks as <pre><code>...</code></pre>
     work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
 
-    // 7. Convert simple bold (**text** or __text__) to <b>
+    // 9. Convert simple bold (**text** or __text__) to <b>
     work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
     work = work.replace(/__([^_]+)__/g, (m, p1) => (m.includes("CODEBLOCK") || m.includes("INLINE") ? m : `<b>${p1}</b>`));
 

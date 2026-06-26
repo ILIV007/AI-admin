@@ -88,9 +88,11 @@ REWRITE INTENSITY (CRITICAL — read carefully):
 
 - "light"  → MINIMAL changes only. Fix obvious grammar/typos. Keep structure identical. Only ~10-15% of words should change. Preserve the original voice.
 
-- "normal" → SIGNIFICANT rewrite for clarity, flow, readability, and engagement. Restructure sentences, improve word choice, make it more compelling. ~30-50% of words should change. This is NOT a light edit — make real improvements. The output should look professionally edited, not just spell-checked.
+- "normal" → MODERATE rewrite. Improve clarity, flow, and readability. Better word choice, smoother sentences. ~20-30% of words should change. Keep the original structure mostly intact but make it read better.
 
-- "summary" → Condense the content to 30-50% of original length. Keep only key points. Use bullet points if appropriate. Preserve ALL links.
+- "deep"   → SIGNIFICANT rewrite for clarity, flow, readability, and engagement. Restructure sentences, improve word choice, make it more compelling. ~30-50% of words should change. This is NOT a light edit — make real improvements. The output should look professionally edited.
+
+- "summary" → Condense the content to 40-60% of original length (NOT shorter). Keep all key points and technical details. Use bullet points if appropriate. Preserve ALL links. The summary should retain the substance — just remove fluff and redundancy.
 
 ═══════════════════════════════════════════════
 CRITICAL LANGUAGE RULE (READ CAREFULLY):
@@ -231,10 +233,18 @@ export function buildClassifyUserMessage(text) {
 // Helper: build the full rewrite user message
 // ============================================================
 export function buildRewriteUserMessage(text, mode, language, personality) {
+  const personalityGuide = {
+    friendly: "Write like a REAL PERSON sharing something cool with friends. Be conversational, warm, natural. Use expressions a real human would use. Sound like a knowledgeable friend — NOT a corporate bot. Vary sentence length. Be genuine, not fake-enthusiastic.",
+    professional: "Clean, neutral, business-like. Factual and precise. No slang.",
+    technical: "Precise, terminology-friendly. Focus on specs and details.",
+    news: "Concise, fact-first. Journalistic tone.",
+  };
+
   return [
     `REWRITE_MODE: ${mode}`,
     `LANGUAGE_MODE: ${language}`,
     `PERSONALITY: ${personality}`,
+    `PERSONALITY_GUIDE: ${personalityGuide[personality] || personalityGuide.friendly}`,
     ``,
     `POST TO PROCESS:`,
     `----`,

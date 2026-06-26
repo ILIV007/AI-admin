@@ -17,23 +17,37 @@
 const REQUEST_TIMEOUT_MS = 25_000;
 
 // ============================================================
-// DEFAULT FREE MODELS on OpenRouter (v0.2.4 — user-provided current list)
+// DEFAULT FREE MODELS on OpenRouter (v0.2.7 — ranked by speed+quality)
 // ============================================================
-// These are verified available free models from openrouter.ai/models (2025).
-// OpenRouter frequently changes which models are free — if you see 404 errors,
-// visit https://openrouter.ai/models (filter by "Free") and update this list.
+// Ranked based on real performance data from user's Test AI results.
+// Faster + higher quality models are tried FIRST (Promise.any races them
+// all, but the fastest winner is preferred).
+//
+// Rank | Model                          | Speed    | Quality | Notes
+//-----+--------------------------------+----------+---------+-------
+//  1  | nvidia/nemotron-3-nano-30b     | 737ms    | good    | FASTEST
+//  2  | nvidia/nemotron-3-super-120b   | 1168ms   | good    | balanced
+//  3  | google/gemma-4-31b-it          | 1433ms   | good    | solid
+//  4  | openai/gpt-oss-20b             | 1837ms   | good    | OpenAI
+//  5  | google/gemma-4-26b-a4b-it      | 1860ms   | good    | solid
+//  6  | nvidia/nemotron-3-ultra-550b   | 1929ms   | best    | smartest
+//  7  | openrouter/free                | 2578ms   | varies  | auto-router
+//  8  | poolside/laguna-m.1            | 10418ms  | good    | slow but works
+//  -- | qwen3-next-80b                 | 429      | --      | rate-limited (keep as fallback)
+//  -- | dolphin-mistral-24b            | 429      | --      | rate-limited (keep as fallback)
+//  -- | llama-3.2-3b                   | 429      | --      | rate-limited (keep as fallback)
 const DEFAULT_OPENROUTER_MODELS = [
-  "openrouter/free",                                   // #1 special auto-router — picks best free model
-  "nvidia/nemotron-3-ultra-550b-a55b:free",            // #2 smartest but slow
-  "nvidia/nemotron-3-super-120b-a12b:free",            // #3 balanced
-  "nvidia/nemotron-3-nano-30b-a3b:free",               // #4 fast
-  "openai/gpt-oss-20b:free",                           // #5 OpenAI open model
-  "google/gemma-4-31b-it:free",                        // #6 Gemma 4
-  "google/gemma-4-26b-a4b-it:free",                    // #7 Gemma 4 smaller
-  "qwen/qwen3-next-80b-a3b-instruct:free",             // #8 Qwen (good multilingual)
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", // #9 Dolphin
-  "meta-llama/llama-3.2-3b-instruct:free",             // #10 small + fast
-  "poolside/laguna-m.1:free",                          // #11 Poolside
+  "nvidia/nemotron-3-nano-30b-a3b:free",                // #1 FASTEST (737ms)
+  "nvidia/nemotron-3-super-120b-a12b:free",             // #2 balanced (1168ms)
+  "google/gemma-4-31b-it:free",                         // #3 solid (1433ms)
+  "openai/gpt-oss-20b:free",                            // #4 OpenAI (1837ms)
+  "google/gemma-4-26b-a4b-it:free",                     // #5 solid (1860ms)
+  "nvidia/nemotron-3-ultra-550b-a55b:free",             // #6 smartest (1929ms)
+  "openrouter/free",                                    // #7 auto-router (2578ms)
+  "qwen/qwen3-next-80b-a3b-instruct:free",              // #8 rate-limited but good for Persian
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", // #9 fallback
+  "meta-llama/llama-3.2-3b-instruct:free",              // #10 fallback
+  "poolside/laguna-m.1:free",                           // #11 slow but works
 ];
 
 // ============================================================
