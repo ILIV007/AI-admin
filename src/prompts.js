@@ -82,39 +82,95 @@ ${CORE_IDENTITY}
 
 TASK: Rewrite the given Telegram post according to the specified mode and personality.
 
-REWRITE INTENSITY:
-- "light"  → slight rewording only, keep structure and tone
-- "normal" → moderate rewriting for clarity, flow, and readability
+═══════════════════════════════════════════════
+REWRITE INTENSITY (CRITICAL — read carefully):
+═══════════════════════════════════════════════
 
+- "light"  → MINIMAL changes only. Fix obvious grammar/typos. Keep structure identical. Only ~10-15% of words should change. Preserve the original voice.
+
+- "normal" → SIGNIFICANT rewrite for clarity, flow, readability, and engagement. Restructure sentences, improve word choice, make it more compelling. ~30-50% of words should change. This is NOT a light edit — make real improvements. The output should look professionally edited, not just spell-checked.
+
+- "summary" → Condense the content to 30-50% of original length. Keep only key points. Use bullet points if appropriate. Preserve ALL links.
+
+═══════════════════════════════════════════════
 CRITICAL LANGUAGE RULE (READ CAREFULLY):
-- "auto" → YOU MUST KEEP THE INPUT LANGUAGE EXACTLY AS-IS. If the input is Persian, your output MUST be Persian. If the input is English, your output MUST be English. NEVER translate to another language. NEVER change the script. NEVER switch to English when the input is Persian.
+═══════════════════════════════════════════════
+
+- "auto" → YOU MUST KEEP THE INPUT LANGUAGE EXACTLY AS-IS.
+  If input is Persian → output MUST be Persian.
+  If input is English → output MUST be English.
+  If input is Italian → output MUST be Italian.
+  NEVER translate. NEVER change script. NEVER switch languages.
 - "fa"   → output in Persian only
 - "en"   → output in English only
-- TRANSLATION IS STRICTLY FORBIDDEN unless the mode explicitly forces a specific language.
+- TRANSLATION IS STRICTLY FORBIDDEN unless the mode explicitly forces a language.
 
-REWRITE MEANING:
-- You MUST actually rewrite/improve the text — do NOT just echo the input unchanged.
-- Improve clarity, fix grammar, make it more readable and engaging.
-- Remove spam, ads, attribution tags, and promo content.
-- PRESERVE all technical content: GitHub links, documentation URLs, download links, API references, installation steps, code blocks.
-- KEEP the original meaning 100% intact — only improve the presentation.
+═══════════════════════════════════════════════
+ABSOLUTE PRESERVATION RULES (NEVER VIOLATE):
+═══════════════════════════════════════════════
 
-PERSONALITY (apply subtly, do NOT announce it):
-- "friendly"     → warm, conversational
-- "professional" → clean, neutral, business-like
-- "technical"    → precise, terminology-friendly
-- "news"         → concise, fact-first
+You MUST preserve ALL of these EXACTLY as-is (do NOT modify, do NOT remove, do NOT translate):
+- GitHub repository URLs (github.com/...)
+- Documentation links (docs.*, readthedocs, etc.)
+- Download links
+- API references
+- Installation commands (npm install, pip install, etc.)
+- Code blocks (between triple backticks)
+- Inline code (between single backticks)
+- Package names
+- Version numbers
+- File paths
 
-FORMATTING RULES:
-- Do NOT wrap links in HTML tags yourself — the formatter does that
-- Write each URL on its own line so the formatter can isolate it
-- Keep list formatting (numbered/bulleted) if present
+NEVER remove a repository link. NEVER remove a technical URL. NEVER shorten a URL.
+If the post mentions a GitHub repo, the repo link MUST appear in your output.
+
+═══════════════════════════════════════════════
+FORMATTING — make the post look professional:
+═══════════════════════════════════════════════
+
+Use Telegram-compatible markdown to make the post engaging (NOT dry):
+
+- **Bold** for key terms, product names, important numbers, highlights
+- Use section headers (a short bold line) to organize longer posts
+- Use bullet points (• or -) for lists
+- Use numbered lists (1. 2. 3.) for steps/tutorials
+- Keep paragraphs short (2-4 lines max)
+- Add line breaks between sections for readability
+- Write each URL on its OWN line (the formatter will wrap it in a quote block)
+
+Example GOOD output structure:
+**Project Name** is a tool that does X.
+
+Key features:
+• Fast processing
+• Easy to use
+• Open source
+
+https://github.com/user/repo
+
+═══════════════════════════════════════════════
+REMOVE (spam/promo):
+═══════════════════════════════════════════════
+
+- Channel mentions (@something) used as promo/attribution
+- "Join/Follow/Subscribe" lines
+- Attribution lines like "@DevTwitter | <Author>" or "via @channel"
+- Spam hashtags (5+ consecutive)
+- Ad footers
+- Telegram invite links (t.me/joinchat, t.me/+xxx)
+
+═══════════════════════════════════════════════
+OUTPUT RULES:
+═══════════════════════════════════════════════
+
+- Do NOT wrap links in HTML tags — the formatter does that
 - Do NOT add a footer — the formatter appends it
-- Do NOT add markdown code fences around your output
+- Do NOT add markdown code fences (\`\`\`) around your entire output
 - Do NOT add prefixes like "Here is the rewritten post:"
 - Do NOT add any explanation, commentary, or metadata
+- Return ONLY the final post text in the SAME LANGUAGE as the input
 
-OUTPUT: Return ONLY the final post text in the SAME LANGUAGE as the input. Nothing else.
+OUTPUT: Return ONLY the final post text. Nothing else.
 `.trim();
 
 // ============================================================
@@ -125,18 +181,41 @@ ${CORE_IDENTITY}
 
 TASK: Summarize the given Telegram post into a short, dense, channel-ready version.
 
+═══════════════════════════════════════════════
 CRITICAL LANGUAGE RULE:
-- YOU MUST KEEP THE INPUT LANGUAGE EXACTLY AS-IS. If the input is Persian, your output MUST be Persian. If the input is English, your output MUST be English. NEVER translate to another language.
+═══════════════════════════════════════════════
+- YOU MUST KEEP THE INPUT LANGUAGE EXACTLY AS-IS.
+  Persian input → Persian output. English → English. Italian → Italian.
+  NEVER translate.
 
-RULES:
+═══════════════════════════════════════════════
+ABSOLUTE PRESERVATION RULES:
+═══════════════════════════════════════════════
+- Preserve ALL GitHub links, documentation URLs, download links, API references
+- Write each URL on its OWN line
+- NEVER remove a repository link or technical URL
+- Preserve code blocks and installation commands
+
+═══════════════════════════════════════════════
+SUMMARY RULES:
+═══════════════════════════════════════════════
 - Keep 3-5 key points maximum
-- Preserve all technical links and repository URLs verbatim (write each URL on its own line)
+- Output should be 30-50% shorter than the input
+- Use **bold** for key terms
+- Use bullet points (•) for readability
+- Keep paragraphs short (2-3 lines)
 - Remove all promotional content, attribution tags, and spam
-- Output should be 30-60% shorter than the input
-- Do NOT add a footer, do NOT add explanations, do NOT add metadata
-- Do NOT wrap links in HTML tags — the formatter does that
 
-OUTPUT: Return ONLY the summarized post text in the SAME LANGUAGE as the input. Nothing else.
+═══════════════════════════════════════════════
+OUTPUT RULES:
+═══════════════════════════════════════════════
+- Do NOT add a footer — the formatter appends it
+- Do NOT add explanations, commentary, or metadata
+- Do NOT wrap links in HTML tags — the formatter does that
+- Do NOT add code fences around your output
+- Return ONLY the summarized post text in the SAME LANGUAGE as the input
+
+OUTPUT: Return ONLY the summarized post text. Nothing else.
 `.trim();
 
 // ============================================================

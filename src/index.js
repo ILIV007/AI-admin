@@ -360,8 +360,18 @@ async function runMediaGroupPipeline(env, items, update) {
   const adminId = items[0].fromId || env.ADMIN_ID;
   const startTime = Date.now();
 
+  // Combine captions from all items.
+  // Only add "[Photo N]:" numbering when MULTIPLE items have captions.
+  // If only one item has a caption (even in a multi-photo album), use it directly
+  // without numbering — this avoids the bug where "[Photo 1:]" appeared on single-caption albums.
+  const itemsWithCaptions = items.filter((it) => it.caption && it.caption.trim());
+  const useNumbering = itemsWithCaptions.length > 1;
+
   const combinedText = items
-    .map((it, i) => (it.caption ? (items.length > 1 ? `[Photo ${i + 1}]: ${it.caption}` : it.caption) : ""))
+    .map((it, i) => {
+      if (!it.caption || !it.caption.trim()) return "";
+      return useNumbering ? `[Photo ${i + 1}]: ${it.caption}` : it.caption;
+    })
     .filter(Boolean)
     .join("\n\n");
 
@@ -613,13 +623,14 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiError = null;
 
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
-  // AUTO-SUMMARIZE: if the input is very long (>1500 chars), force summary mode
+  // AUTO-SUMMARIZE: if the input is very long (>1200 chars), force summary mode
   // to avoid Telegram's 4096 char limit and make the post readable.
-  const LONG_TEXT_THRESHOLD = 1500;
-  const TELEGRAM_LIMIT = 4000; // leave some room for footer + blockquote tags
+  // This applies REGARDLESS of the admin's rewrite_mode setting — long posts
+  // MUST be summarized or they'll fail to publish.
+  const LONG_TEXT_THRESHOLD = 1200;
   const finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY" : ""})`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
