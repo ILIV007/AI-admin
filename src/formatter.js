@@ -65,8 +65,6 @@ const htmlEngine = {
     });
 
     // 3. Convert markdown-style links [text](url) → "text\nurl"
-    //    This way the text stays as a clickable reference and the URL gets
-    //    its own blockquote from the URL replacement step below.
     work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1\n$2");
 
     // 4. Remove angle brackets around URLs (<https://...> → https://...)
@@ -76,8 +74,6 @@ const htmlEngine = {
     work = this.escape(work);
 
     // 6. Replace each URL with a blockquote-wrapped link.
-    //    Use URL_SPLIT_REGEX which stops at the next "https://" so that
-    //    multiple URLs stuck together get split into separate blockquotes.
     work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
 
     // 7. Restore inline code as <code>...</code>
@@ -86,9 +82,50 @@ const htmlEngine = {
     // 8. Restore code blocks as <pre><code>...</code></pre>
     work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
 
-    // 9. Convert simple bold (**text** or __text__) to <b>
+    // 9. Convert markdown bold/italic/strike to HTML tags
+    // **bold** → <b>bold</b>
     work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-    work = work.replace(/__([^_]+)__/g, (m, p1) => (m.includes("CODEBLOCK") || m.includes("INLINE") ? m : `<b>${p1}</b>`));
+    // *italic* → <i>italic</i>  (must come AFTER bold to avoid conflict)
+    work = work.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<i>$1</i>");
+    // _italic_ → <i>italic</i>
+    work = work.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "<i>$1</i>");
+    // ~~strike~~ → <s>strike</s>
+    work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
+    // __bold__ (double underscore) → <b>bold</b>  (after italic)
+    work = work.replace(/__([^_\n]+)__/g, (m, p1) => (m.includes("CODEBLOCK") || m.includes("INLINE") ? m : `<b>${p1}</b>`));
+
+    // 10. Convert markdown headings (### Title, ## Title, # Title) → <b>Title</b>
+    work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
+
+    // 11. Convert markdown bullet lists (• or - or *) → proper bullet
+    work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
+
+    // 12. QUOTE PARAGRAPHS: wrap long paragraphs (>60 chars, no URL, no HTML tag) in <blockquote>
+    // This makes the post visually engaging — key text blocks stand out.
+    // Only quote paragraphs that are NOT already in a blockquote (URLs) and
+    // don't contain HTML tags (to avoid nesting issues).
+    const lines = work.split("\n");
+    const quotedLines = lines.map((line) => {
+      const trimmed = line.trim();
+      // Skip empty lines
+      if (!trimmed) return line;
+      // Skip lines that are already blockquotes (URLs)
+      if (trimmed.startsWith("<blockquote>")) return line;
+      // Skip lines that contain HTML tags (already formatted)
+      if (/<[a-z/]/i.test(trimmed)) return line;
+      // Skip short lines (< 50 chars) — too short to quote
+      if (trimmed.length < 50) return line;
+      // Skip lines that look like list items (start with bullet or number)
+      if (/^[•\-\*\d]/.test(trimmed)) return line;
+      // Skip lines that are part of code blocks
+      if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
+      // This is a substantial paragraph — quote it!
+      return `<blockquote>${trimmed}</blockquote>`;
+    });
+    work = quotedLines.join("\n");
+
+    // 13. Clean up extra blank lines (max 2 consecutive)
+    work = work.replace(/\n{3,}/g, "\n\n");
 
     return work.trim();
   },

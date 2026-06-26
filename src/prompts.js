@@ -234,10 +234,29 @@ export function buildClassifyUserMessage(text) {
 // ============================================================
 export function buildRewriteUserMessage(text, mode, language, personality) {
   const personalityGuide = {
-    friendly: "Write like a REAL PERSON sharing something cool with friends. Be conversational, warm, natural. Use expressions a real human would use. Sound like a knowledgeable friend — NOT a corporate bot. Vary sentence length. Be genuine, not fake-enthusiastic.",
-    professional: "Clean, neutral, business-like. Factual and precise. No slang.",
-    technical: "Precise, terminology-friendly. Focus on specs and details.",
-    news: "Concise, fact-first. Journalistic tone.",
+    friendly: `Write like a REAL HUMAN posting to their own Telegram channel. Imagine you're a tech-savvy friend sharing something interesting you found.
+
+KEY RULES for friendly tone:
+- Use natural, conversational language — like you're talking to a friend
+- Add occasional personality: "pretty cool", "worth checking out", "this is interesting"
+- Use contractions naturally (it's, don't, you'll, that's)
+- Vary sentence length — mix short punchy sentences with longer ones
+- Show genuine enthusiasm for cool stuff, but don't overdo it
+- NEVER sound like a corporate announcement, news agency, or AI assistant
+- NEVER use phrases like "In today's world", "It is worth noting", "As an AI"
+- NEVER start with "Hey guys" or "What's up" — just dive into the content naturally
+- Write the way YOU would write if you were sharing this with friends
+- For Persian: use colloquial Persian (محاوره‌ای), not formal (کتابی). Like how people actually talk on Telegram.
+
+EXAMPLE of friendly tone:
+"This tool is pretty neat — it lets you do X without all the usual hassle. The setup takes like 2 minutes and it just works."
+
+EXAMPLE of ROBOTIC tone (AVOID):
+"This tool provides users with the ability to perform X operations in an efficient manner."`,
+
+    professional: "Clean, neutral, business-like. Factual and precise. No slang. No contractions.",
+    technical: "Precise, terminology-friendly. Focus on specs and details. Include technical context.",
+    news: "Concise, fact-first. Journalistic tone. Lead with the most important information.",
   };
 
   return [
@@ -251,7 +270,7 @@ export function buildRewriteUserMessage(text, mode, language, personality) {
     text,
     `----`,
     ``,
-    `Return ONLY the final post text.`,
+    `Return ONLY the final post text in the SAME LANGUAGE as the input.`,
   ].join("\n");
 }
 
