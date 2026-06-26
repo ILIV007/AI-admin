@@ -27,10 +27,14 @@ DEFAULT_AI_PROVIDER = "openrouter"
 # Gemini model (free tier)
 GEMINI_MODEL = "gemini-2.0-flash"
 
-# OpenRouter model — meta-llama/llama-3.3-70b-instruct:free
-# Fast, reliable, and free. Handles rewriting well.
-# Alternatives: "google/gemini-2.0-flash-exp:free" (faster), "nvidia/nemotron-3-ultra-550b-a55b:free" (slower but smarter)
-OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# OpenRouter primary model (tried first)
+OPENROUTER_MODEL = "google/gemini-2.0-flash-exp:free"
+
+# OpenRouter FALLBACK models (comma-separated, ALL tried in parallel)
+# These are FREE models ranked by: speed, quality, and Persian/multilingual support.
+# If one is rate-limited (429), others will still work.
+# Add/remove models as you like — see https://openrouter.ai/models for more.
+OPENROUTER_FALLBACK_MODELS = "google/gemini-2.0-flash-exp:free,qwen/qwen-2.5-72b-instruct:free,meta-llama/llama-3.3-70b-instruct:free,deepseek/deepseek-chat-v3-0324:free,mistralai/mistral-7b-instruct:free,nousresearch/hermes-3-llama-3.1-405b:free"
 
 # ============================================================
 # Secrets (DO NOT put real values here — set via dashboard):
