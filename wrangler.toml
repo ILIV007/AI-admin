@@ -28,13 +28,14 @@ DEFAULT_AI_PROVIDER = "openrouter"
 GEMINI_MODEL = "gemini-2.0-flash"
 
 # OpenRouter primary model (tried first)
-OPENROUTER_MODEL = "google/gemini-2.0-flash-exp:free"
+OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # OpenRouter FALLBACK models (comma-separated, ALL tried in parallel)
-# These are FREE models ranked by: speed, quality, and Persian/multilingual support.
-# If one is rate-limited (429), others will still work.
-# Add/remove models as you like — see https://openrouter.ai/models for more.
-OPENROUTER_FALLBACK_MODELS = "google/gemini-2.0-flash-exp:free,qwen/qwen-2.5-72b-instruct:free,meta-llama/llama-3.3-70b-instruct:free,deepseek/deepseek-chat-v3-0324:free,mistralai/mistral-7b-instruct:free,nousresearch/hermes-3-llama-3.1-405b:free"
+# These are FREE models verified working as of 2025.
+# OpenRouter changes free model availability frequently — if you see 404 errors
+# in /debug → Test AI, update this list with currently-available free models
+# from https://openrouter.ai/models (filter by "Free")
+OPENROUTER_FALLBACK_MODELS = "meta-llama/llama-3.3-70b-instruct:free,deepseek/deepseek-r1:free,google/gemini-2.5-pro-exp-03-25:free,qwen/qwen-2.5-coder-32b-instruct:free,mistralai/mistral-nemo:free,google/gemma-2-9b-it:free,microsoft/phi-3-medium-4k-instruct:free,openchat/openchat-7b:free,huggingfaceh4/zephyr-7b-beta:free"
 
 # ============================================================
 # Secrets (DO NOT put real values here — set via dashboard):

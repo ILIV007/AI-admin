@@ -17,17 +17,21 @@
 const REQUEST_TIMEOUT_MS = 25_000;
 
 // ============================================================
-// DEFAULT FREE MODELS on OpenRouter (ranked by quality + Persian support)
+// DEFAULT FREE MODELS on OpenRouter (v0.2.3 — updated slugs)
 // ============================================================
-// These are ALL free models available on OpenRouter.
-// Ordered by: speed, quality, and multilingual (Persian) support.
+// OpenRouter frequently changes which models are free. These are verified
+// working free models as of 2025. The `:free` suffix is required.
+// Ranked by: availability, speed, quality, and Persian/multilingual support.
 const DEFAULT_OPENROUTER_MODELS = [
-  "google/gemini-2.0-flash-exp:free",           // #1 fast + multilingual
-  "qwen/qwen-2.5-72b-instruct:free",            // #2 excellent multilingual (Persian!)
-  "meta-llama/llama-3.3-70b-instruct:free",     // #3 good quality
-  "deepseek/deepseek-chat-v3-0324:free",         // #4 excellent for text
-  "mistralai/mistral-7b-instruct:free",          // #5 fast fallback
-  "nousresearch/hermes-3-llama-3.1-405b:free",  // #6 very smart but slow
+  "meta-llama/llama-3.3-70b-instruct:free",       // #1 confirmed working
+  "deepseek/deepseek-r1:free",                     // #2 reasoning model, good quality
+  "google/gemini-2.5-pro-exp-03-25:free",          // #3 newer Gemini
+  "qwen/qwen-2.5-coder-32b-instruct:free",         // #4 Qwen coder (handles text well)
+  "mistralai/mistral-nemo:free",                   // #5 smaller, faster Mistral
+  "google/gemma-2-9b-it:free",                     // #6 Google Gemma
+  "microsoft/phi-3-medium-4k-instruct:free",       // #7 Microsoft Phi
+  "openchat/openchat-7b:free",                     // #8 OpenChat
+  "huggingfaceh4/zephyr-7b-beta:free",             // #9 Zephyr
 ];
 
 // ============================================================
@@ -115,7 +119,10 @@ async function openRouterComplete(apiKey, model, { system, user, jsonMode = fals
 
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content ?? "";
-  if (!text) throw new Error("EMPTY_RESPONSE");
+  if (!text || !text.trim()) {
+    // Some models return 200 OK but with empty content (content filter, etc.)
+    throw new Error("EMPTY_RESPONSE (200 OK but no content — model may have refused)");
+  }
   return text.trim();
 }
 

@@ -134,18 +134,44 @@ export function extractContent(update) {
   const msg = update.message || update.channel_post || update.edited_message || update.edited_channel_post;
   if (!msg) return null;
 
+  let text = msg.text || msg.caption || "";
+  const entities = msg.entities || msg.caption_entities || [];
+
+  // Extract URLs from "text_link" entities (clickable text that hides a URL).
+  // Telegram stores these as { type: "text_link", url: "https://...", offset, length }.
+  // The URL is NOT in the message text — we need to extract it from entities
+  // and append it to the text so the cleaner/formatter can process it.
+  const textLinkUrls = [];
+  for (const ent of entities) {
+    if (ent.type === "text_link" && ent.url) {
+      textLinkUrls.push(ent.url);
+    }
+  }
+
+  // If there are text_link URLs, append them to the text on separate lines
+  // so the cleaner preserves them and the formatter wraps them in blockquotes.
+  if (textLinkUrls.length > 0) {
+    // Only add URLs that aren't already present as plain text in the message
+    const existingUrls = text.match(/https?:\/\/[^\s<>"']+/gi) || [];
+    const newUrls = textLinkUrls.filter((url) => !existingUrls.includes(url));
+    if (newUrls.length > 0) {
+      text = text + "\n" + newUrls.join("\n");
+    }
+  }
+
   const result = {
     chatId: msg.chat?.id,
     chatType: msg.chat?.type,
     fromId: msg.from?.id,
     messageId: msg.message_id,
     date: msg.date,
-    text: msg.text || msg.caption || "",
+    text: text,
     mediaType: null,
     mediaFileId: null,
     mediaGroupId: msg.media_group_id || null,
     replyToMessage: msg.reply_to_message || null,
-    entities: msg.entities || msg.caption_entities || [],
+    entities: entities,
+    textLinkUrls: textLinkUrls, // explicit list for debugging
     raw: msg,
   };
 

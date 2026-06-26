@@ -215,8 +215,9 @@ export async function testKV(SETTINGS) {
 }
 
 export async function testAI(env) {
-  const userMsg = "Reply with exactly: AI_OK";
-  const systemMsg = "You are a test endpoint. Reply with exactly: AI_OK";
+  // Use a real-world test prompt (not just "AI_OK") to catch empty-response issues
+  const userMsg = "Summarize this in one sentence: Telegram is a cloud-based instant messaging service that focuses on speed and security.";
+  const systemMsg = "You are a helpful assistant. Reply with a concise summary.";
 
   // Build list of all models to test
   const tests = [];
@@ -236,15 +237,25 @@ export async function testAI(env) {
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: systemMsg }] },
               contents: [{ role: "user", parts: [{ text: userMsg }] }],
-              generationConfig: { temperature: 0, maxOutputTokens: 50 },
+              generationConfig: { temperature: 0, maxOutputTokens: 200 },
             }), signal: ctrl.signal,
           }).catch((e) => { if (e.name === "AbortError") throw new Error("TIMEOUT 25s"); throw e; }).finally(() => clearTimeout(t));
-          const data = await res.json();
+          const raw = await res.text();
           const ms = Date.now() - start;
-          if (!res.ok) return { ok: false, error: `${res.status}: ${JSON.stringify(data.error || data).slice(0, 150)}`, ms };
+          let data;
+          try { data = JSON.parse(raw); } catch { data = { raw: raw.slice(0, 200) }; }
+
+          if (!res.ok) {
+            const errMsg = data?.error?.message || data?.message || raw.slice(0, 200);
+            return { ok: false, httpStatus: res.status, error: errMsg, errorType: res.status === 429 ? "RATE_LIMITED" : res.status === 404 ? "NOT_FOUND" : "HTTP_ERROR", ms };
+          }
+
           const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
-          return { ok: true, response: text.trim().slice(0, 100), ms };
-        } catch (e) { return { ok: false, error: e.message, ms: Date.now() - start }; }
+          if (!text || !text.trim()) {
+            return { ok: false, httpStatus: 200, error: "Empty response (200 OK but no content)", errorType: "EMPTY_RESPONSE", ms };
+          }
+          return { ok: true, response: text.trim().slice(0, 200), responseLen: text.trim().length, ms };
+        } catch (e) { return { ok: false, error: e.message, errorType: e.message.includes("TIMEOUT") ? "TIMEOUT" : "EXCEPTION", ms: Date.now() - start }; }
       },
     });
   }
@@ -255,7 +266,7 @@ export async function testAI(env) {
     if (env.OPENROUTER_FALLBACK_MODELS) {
       models = env.OPENROUTER_FALLBACK_MODELS.split(",").map((m) => m.trim()).filter(Boolean);
     } else {
-      models = [env.OPENROUTER_MODEL || "google/gemini-2.0-flash-exp:free"];
+      models = ["meta-llama/llama-3.3-70b-instruct:free"];
     }
 
     for (const model of models) {
@@ -269,15 +280,31 @@ export async function testAI(env) {
             const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
               method: "POST",
               headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "HTTP-Referer": "https://ai-admin.workers.dev", "X-Title": "AI Admin" },
-              body: JSON.stringify({ model, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userMsg }], temperature: 0, max_tokens: 50 }),
+              body: JSON.stringify({ model, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userMsg }], temperature: 0, max_tokens: 200 }),
               signal: ctrl.signal,
             }).catch((e) => { if (e.name === "AbortError") throw new Error("TIMEOUT 25s"); throw e; }).finally(() => clearTimeout(t));
-            const data = await res.json();
+            const raw = await res.text();
             const ms = Date.now() - start;
-            if (!res.ok) return { ok: false, error: `${res.status}: ${JSON.stringify(data.error || data).slice(0, 150)}`, ms };
+            let data;
+            try { data = JSON.parse(raw); } catch { data = { raw: raw.slice(0, 200) }; }
+
+            if (!res.ok) {
+              const errMsg = data?.error?.message || data?.message || raw.slice(0, 200);
+              let errorType = "HTTP_ERROR";
+              if (res.status === 429) errorType = "RATE_LIMITED";
+              else if (res.status === 404) errorType = "MODEL_NOT_FOUND";
+              else if (res.status === 401) errorType = "AUTH_ERROR";
+              return { ok: false, httpStatus: res.status, error: errMsg, errorType, ms };
+            }
+
             const text = data?.choices?.[0]?.message?.content ?? "";
-            return { ok: true, response: text.trim().slice(0, 100), ms };
-          } catch (e) { return { ok: false, error: e.message, ms: Date.now() - start }; }
+            if (!text || !text.trim()) {
+              // Check for finish_reason that explains the empty response
+              const finishReason = data?.choices?.[0]?.finish_reason || "unknown";
+              return { ok: false, httpStatus: 200, error: `Empty response (finish_reason: ${finishReason})`, errorType: "EMPTY_RESPONSE", ms };
+            }
+            return { ok: true, response: text.trim().slice(0, 200), responseLen: text.trim().length, ms };
+          } catch (e) { return { ok: false, error: e.message, errorType: e.message.includes("TIMEOUT") ? "TIMEOUT" : "EXCEPTION", ms: Date.now() - start }; }
         },
       });
     }
@@ -296,9 +323,13 @@ export async function testAI(env) {
     })
   );
 
-  // Summarize
+  // Categorize results
   const working = results.filter((r) => r.ok);
   const failed = results.filter((r) => !r.ok);
+  const notFound = failed.filter((r) => r.errorType === "MODEL_NOT_FOUND");
+  const rateLimited = failed.filter((r) => r.errorType === "RATE_LIMITED");
+  const empty = failed.filter((r) => r.errorType === "EMPTY_RESPONSE");
+  const timeouts = failed.filter((r) => r.errorType === "TIMEOUT");
   const fastest = working.length > 0 ? working.reduce((a, b) => (a.ms < b.ms ? a : b)) : null;
 
   return {
@@ -306,11 +337,19 @@ export async function testAI(env) {
     total: results.length,
     working: working.length,
     failed: failed.length,
+    breakdown: {
+      notFound: notFound.length,
+      rateLimited: rateLimited.length,
+      emptyResponse: empty.length,
+      timeout: timeouts.length,
+      other: failed.length - notFound.length - rateLimited.length - empty.length - timeouts.length,
+    },
     results: results,
     fastest: fastest ? fastest.name : null,
+    fastestMs: fastest ? fastest.ms : null,
     recommendation: working.length === 0
-      ? "ALL models failed. Check API keys and quotas."
-      : `${working.length}/${results.length} models work. Fastest: ${fastest.name} (${fastest.ms}ms)`,
+      ? `ALL ${results.length} models failed. ${notFound.length} not found (update OPENROUTER_FALLBACK_MODELS in wrangler.toml), ${rateLimited.length} rate-limited, ${empty.length} empty, ${timeouts.length} timeout.`
+      : `${working.length}/${results.length} models work. Fastest: ${fastest.name} (${fastest.ms}ms). ${notFound.length} models have wrong slugs (404) — update OPENROUTER_FALLBACK_MODELS.`,
   };
 }
 

@@ -609,12 +609,17 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiError = null;
 
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
-  const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${effectiveRewriteMode} should=${shouldRewrite}`);
+  // AUTO-SUMMARIZE: if the input is very long (>1500 chars), force summary mode
+  // to avoid Telegram's 4096 char limit and make the post readable.
+  const LONG_TEXT_THRESHOLD = 1500;
+  const TELEGRAM_LIMIT = 4000; // leave some room for footer + blockquote tags
+  const finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
+  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
+  console.log(`[pipeline] rewrite: mode=${finalMode} should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY" : ""})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
-      if (effectiveRewriteMode === "summary") {
+      if (finalMode === "summary") {
         const res = await aiSummarize(env, settings, textForAI, effectiveLang);
         if (res.ok && res.text) {
           finalText = res.text;
@@ -626,12 +631,12 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
           traceStep("ai_summarize", false, res.error || "unknown");
         }
       } else {
-        const res = await aiRewrite(env, settings, textForAI, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly");
+        const res = await aiRewrite(env, settings, textForAI, finalMode, effectiveLang, settings.personality_mode || "friendly");
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
           aiProvider = res.provider;
-          traceStep("ai_rewrite", true, `provider=${res.provider} mode=${effectiveRewriteMode}`);
+          traceStep("ai_rewrite", true, `provider=${res.provider} mode=${finalMode}`);
         } else {
           aiError = res.error;
           traceStep("ai_rewrite", false, res.error || "unknown");
@@ -642,14 +647,24 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       traceStep("ai_exception", false, e.message);
     }
   } else {
-    traceStep("ai_skip", true, `mode=${effectiveRewriteMode}`);
+    traceStep("ai_skip", true, `mode=${finalMode}`);
   }
 
   // Format
   const { text: formattedText, parseMode } = formatPost(finalText, {
     footer: settings.footer_text, engineName: "html",
   });
-  traceStep("format", true, `${formattedText.length} chars`);
+
+  // SAFETY: if the formatted text is still too long for Telegram (>4000 chars),
+  // truncate it to avoid "message too long" errors.
+  const TELEGRAM_MSG_LIMIT = 4000;
+  let safeFormattedText = formattedText;
+  if (formattedText.length > TELEGRAM_MSG_LIMIT) {
+    console.warn(`[pipeline] formatted text too long (${formattedText.length} > ${TELEGRAM_MSG_LIMIT}), truncating`);
+    safeFormattedText = formattedText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n<i>…(truncated)</i>";
+    traceStep("truncate", true, `${formattedText.length}→${safeFormattedText.length} chars`);
+  }
+  traceStep("format", true, `${safeFormattedText.length} chars`);
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;
@@ -662,7 +677,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   // Send to user
   if (feedbackChatId) {
     const userRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
-      text: formattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+      text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
     });
     traceStep("send_to_user", userRes.ok, userRes.ok ? "ok" : userRes.description);
@@ -673,7 +688,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
 
   // Publish to channel
   const publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-    text: formattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+    text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
     extra: { parse_mode: parseMode, disable_web_page_preview: false },
   });
   traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? "ok" : publishRes.description);
