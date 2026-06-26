@@ -426,7 +426,7 @@ async function runMediaGroupPipeline(env, items, update) {
   }
 
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text, engineName: "html",
+    footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
   });
 
   const mediaItems = items.map((it, i) => ({
@@ -623,16 +623,22 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiError = null;
 
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
+  const intensity = settings.edit_intensity ?? 60;
 
-  // AUTO-SUMMARIZE: if the input is long, force summary mode.
-  // Threshold depends on whether the post has media:
-  //   - Media post (photo/video) → caption limit is 1024 chars, so threshold is 800
-  //   - Text-only post → message limit is 4096 chars, so threshold is 1200
+  // If intensity is 0, skip AI rewrite entirely (format only)
+  // If intensity is 0 AND text is long, still summarize to fit Telegram limits
   const hasMedia = !!content.mediaFileId;
   const LONG_TEXT_THRESHOLD = hasMedia ? 800 : 1200;
-  const finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
+  let finalMode;
+  if (intensity === 0) {
+    // Format only — but still summarize if text is too long for Telegram
+    finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : "none";
+  } else {
+    // Normal: use rewrite_mode, but force summary if text is long
+    finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
+  }
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""}${hasMedia ? " [MEDIA]" : ""})`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""}${hasMedia ? " [MEDIA]" : ""})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
@@ -669,7 +675,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
 
   // Format
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text, engineName: "html",
+    footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
   });
 
   // SAFETY: truncate to avoid Telegram limits.
@@ -806,7 +812,7 @@ async function runChannelEditPipeline(env, content, update) {
   }
 
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text, engineName: "html",
+    footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
   });
 
   let editRes;

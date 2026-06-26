@@ -104,9 +104,9 @@ function intensityKeyboard(current) {
   });
   return {
     inline_keyboard: [
-      [mk("20", "20% (Minimal)"), mk("40", "40% (Light)")],
-      [mk("50", "50% (Normal)"), mk("70", "70% (Strong)")],
-      [mk("100", "100% (Maximum)"), mk("0", "0% (Format only)")],
+      [mk("0", "0% (Format only)"), mk("20", "20% (Minimal)")],
+      [mk("40", "40% (Light)"), mk("60", "60% (Normal) ⭐")],
+      [mk("80", "80% (Strong)"), mk("100", "100% (Maximum)")],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -119,8 +119,8 @@ function emojiKeyboard(current) {
   });
   return {
     inline_keyboard: [
-      [mk("0", "None 🚫"), mk("1", "Minimal 🙂")],
-      [mk("2", "Moderate 😎"), mk("3", "Heavy 🤩")],
+      [mk("0", "0% (None 🚫)"), mk("20", "20% (Minimal ⭐)")],
+      [mk("50", "50% (Moderate 😎)"), mk("100", "100% (Heavy 🤩)")],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -155,8 +155,8 @@ function mainMenuText(settings) {
     `<b>Current configuration:</b>`,
     `🌐 Language: <code>${settings.language_mode}</code>`,
     `✍️ Rewrite: <code>${settings.rewrite_mode}</code>`,
-    `🎨 Intensity: <code>${settings.edit_intensity ?? 50}%</code>`,
-    `😀 Emoji: <code>${["None", "Minimal", "Moderate", "Heavy"][settings.emoji_level ?? 2]}</code>`,
+    `🎨 Intensity: <code>${settings.edit_intensity ?? 60}%</code>`,
+    `😀 Emoji: <code>${settings.emoji_level ?? 20}%</code>`,
     `🎭 Personality: <code>${settings.personality_mode}</code>`,
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
@@ -170,30 +170,29 @@ function intensityMenuText(current) {
   return [
     `<b>🎨 Edit Intensity</b>`,
     ``,
-    `Current: <code>${current ?? 50}%</code>`,
+    `Current: <code>${current ?? 60}%</code>`,
     ``,
-    `<i>Controls how much the bot changes each post:</i>`,
-    `<b>0%</b> = format only (no rewrite, just links + footer)`,
-    `<b>20%</b> = minimal (only quote links/footer)`,
-    `<b>40%</b> = light rewrite`,
-    `<b>50%</b> = normal balanced rewrite`,
-    `<b>70%</b> = strong rewrite with more formatting`,
-    `<b>100%</b> = maximum rewrite + heavy emoji + full markdown`,
+    `<i>Controls how much the bot changes + formats each post:</i>`,
+    `<b>0%</b> = format only (no AI rewrite, just links + footer quoted)`,
+    `<b>20%</b> = minimal (links + footer quoted, NO paragraph quoting)`,
+    `<b>40%</b> = light rewrite + quote long paragraphs`,
+    `<b>60%</b> = NORMAL ⭐ — quote paragraphs + bold key terms + moderate rewrite`,
+    `<b>80%</b> = strong rewrite + heavy formatting`,
+    `<b>100%</b> = maximum — full rewrite + heavy quoting + bold + emoji`,
   ].join("\n");
 }
 
 function emojiMenuText(current) {
-  const labels = ["None", "Minimal", "Moderate", "Heavy"];
   return [
     `<b>😀 Emoji Level</b>`,
     ``,
-    `Current: <code>${labels[current ?? 2]}</code>`,
+    `Current: <code>${current ?? 20}%</code>`,
     ``,
-    `<i>Controls how many emojis are added to posts:</i>`,
-    `<b>None</b> = no emojis at all`,
-    `<b>Minimal</b> = 1-2 emojis max`,
-    `<b>Moderate</b> = 3-5 emojis, natural placement`,
-    `<b>Heavy</b> = lots of emojis for visual impact`,
+    `<i>Controls how many emojis the AI adds to posts:</i>`,
+    `<b>0%</b> = no emojis at all`,
+    `<b>20%</b> = MINIMAL ⭐ — 1-3 emojis for polish (default)`,
+    `<b>50%</b> = moderate — 3-5 emojis`,
+    `<b>100%</b> = heavy — lots of emojis`,
   ].join("\n");
 }
 

@@ -101,34 +101,38 @@ const htmlEngine = {
     work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
 
     // 12. QUOTE PARAGRAPHS: wrap ONLY long multi-sentence paragraphs in <blockquote>.
-    // Do NOT quote: headings, short lines, list items, single-sentence lines.
-    // A paragraph qualifies for quoting only if:
-    //   - It's substantial (>= 120 chars)
-    //   - It contains multiple sentences (>= 2 periods/exclamation/question marks)
-    //   - It's NOT a heading (doesn't start with <b>... but is short)
-    //   - It's NOT already in a blockquote or has HTML tags
-    const lines = work.split("\n");
-    const quotedLines = lines.map((line) => {
-      const trimmed = line.trim();
-      // Skip empty lines
-      if (!trimmed) return line;
-      // Skip lines that are already blockquotes (URLs)
-      if (trimmed.startsWith("<blockquote>")) return line;
-      // Skip lines that contain HTML tags (already formatted — headings, bold, etc.)
-      if (/<[a-z/]/i.test(trimmed)) return line;
-      // Skip short lines (< 120 chars) — headings, short intros, etc.
-      if (trimmed.length < 120) return line;
-      // Skip lines that look like list items (start with bullet or number)
-      if (/^[•\-\*\d]/.test(trimmed)) return line;
-      // Skip lines that are part of code blocks
-      if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
-      // Skip lines that are single sentences (only one period/exclamation)
-      const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
-      if (sentenceEnds < 2) return line;
-      // This is a substantial multi-sentence paragraph — quote it!
-      return `<blockquote>${trimmed}</blockquote>`;
-    });
-    work = quotedLines.join("\n");
+    // Behavior depends on ctx.intensity (0-100):
+    //   - intensity <= 20: NO paragraph quoting (only links/footer quoted)
+    //   - intensity >= 40: quote long paragraphs (>= 120 chars, >= 2 sentences)
+    //   - intensity >= 80: quote shorter paragraphs too (>= 80 chars)
+    const intensity = ctx.intensity ?? 60;
+    const shouldQuoteParagraphs = intensity > 20;
+    const minLength = intensity >= 80 ? 80 : 120;
+
+    if (shouldQuoteParagraphs) {
+      const lines = work.split("\n");
+      const quotedLines = lines.map((line) => {
+        const trimmed = line.trim();
+        // Skip empty lines
+        if (!trimmed) return line;
+        // Skip lines that are already blockquotes (URLs)
+        if (trimmed.startsWith("<blockquote>")) return line;
+        // Skip lines that contain HTML tags (already formatted — headings, bold, etc.)
+        if (/<[a-z/]/i.test(trimmed)) return line;
+        // Skip short lines
+        if (trimmed.length < minLength) return line;
+        // Skip lines that look like list items (start with bullet or number)
+        if (/^[•\-\*\d]/.test(trimmed)) return line;
+        // Skip lines that are part of code blocks
+        if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
+        // Skip lines that are single sentences (only one period/exclamation)
+        const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
+        if (sentenceEnds < 2) return line;
+        // This is a substantial multi-sentence paragraph — quote it!
+        return `<blockquote>${trimmed}</blockquote>`;
+      });
+      work = quotedLines.join("\n");
+    }
 
     // 13. Clean up extra blank lines (max 2 consecutive)
     work = work.replace(/\n{3,}/g, "\n\n");

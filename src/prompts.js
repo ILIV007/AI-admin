@@ -232,7 +232,7 @@ export function buildClassifyUserMessage(text) {
 // ============================================================
 // Helper: build the full rewrite user message
 // ============================================================
-export function buildRewriteUserMessage(text, mode, language, personality, editIntensity = 50, emojiLevel = 2) {
+export function buildRewriteUserMessage(text, mode, language, personality, editIntensity = 60, emojiLevel = 20) {
   const personalityGuide = {
     friendly: `Write like a REAL HUMAN posting to their own Telegram channel. Imagine you're a tech-savvy friend sharing something interesting you found.
 
@@ -259,22 +259,55 @@ EXAMPLE of ROBOTIC tone (AVOID):
     news: "Concise, fact-first. Journalistic tone. Lead with the most important information.",
   };
 
-  const emojiGuide = {
-    0: "Do NOT add any emojis. The post must be emoji-free.",
-    1: "Add at most 1-2 emojis, only where they naturally fit (e.g. 🔥 for excitement, ✅ for confirmation).",
-    2: "Add 3-5 emojis naturally throughout the post to make it engaging. Use them at section starts, key points, or to convey emotion. Don't overdo it.",
-    3: "Add lots of emojis! Make the post visually rich and exciting. Use emojis liberally — at start, between sections, at key points, at end. Examples: 🚀🔥💡✨👍🎯⚡🌟💪🎉",
-  };
+  // Emoji guide based on emoji_level (0-100%)
+  const emojiGuide = emojiLevel === 0
+    ? "Do NOT add any emojis. The post must be emoji-free."
+    : emojiLevel <= 20
+    ? "Add 1-3 emojis MAXIMUM, only where they naturally fit and enhance the post (e.g. one at the start, one near a key point). Keep it subtle and professional."
+    : emojiLevel <= 50
+    ? "Add 3-5 emojis naturally throughout the post. Place them at section starts, key points, or to convey emotion. Don't overdo it."
+    : "Add LOTS of emojis! Make the post visually rich and exciting. Use emojis liberally — at start, between sections, at key points, at end. Examples: 🚀🔥💡✨👍🎯⚡🌟💪🎉";
 
-  const intensityGuide = editIntensity >= 80
-    ? "INTENSITY: MAXIMUM (80-100%). Feel free to significantly restructure the post. Add compelling hooks, reorganize content, use rich formatting (bold, italic, quotes, lists). Make it look like a professionally curated post."
-    : editIntensity >= 60
-    ? "INTENSITY: STRONG (60-79%). Make noticeable improvements to structure and flow. Add some formatting (bold, lists). Substantially improve readability."
-    : editIntensity >= 40
-    ? "INTENSITY: NORMAL (40-59%). Moderate rewrite. Improve clarity and flow. Add basic formatting where helpful."
-    : editIntensity >= 20
-    ? "INTENSITY: LIGHT (20-39%). Minimal changes. Fix grammar, smooth sentences. Keep original structure mostly intact."
-    : "INTENSITY: MINIMAL (0-19%). Almost no changes. Just clean up obvious issues. Preserve everything else exactly.";
+  // Intensity guide — controls rewrite strength AND formatting
+  const intensityGuide = editIntensity === 0
+    ? `INTENSITY: 0% (FORMAT ONLY)
+- Do NOT rewrite the content at all
+- Just return the text mostly as-is (only remove spam/ads/attribution)
+- The formatter will handle quoting links and footer
+- Do NOT add any markdown formatting yourself`
+    : editIntensity <= 20
+    ? `INTENSITY: ${editIntensity}% (MINIMAL)
+- Minimal rewrite: only fix obvious grammar/typos, remove spam
+- Keep the original structure and voice almost completely
+- Do NOT add markdown formatting (no bold, no lists)
+- The formatter will only quote links and footer — NOT paragraphs`
+    : editIntensity <= 40
+    ? `INTENSITY: ${editIntensity}% (LIGHT)
+- Light rewrite: improve clarity, smooth sentences, ~10-20% of words change
+- Keep the original structure mostly intact
+- Add MINIMAL formatting: bold only for the most important term (max 1-2 bolds)
+- The formatter will quote long paragraphs`
+    : editIntensity <= 60
+    ? `INTENSITY: ${editIntensity}% (NORMAL — DEFAULT)
+- Moderate rewrite: improve clarity, flow, readability, ~20-30% of words change
+- Restructure sentences for better flow
+- Add formatting: bold for key terms, product names, important numbers (3-5 bolds)
+- Use bullet points for lists
+- Keep paragraphs short (2-4 lines)
+- The formatter will quote long paragraphs`
+    : editIntensity <= 80
+    ? `INTENSITY: ${editIntensity}% (STRONG)
+- Strong rewrite: significant restructuring, ~30-40% of words change
+- Add compelling hooks, reorganize content for impact
+- Heavy formatting: bold for all key terms (5-10 bolds), bullet lists, section headers
+- Use italic for emphasis
+- The formatter will quote long paragraphs`
+    : `INTENSITY: ${editIntensity}% (MAXIMUM)
+- Maximum rewrite: full restructure, ~40-50% of words change
+- Make it look like a professionally curated post
+- Very heavy formatting: bold everywhere, lists, headers, italic
+- Add visual structure with line breaks and sections
+- The formatter will quote long paragraphs`;
 
   return [
     `REWRITE_MODE: ${mode}`,
@@ -283,8 +316,8 @@ EXAMPLE of ROBOTIC tone (AVOID):
     `PERSONALITY_GUIDE: ${personalityGuide[personality] || personalityGuide.friendly}`,
     `EDIT_INTENSITY: ${editIntensity}%`,
     `INTENSITY_GUIDE: ${intensityGuide}`,
-    `EMOJI_LEVEL: ${emojiLevel}`,
-    `EMOJI_GUIDE: ${emojiGuide[emojiLevel] || emojiGuide[2]}`,
+    `EMOJI_LEVEL: ${emojiLevel}%`,
+    `EMOJI_GUIDE: ${emojiGuide}`,
     ``,
     `EMOTIONAL TONE PRESERVATION:`,
     `- DETECT the emotional tone of the original post (excited, angry, sad, neutral, sarcastic, urgent, etc.)`,

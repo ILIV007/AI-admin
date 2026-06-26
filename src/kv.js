@@ -13,8 +13,20 @@ export const DEFAULTS = Object.freeze({
   footer_text: "🌀 @ILIVIR3",
   ai_provider: "openrouter", // Default to OpenRouter (Gemini often hits 429 on free tier)
   channel_editing_enabled: false,
-  edit_intensity: 50, // 0-100: controls how much the bot changes the post (0=Minimal, 100=Maximum)
-  emoji_level: 2, // 0=none, 1=minimal, 2=moderate, 3=heavy
+  // edit_intensity controls BOTH AI rewrite strength AND formatter formatting level
+  //   0%   = format only (no AI, just links + footer in quotes)
+  //   20%  = minimal (links + footer in quotes, NO paragraph quoting)
+  //   40%  = light rewrite + light formatting (quote long paragraphs)
+  //   60%  = DEFAULT — quote long paragraphs + bold key terms + moderate rewrite
+  //   80%  = strong rewrite + heavy formatting + more emoji
+  //   100% = maximum — full rewrite + heavy quoting + bold everywhere + heavy emoji
+  edit_intensity: 60,
+  // emoji_level controls how many emojis the AI adds (0-100%)
+  //   0%   = no emojis
+  //   20%  = DEFAULT — minimal emojis (1-3) for visual polish
+  //   50%  = moderate (3-5 emojis)
+  //   100% = heavy (lots of emojis)
+  emoji_level: 20,
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 
