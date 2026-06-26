@@ -17,21 +17,23 @@
 const REQUEST_TIMEOUT_MS = 25_000;
 
 // ============================================================
-// DEFAULT FREE MODELS on OpenRouter (v0.2.3 — updated slugs)
+// DEFAULT FREE MODELS on OpenRouter (v0.2.4 — user-provided current list)
 // ============================================================
-// OpenRouter frequently changes which models are free. These are verified
-// working free models as of 2025. The `:free` suffix is required.
-// Ranked by: availability, speed, quality, and Persian/multilingual support.
+// These are verified available free models from openrouter.ai/models (2025).
+// OpenRouter frequently changes which models are free — if you see 404 errors,
+// visit https://openrouter.ai/models (filter by "Free") and update this list.
 const DEFAULT_OPENROUTER_MODELS = [
-  "meta-llama/llama-3.3-70b-instruct:free",       // #1 confirmed working
-  "deepseek/deepseek-r1:free",                     // #2 reasoning model, good quality
-  "google/gemini-2.5-pro-exp-03-25:free",          // #3 newer Gemini
-  "qwen/qwen-2.5-coder-32b-instruct:free",         // #4 Qwen coder (handles text well)
-  "mistralai/mistral-nemo:free",                   // #5 smaller, faster Mistral
-  "google/gemma-2-9b-it:free",                     // #6 Google Gemma
-  "microsoft/phi-3-medium-4k-instruct:free",       // #7 Microsoft Phi
-  "openchat/openchat-7b:free",                     // #8 OpenChat
-  "huggingfaceh4/zephyr-7b-beta:free",             // #9 Zephyr
+  "openrouter/free",                                   // #1 special auto-router — picks best free model
+  "nvidia/nemotron-3-ultra-550b-a55b:free",            // #2 smartest but slow
+  "nvidia/nemotron-3-super-120b-a12b:free",            // #3 balanced
+  "nvidia/nemotron-3-nano-30b-a3b:free",               // #4 fast
+  "openai/gpt-oss-20b:free",                           // #5 OpenAI open model
+  "google/gemma-4-31b-it:free",                        // #6 Gemma 4
+  "google/gemma-4-26b-a4b-it:free",                    // #7 Gemma 4 smaller
+  "qwen/qwen3-next-80b-a3b-instruct:free",             // #8 Qwen (good multilingual)
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", // #9 Dolphin
+  "meta-llama/llama-3.2-3b-instruct:free",             // #10 small + fast
+  "poolside/laguna-m.1:free",                          // #11 Poolside
 ];
 
 // ============================================================
