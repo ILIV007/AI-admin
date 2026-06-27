@@ -162,7 +162,7 @@ export function extractContent(update) {
     mediaGroupId: msg.media_group_id || null,
     replyToMessage: msg.reply_to_message || null,
     entities: entities,
-    textLinkUrls: textLinkUrls, // explicit list for debugging
+    textLinkUrls: textLinks.map((e) => e.url), // explicit list for debugging
     raw: msg,
   };
 
