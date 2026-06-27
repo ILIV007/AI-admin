@@ -624,6 +624,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
 
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
   const intensity = settings.edit_intensity ?? 60;
+  const emojiLevel = settings.emoji_level ?? 20;
 
   // If intensity is 0, skip AI rewrite entirely (format only)
   // If intensity is 0 AND text is long, still summarize to fit Telegram limits

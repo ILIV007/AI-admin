@@ -169,14 +169,24 @@ export async function aiComplete(env, settings, params) {
   // Build list of all providers to race
   const providers = [];
 
-  // 1. Gemini (if key exists)
+  // 1. Multiple Gemini models (if key exists) — fallback chain
   if (env.GEMINI_API_KEY) {
-    const geminiModel = env.GEMINI_MODEL || "gemini-2.5-flash";
-    providers.push({
-      name: "gemini",
-      model: geminiModel,
-      complete: () => geminiComplete(env.GEMINI_API_KEY, geminiModel, params),
-    });
+    // Primary Gemini model from env, plus fallback models
+    const geminiModels = [
+      env.GEMINI_MODEL || "gemini-2.5-flash",
+      "gemini-2.5-flash",           // stable fallback
+      "gemini-2.5-flash-lite",      // cheaper fallback
+      "gemini-2.0-flash",           // legacy fallback
+    ];
+    // Deduplicate
+    const uniqueGeminiModels = [...new Set(geminiModels)];
+    for (const model of uniqueGeminiModels) {
+      providers.push({
+        name: "gemini",
+        model: model,
+        complete: () => geminiComplete(env.GEMINI_API_KEY, model, params),
+      });
+    }
   }
 
   // 2. ALL OpenRouter free models (if key exists)
@@ -199,8 +209,6 @@ export async function aiComplete(env, settings, params) {
   providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
 
   // Race ALL providers in parallel using Promise.any
-  // Promise.any returns the first successful result.
-  // If ALL fail, it throws AggregateError with all errors.
   try {
     const result = await Promise.any(
       providers.map(async (p) => {
@@ -214,7 +222,6 @@ export async function aiComplete(env, settings, params) {
     console.log(`[AI] WINNER: ${result.provider}/${result.model}`);
     return result;
   } catch (aggErr) {
-    // All providers failed — AggregateError.errors has all rejection reasons
     const errors = providers.map((p, i) => ({
       provider: p.name,
       model: p.model,

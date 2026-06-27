@@ -72,15 +72,14 @@ import { EXAMPLES_MIXED } from "./examples/mixed.js";
 
 /**
  * Build the full system prompt for the Editor stage.
- * Includes: rules + examples + stage-specific prompt
+ * OPTIMIZED (v0.3.3): Only includes essential rules + 2-3 key examples.
+ * Full knowledge base was burning too many tokens (was ~8000 tokens, now ~2000).
  */
 export function buildEditorPrompt(basePrompt) {
   return [
     basePrompt,
     "",
-    "=== AI KNOWLEDGE BASE ===",
-    "",
-    README,
+    "=== KEY RULES ===",
     "",
     DECISION_TREE,
     "",
@@ -90,46 +89,21 @@ export function buildEditorPrompt(basePrompt) {
     "",
     REWRITE_RULES,
     "",
-    ATTRIBUTION_RULES,
-    "",
     LANGUAGE_RULES,
     "",
     VOCABULARY,
     "",
-    STYLE,
-    "",
     MISTAKES,
     "",
-    "=== EXAMPLES (learn from these) ===",
+    "=== KEY EXAMPLES (learn from these patterns) ===",
     "",
-    "--- GitHub Examples ---",
     EXAMPLES_GITHUB,
     "",
-    "--- News Examples ---",
     EXAMPLES_NEWS,
     "",
-    "--- Tutorial Examples ---",
-    EXAMPLES_TUTORIALS,
-    "",
-    "--- Tools Examples ---",
-    EXAMPLES_TOOLS,
-    "",
-    "--- AI Examples ---",
-    EXAMPLES_AI,
-    "",
-    "--- Hardware Examples ---",
-    EXAMPLES_HARDWARE,
-    "",
-    "--- Cybersecurity Examples ---",
-    EXAMPLES_CYBERSECURITY,
-    "",
-    "--- Long Post Examples ---",
-    EXAMPLES_LONG_POSTS,
-    "",
-    "--- Mixed Examples ---",
     EXAMPLES_MIXED,
     "",
-    "=== END KNOWLEDGE BASE ===",
+    "=== END ===",
   ].join("\n");
 }
 
