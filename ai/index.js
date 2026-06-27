@@ -58,6 +58,9 @@ import { PROVIDERS } from "./providers.js";
 import { FALLBACK } from "./fallback.js";
 import { OUTPUT_SCHEMA } from "./output_schema.js";
 import { MISTAKES } from "./mistakes.js";
+import { RTL_RULES } from "./rtl_rules.js";
+import { EMOJI_RULES } from "./emoji_rules.js";
+import { SEMANTIC_FORMATTER } from "./semantic_formatter.js";
 
 // Examples
 import { EXAMPLES_GITHUB } from "./examples/github.js";
@@ -72,8 +75,7 @@ import { EXAMPLES_MIXED } from "./examples/mixed.js";
 
 /**
  * Build the full system prompt for the Editor stage.
- * OPTIMIZED (v0.3.3): Only includes essential rules + 2-3 key examples.
- * Full knowledge base was burning too many tokens (was ~8000 tokens, now ~2000).
+ * OPTIMIZED (v0.3.6): Includes essential rules + key examples + RTL + emoji rules.
  */
 export function buildEditorPrompt(basePrompt) {
   return [
@@ -90,6 +92,10 @@ export function buildEditorPrompt(basePrompt) {
     REWRITE_RULES,
     "",
     LANGUAGE_RULES,
+    "",
+    RTL_RULES,
+    "",
+    EMOJI_RULES,
     "",
     VOCABULARY,
     "",
@@ -108,7 +114,8 @@ export function buildEditorPrompt(basePrompt) {
 }
 
 /**
- * Build the full system prompt for the Formatter stage (when AI is used for formatting).
+ * Build the full system prompt for the Formatter stage.
+ * v0.3.6: Includes semantic formatter + RTL + emoji + UI rules.
  */
 export function buildFormatterPrompt(basePrompt) {
   return [
@@ -121,6 +128,12 @@ export function buildFormatterPrompt(basePrompt) {
     FORMATTING_LEVELS,
     "",
     HTML_RULES,
+    "",
+    SEMANTIC_FORMATTER,
+    "",
+    RTL_RULES,
+    "",
+    EMOJI_RULES,
     "",
     MISTAKES,
     "",

@@ -135,11 +135,18 @@ const htmlEngine = {
       work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
     }
 
-    // 12. Numbered lists (intensity >= 40)
-    if (intensity >= 40) {
-      // 1. item → keep as is (already numbered)
-      // Convert "1)" to "1." for consistency
-      work = work.replace(/^(\d+)\)\s+/gm, "$1. ");
+    // 12. Numbered steps (intensity >= 30) → convert to quoted blocks with number emojis
+    // This makes steps easy to find and follow
+    if (intensity >= 30) {
+      // Convert "1. step" or "1) step" to <blockquote>1️⃣ step</blockquote>
+      const numberEmojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+      work = work.replace(/^(\d+)[.)]\s+(.+)$/gm, (match, num, text) => {
+        const n = parseInt(num);
+        if (n >= 0 && n <= 10) {
+          return `<blockquote>${numberEmojis[n]} ${text}</blockquote>`;
+        }
+        return `<blockquote>${num}. ${text}</blockquote>`;
+      });
     }
 
     // 13. Quote paragraphs (intensity >= 30)
