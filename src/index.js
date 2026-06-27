@@ -673,27 +673,42 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     traceStep("ai_skip", true, `mode=${finalMode}`);
   }
 
-  // Format
-  const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
-  });
+  // Format WITHOUT footer first, then truncate, then add footer.
+  // This ensures the footer is NEVER lost even when the text is truncated.
+  // (intensity and emojiLevel already declared above)
 
-  // SAFETY: truncate to avoid Telegram limits.
-  // IMPORTANT: Telegram has DIFFERENT limits for text vs captions:
-  //   - Text message: 4096 chars
-  //   - Media caption: 1024 chars
-  // If the post has media, we MUST stay under 1024 or publishing will fail.
+  // Step 1: Format the body text (no footer yet)
+  const { text: formattedBody, parseMode } = formatPost(finalText, {
+    footer: null, // No footer yet — we add it after truncation
+    engineName: "html",
+    intensity,
+    emojiLevel,
+  });
+  traceStep("format_body", true, `${formattedBody.length} chars`);
+
+  // Step 2: Calculate available space for body (leave room for footer)
   const TELEGRAM_TEXT_LIMIT = 4000;
-  const TELEGRAM_CAPTION_LIMIT = 1000; // leave room for footer + tags
+  const TELEGRAM_CAPTION_LIMIT = 1000;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
-  let safeFormattedText = formattedText;
-  if (formattedText.length > effectiveLimit) {
-    console.warn(`[pipeline] formatted text too long (${formattedText.length} > ${effectiveLimit}${hasMedia ? " [CAPTION]" : ""}), truncating`);
-    safeFormattedText = formattedText.slice(0, effectiveLimit - 50) + "\n\n<i>…(truncated)</i>";
-    traceStep("truncate", true, `${formattedText.length}→${safeFormattedText.length} chars${hasMedia ? " [CAPTION]" : ""}`);
+  // Footer format: \n\n<blockquote>FOOTER</blockquote>
+  const footerHtml = settings.footer_text
+    ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
+    : "";
+  const footerLen = footerHtml.length;
+  const maxBodyLen = effectiveLimit - footerLen - 50; // 50 chars safety margin
+
+  // Step 3: Truncate body if needed (BEFORE adding footer)
+  let safeBody = formattedBody;
+  if (formattedBody.length > maxBodyLen) {
+    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), truncating BEFORE footer`);
+    safeBody = formattedBody.slice(0, maxBodyLen - 30) + "\n\n<i>…(truncated)</i>";
+    traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
   }
-  traceStep("format", true, `${safeFormattedText.length} chars${hasMedia ? " [CAPTION]" : ""}`);
+
+  // Step 4: Append footer (guaranteed to fit now)
+  const safeFormattedText = safeBody + footerHtml;
+  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;

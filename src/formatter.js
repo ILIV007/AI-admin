@@ -1,42 +1,58 @@
 /**
  * src/formatter.js
- * Pluggable Format Engine.
+ * UI Formatter (Stage 3) — transforms plain text into beautiful Telegram HTML.
  *
- * Architecture:
- *   - The AI processing pipeline NEVER calls formatter internals directly.
- *   - It calls `formatPost(text, ctx)` which dispatches to the active engine.
- *   - Engines are registered via `registerEngine()` — you can swap them
- *     at runtime without touching the AI pipeline.
+ * Per V2 Architecture:
+ *   - Formatter ONLY changes appearance, NEVER changes meaning
+ *   - Editor outputs plain text, Formatter adds all visual presentation
+ *   - Formatting is controlled by `intensity` (0-100%) and `emojiLevel` (0-100%)
  *
- * Default engines:
- *   - "html"        → legacy Telegram HTML (parse_mode=HTML)
- *   - "markdown"    → Telegram MarkdownV2 (parse_mode=MarkdownV2)
- *   - "plain"       → no formatting, plain text
+ * UI Rules (from ui_rules.md):
+ *   - Bold: ONLY for important info (tool names, product names, etc.) — 2-6 per post
+ *   - Monospace: for commands, filenames, env vars, API names
+ *   - Quote blocks: for URLs, repos, docs, commands, footer
+ *   - Bullet lists: convert inline lists to bullets
+ *   - Numbered lists: when order matters
+ *   - Headings: only when they improve navigation
+ *   - Emojis: 1-5 per post, only allowed emojis, no emotional emojis
+ *   - Paragraphs: max 3-4 sentences, split long ones
  *
- * Each engine implements:
- *   {
- *     name: string,
- *     parseMode: "HTML" | "MarkdownV2" | null,
- *     format(text, ctx) -> string,
- *     wrapLink(url) -> string,
- *     wrapFooter(text, footer) -> string,
- *   }
+ * Intensity mapping (formatting ONLY, not rewriting):
+ *   10% = spacing + footer
+ *   20% = + better paragraphs + bold keywords
+ *   30% = + paragraph optimization + quote links
+ *   40% = + lists + headings + monospace + quote repos/docs
+ *   50% = + advanced visual layout
+ *   60% = + magazine quality formatting
+ *   80% = + professional editorial formatting
+ *   100% = maximum visual optimization
  */
 
-const LINK_REGEX = /https?:\/\/[^\s<>"']+/gi;
-
-// ============================================================
-// HTML ENGINE (default — most compatible with Telegram)
-// ============================================================
-// Improved URL regex: stops at the next "https://" or "http://" so that
-// URLs stuck together (e.g. "https://a.comhttps://b.com") are split correctly.
+// URL regex that stops at the next "https://" (handles stuck-together URLs)
 const URL_SPLIT_REGEX = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'])+/gi;
 
+// Allowed emojis per UI Rules (no emotional emojis)
+const ALLOWED_EMOJIS = ["🛠️", "🚀", "🤖", "📚", "⚡", "🔒", "🌐", "📦", "💡", "📝", "🎯", "🐞", "🧩"];
+
+// Patterns for detecting technical terms that should be monospace
+const MONOSPACE_PATTERNS = [
+  // Commands: npm install, pip install, git clone, docker run, etc.
+  /\b(npm|pip|yarn|pnpm|bun|cargo|go|git|docker|kubectl|terraform|wrangler|node|python|ruby|gem)\s+(install|run|build|clone|create|add|remove|start|stop|deploy|init|exec)\b/gi,
+  // Filenames: package.json, config.yml, docker-compose.yml, etc.
+  /\b[\w-]+\.(json|yml|yaml|toml|ini|env|sh|bash|zsh|py|js|ts|go|rs|rb|java|c|cpp|md|txt|xml|html|css|sql)\b/gi,
+  // Environment variables: ALL_CAPS_NAMES
+  /\b[A-Z]{2,}[A-Z0-9_]{2,}\b/g,
+  // File paths: /path/to/file
+  /\/[\w\-./]+/g,
+];
+
+// ============================================================
+// HTML ENGINE
+// ============================================================
 const htmlEngine = {
   name: "html",
   parseMode: "HTML",
 
-  /** Escape HTML special chars in body text (NOT in URLs we already trust) */
   escape(text) {
     return text
       .replace(/&/g, "&amp;")
@@ -45,12 +61,22 @@ const htmlEngine = {
   },
 
   wrapLink(url) {
-    // Telegram supports <blockquote> natively since 2023
     return `<blockquote>${url}</blockquote>`;
   },
 
+  /**
+   * Format plain text into beautiful Telegram HTML.
+   * @param {string} text - plain text from Editor stage
+   * @param {object} ctx - { footer, intensity, emojiLevel }
+   */
   format(text, ctx = {}) {
-    // 1. Protect code blocks (trim leading/trailing newlines inside the fence)
+    const intensity = ctx.intensity ?? 60;
+    const emojiLevel = ctx.emojiLevel ?? 20;
+    const footer = ctx.footer; // null = no footer (added separately in pipeline)
+
+    if (!text || !text.trim()) return "";
+
+    // 1. Protect code blocks
     const codeBlocks = [];
     let work = text.replace(/```([\s\S]*?)```/g, (_, code) => {
       codeBlocks.push(code.replace(/^\n+|\n+$/g, ""));
@@ -67,77 +93,125 @@ const htmlEngine = {
     // 3. Convert markdown-style links [text](url) → "text\nurl"
     work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1\n$2");
 
-    // 4. Remove angle brackets around URLs (<https://...> → https://...)
+    // 4. Remove angle brackets around URLs
     work = work.replace(/<(https?:\/\/[^\s>]+)>/g, "$1");
 
-    // 5. Escape HTML in the remaining text
+    // 5. Escape HTML
     work = this.escape(work);
 
-    // 6. Replace each URL with a blockquote-wrapped link.
+    // 6. Replace URLs with blockquotes
     work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
 
-    // 7. Restore inline code as <code>...</code>
+    // 7. Restore inline code
     work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
 
-    // 8. Restore code blocks as <pre><code>...</code></pre>
+    // 8. Restore code blocks
     work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
 
-    // 9. Convert markdown bold/italic/strike to HTML tags
-    // **bold** → <b>bold</b>
-    work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-    // *italic* → <i>italic</i>  (must come AFTER bold to avoid conflict)
-    work = work.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<i>$1</i>");
-    // _italic_ → <i>italic</i>
-    work = work.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "<i>$1</i>");
-    // ~~strike~~ → <s>strike</s>
-    work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
-    // __bold__ (double underscore) → <b>bold</b>  (after italic)
-    work = work.replace(/__([^_\n]+)__/g, (m, p1) => (m.includes("CODEBLOCK") || m.includes("INLINE") ? m : `<b>${p1}</b>`));
+    // === FORMATTING BASED ON INTENSITY ===
 
-    // 10. Convert markdown headings (### Title, ## Title, # Title) → <b>Title</b>
-    work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
+    // 9. Bold conversion (intensity >= 20)
+    if (intensity >= 20) {
+      // **bold** → <b>bold</b>
+      work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+      // *italic* → <i>italic</i> (after bold)
+      work = work.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<i>$1</i>");
+      // ~~strike~~ → <s>strike</s>
+      if (intensity >= 40) {
+        work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
+      }
+    }
 
-    // 11. Convert markdown bullet lists (• or - or *) → proper bullet
-    work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
+    // 10. Headings (intensity >= 40)
+    if (intensity >= 40) {
+      // ### Title, ## Title, # Title → <b>Title</b>
+      work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
+    }
 
-    // 12. QUOTE PARAGRAPHS: wrap ONLY long multi-sentence paragraphs in <blockquote>.
-    // Behavior depends on ctx.intensity (0-100):
-    //   - intensity <= 20: NO paragraph quoting (only links/footer quoted)
-    //   - intensity >= 40: quote long paragraphs (>= 120 chars, >= 2 sentences)
-    //   - intensity >= 80: quote shorter paragraphs too (>= 80 chars)
-    const intensity = ctx.intensity ?? 60;
-    const shouldQuoteParagraphs = intensity > 20;
-    const minLength = intensity >= 80 ? 80 : 120;
+    // 11. Bullet lists (intensity >= 20)
+    if (intensity >= 20) {
+      // - item, * item, • item → • item
+      work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
+    }
 
-    if (shouldQuoteParagraphs) {
+    // 12. Numbered lists (intensity >= 40)
+    if (intensity >= 40) {
+      // 1. item → keep as is (already numbered)
+      // Convert "1)" to "1." for consistency
+      work = work.replace(/^(\d+)\)\s+/gm, "$1. ");
+    }
+
+    // 13. Quote paragraphs (intensity >= 30)
+    // Per UI Rules: quote long paragraphs, commands, multi-line examples
+    if (intensity >= 30) {
+      const minLength = intensity >= 80 ? 80 : 120;
       const lines = work.split("\n");
       const quotedLines = lines.map((line) => {
         const trimmed = line.trim();
-        // Skip empty lines
         if (!trimmed) return line;
-        // Skip lines that are already blockquotes (URLs)
         if (trimmed.startsWith("<blockquote>")) return line;
-        // Skip lines that contain HTML tags (already formatted — headings, bold, etc.)
         if (/<[a-z/]/i.test(trimmed)) return line;
-        // Skip short lines
         if (trimmed.length < minLength) return line;
-        // Skip lines that look like list items (start with bullet or number)
         if (/^[•\-\*\d]/.test(trimmed)) return line;
-        // Skip lines that are part of code blocks
         if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
-        // Skip lines that are single sentences (only one period/exclamation)
         const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
         if (sentenceEnds < 2) return line;
-        // This is a substantial multi-sentence paragraph — quote it!
         return `<blockquote>${trimmed}</blockquote>`;
       });
       work = quotedLines.join("\n");
     }
 
-    // 13. Clean up extra blank lines (max 2 consecutive)
+    // 14. Split long paragraphs (intensity >= 40)
+    // Per UI Rules: max 3-4 sentences per paragraph
+    if (intensity >= 40) {
+      work = work.replace(/([.!?؟!])\s+/g, "$1\n");
+    }
+
+    // 15. Add emojis (based on emojiLevel)
+    if (emojiLevel > 0) {
+      work = this.addEmojis(work, emojiLevel);
+    }
+
+    // 16. Clean up extra blank lines
     work = work.replace(/\n{3,}/g, "\n\n");
 
+    // 17. Append footer (if provided)
+    if (footer) {
+      work = `${work}\n\n<blockquote>${footer}</blockquote>`;
+    }
+
     return work.trim();
+  },
+
+  /**
+   * Add emojis based on emojiLevel.
+   * Per UI Rules: 1-5 emojis, only allowed emojis, no emotional emojis.
+   */
+  addEmojis(text, emojiLevel) {
+    if (emojiLevel === 0) return text;
+
+    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 5;
+    let emojiCount = 0;
+
+    // Add emoji at the start of the post
+    if (emojiCount < maxEmojis) {
+      const startEmoji = ALLOWED_EMOJIS[Math.floor(Math.random() * 3)]; // 🛠️🚀🤖
+      text = `${startEmoji} ${text}`;
+      emojiCount++;
+    }
+
+    // Add emojis before headings (lines starting with <b>)
+    if (emojiCount < maxEmojis) {
+      const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯"];
+      text = text.replace(/<b>([^<]+)<\/b>/g, (match, content) => {
+        if (emojiCount >= maxEmojis) return match;
+        emojiCount++;
+        const emoji = headingEmojis[emojiCount % headingEmojis.length];
+        return `${emoji} <b>${content}</b>`;
+      });
+    }
+
+    return text;
   },
 
   wrapFooter(text, footer) {
@@ -146,137 +220,47 @@ const htmlEngine = {
 };
 
 // ============================================================
-// RICH MARKDOWN ENGINE (placeholder for future Telegram format)
-// ============================================================
-// Per spec (PROMPT 4): "Architecture must support both legacy HTML formatting
-// and FUTURE Telegram Rich Markdown/Rich Messages formats through a pluggable
-// Format Engine."
-//
-// Telegram's MarkdownV2 does NOT support <blockquote>, so it cannot satisfy
-// the spec's "all links in <blockquote>" rule. This engine is therefore a
-// PLACEHOLDER — it falls back to HTML behavior until Telegram releases a
-// proper Rich Markdown format that supports blockquotes.
-//
-// To implement a real Rich Markdown engine in the future:
-//   1. Write a new engine object with the same interface (name, parseMode,
-//      format, wrapLink, wrapFooter).
-//   2. Call `registerEngine(myEngine)` at startup.
-//   3. Switch the pipeline's `engineName` in src/index.js.
-// No other code needs to change — that's the pluggable architecture.
-// ============================================================
-const richMarkdownEngine = {
-  name: "richmarkdown",
-  // Use HTML parse mode for now, since Telegram MarkdownV2 doesn't support blockquote.
-  // When Telegram adds Rich Markdown with blockquote support, switch this to the new mode.
-  parseMode: "HTML",
-
-  escape(text) {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  },
-
-  wrapLink(url) {
-    // SPEC COMPLIANCE: all links MUST be in <blockquote> (PROMPT 4 rule 6)
-    return `<blockquote>${url}</blockquote>`;
-  },
-
-  format(text, ctx = {}) {
-    // For now, behave identically to HTML engine.
-    // Replace this body with real Rich Markdown logic when the format ships.
-    const codeBlocks = [];
-    let work = text.replace(/```([\s\S]*?)```/g, (_, code) => {
-      codeBlocks.push(code.replace(/^\n+|\n+$/g, ""));
-      return `__CODEBLOCK_${codeBlocks.length - 1}__`;
-    });
-
-    const inlineCodes = [];
-    work = work.replace(/`([^`\n]+)`/g, (_, code) => {
-      inlineCodes.push(code);
-      return `__INLINE_${inlineCodes.length - 1}__`;
-    });
-
-    work = this.escape(work);
-    work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
-    work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
-    work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
-    work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-
-    return work.trim();
-  },
-
-  wrapFooter(text, footer) {
-    return `${text}\n\n<blockquote>${footer}</blockquote>`;
-  },
-};
-
-// ============================================================
-// PLAIN TEXT ENGINE (no formatting — ultimate fallback)
+// PLAIN TEXT ENGINE (fallback)
 // ============================================================
 const plainEngine = {
   name: "plain",
   parseMode: null,
-
-  wrapLink(url) {
-    return url;
-  },
-
+  wrapLink(url) { return url; },
   format(text, ctx = {}) {
-    return text.trim();
+    let work = text.trim();
+    if (ctx.footer) work = `${work}\n\n${ctx.footer}`;
+    return work;
   },
-
-  wrapFooter(text, footer) {
-    return `${text}\n\n${footer}`;
-  },
+  wrapFooter(text, footer) { return `${text}\n\n${footer}`; },
 };
 
 // ============================================================
 // REGISTRY
 // ============================================================
 const REGISTRY = new Map();
-REGISTRY.set("html", htmlEngine);                   // default, spec-compliant
-REGISTRY.set("richmarkdown", richMarkdownEngine);   // placeholder for future Telegram format
-REGISTRY.set("plain", plainEngine);                 // ultimate fallback (no formatting)
+REGISTRY.set("html", htmlEngine);
+REGISTRY.set("plain", plainEngine);
 
-/** Register a custom engine (for future Rich Markdown / Rich Messages) */
 export function registerEngine(engine) {
   if (!engine?.name || typeof engine.format !== "function") {
-    throw new Error("Invalid engine: must have { name, format() }");
+    throw new Error("Invalid engine");
   }
   REGISTRY.set(engine.name, engine);
 }
 
-/** Get the active engine by name (defaults to html) */
 export function getEngine(name = "html") {
   return REGISTRY.get(name) || htmlEngine;
 }
 
 // ============================================================
-// PUBLIC API — what the pipeline actually calls
+// PUBLIC API
 // ============================================================
-
-/**
- * Format a final post for publishing.
- * @param {string} text       - cleaned (and possibly rewritten) post text
- * @param {object} ctx        - { footer, engineName, links }
- * @returns {{ text: string, parseMode: string|null }}
- */
 export function formatPost(text, ctx = {}) {
   const engine = getEngine(ctx.engineName || "html");
-  let formatted = engine.format(text, ctx);
-
-  // Always append the footer (mandatory rule)
-  if (ctx.footer) {
-    formatted = engine.wrapFooter(formatted, ctx.footer);
-  }
-
+  const formatted = engine.format(text, ctx);
   return { text: formatted, parseMode: engine.parseMode };
 }
 
-/**
- * Quick helper: detect all URLs in text (used for logging/stats)
- */
 export function extractUrls(text) {
   return [...new Set(text.match(URL_SPLIT_REGEX) || [])];
 }
