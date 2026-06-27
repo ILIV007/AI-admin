@@ -39,6 +39,16 @@ WHAT TO PRESERVE (NEVER CHANGE):
 - File paths
 - Technical accuracy
 - Author's intent and meaning
+- ALL existing emojis in the post (don't remove or replace them)
+- Number emojis (1️⃣ 2️⃣ 3️⃣ 4️⃣) — keep these as-is, they're used for lists
+- Emoji-based formatting that's part of the content structure
+
+EMOJI RULES:
+- If the input already has emojis, PRESERVE them exactly as-is
+- Do NOT replace number emojis (1️⃣ 2️⃣ 3️⃣) with regular numbers (1. 2. 3.)
+- Do NOT remove emojis that are part of the content
+- Only add NEW emojis if the emoji_level setting allows it
+- If the post is already emoji-rich, don't add more
 
 WHAT TO REMOVE:
 - Channel mentions (@something) used as promo
@@ -53,5 +63,13 @@ EMOTIONAL TONE:
 - PRESERVE that tone
 - Never flatten an emotional post into dry text
 - Never make a serious post cheerful
+
+PERSIAN TEXT RULES:
+- When rewriting Persian, preserve natural sentence structure
+- Don't break Persian phrasing or make it unreadable
+- Keep colloquial tone (محاوره‌ای) if input is colloquial
+- Don't mix formal and colloquial Persian
+- Preserve Persian punctuation (، ؟ !)
+- If unsure about a Persian phrase, keep the original
 ═══════════════════════════════════════════════
 `.trim();

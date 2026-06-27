@@ -137,26 +137,17 @@ export function extractContent(update) {
   let text = msg.text || msg.caption || "";
   const entities = msg.entities || msg.caption_entities || [];
 
-  // Extract URLs from "text_link" entities (clickable text that hides a URL).
-  // Telegram stores these as { type: "text_link", url: "https://...", offset, length }.
-  // The URL is NOT in the message text — we need to extract it from entities
-  // and append it to the text so the cleaner/formatter can process it.
-  const textLinkUrls = [];
-  for (const ent of entities) {
-    if (ent.type === "text_link" && ent.url) {
-      textLinkUrls.push(ent.url);
-    }
-  }
-
-  // If there are text_link URLs, append them to the text on separate lines
-  // so the cleaner preserves them and the formatter wraps them in blockquotes.
-  if (textLinkUrls.length > 0) {
-    // Only add URLs that aren't already present as plain text in the message
-    const existingUrls = text.match(/https?:\/\/[^\s<>"']+/gi) || [];
-    const newUrls = textLinkUrls.filter((url) => !existingUrls.includes(url));
-    if (newUrls.length > 0) {
-      text = text + "\n" + newUrls.join("\n");
-    }
+  // Convert "text_link" entities (clickable text hiding a URL) into markdown-style [text](url).
+  // This preserves the clickable text AND the URL. The formatter will convert these
+  // to proper HTML <a> tags or blockquotes.
+  // We process entities in REVERSE order (highest offset first) so offsets don't shift.
+  const textLinks = entities.filter((e) => e.type === "text_link" && e.url).sort((a, b) => b.offset - a.offset);
+  for (const ent of textLinks) {
+    const start = ent.offset;
+    const end = ent.offset + ent.length;
+    const linkText = text.slice(start, end);
+    // Replace the clickable text with [text](url) markdown format
+    text = text.slice(0, start) + `[${linkText}](${ent.url})` + text.slice(end);
   }
 
   const result = {

@@ -90,8 +90,9 @@ const htmlEngine = {
       return `__INLINE_${inlineCodes.length - 1}__`;
     });
 
-    // 3. Convert markdown-style links [text](url) → "text\nurl"
-    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1\n$2");
+    // 3. Convert markdown-style links [text](url) → HTML <a> tags (keep clickable)
+    //    This preserves the clickable text without creating long ugly URLs.
+    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
 
     // 4. Remove angle brackets around URLs
     work = work.replace(/<(https?:\/\/[^\s>]+)>/g, "$1");
