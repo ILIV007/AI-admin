@@ -14,7 +14,7 @@
  *   get a successful response.
  */
 
-const REQUEST_TIMEOUT_MS = 25_000;
+const REQUEST_TIMEOUT_MS = 15_000; // 15s per model — fast fail so Promise.any picks a winner quickly
 
 // ============================================================
 // DEFAULT FREE MODELS on OpenRouter (v0.2.7 — ranked by speed+quality)
@@ -271,9 +271,12 @@ export async function aiClassify(env, settings, text) {
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
   const { REWRITE_PROMPT, buildRewriteUserMessage } = await import("./prompts.js");
+  const { buildEditorPrompt } = await import("../ai/index.js");
+  // Combine base prompt with full AI Knowledge Base (rules + examples)
+  const fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
   const res = await aiComplete(env, settings, {
-    system: REWRITE_PROMPT,
-    user: buildRewriteUserMessage(text, mode, language, personality, editIntensity ?? 50, emojiLevel ?? 2),
+    system: fullSystemPrompt,
+    user: buildRewriteUserMessage(text, mode, language, personality, editIntensity ?? 60, emojiLevel ?? 20),
   });
 
   if (!res.ok) return { ok: false, error: res.error };
@@ -285,8 +288,10 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 // ============================================================
 export async function aiSummarize(env, settings, text, language) {
   const { SUMMARIZE_PROMPT, buildSummarizeUserMessage } = await import("./prompts.js");
+  const { buildEditorPrompt } = await import("../ai/index.js");
+  const fullSystemPrompt = buildEditorPrompt(SUMMARIZE_PROMPT);
   const res = await aiComplete(env, settings, {
-    system: SUMMARIZE_PROMPT,
+    system: fullSystemPrompt,
     user: buildSummarizeUserMessage(text, language),
   });
 

@@ -276,3 +276,188 @@ export function buildSummarizeUserMessage(text, language) {
     `Return ONLY the summarized post text.`,
   ].join("\n");
 }
+
+// ============================================================
+// AI ARCHITECTURE FILES (v0.3.1)
+// ============================================================
+// These constants encode the rules from the AI architecture docs.
+// They are prepended to the REWRITE_PROMPT to give the AI context.
+// ============================================================
+
+// ============================================================
+// 1. DECISION TREE — determines if rewriting is needed
+// ============================================================
+export const DECISION_TREE = `
+═══════════════════════════════════════════════
+DECISION TREE — ask these questions BEFORE editing:
+═══════════════════════════════════════════════
+
+Q1: Is the content already readable?
+  YES → Skip rewriting. Go to formatting.
+  NO  → Continue.
+
+Q2: Does the post contain useful technical information?
+  YES → Preserve EVERY technical detail.
+  NO  → Normal editing allowed.
+
+Q3: Does the post mainly contain GitHub/docs/tutorial/commands?
+  YES → Prefer formatting over rewriting.
+  NO  → Continue.
+
+Q4: Is the content longer than 8 paragraphs?
+  YES → Split. Structure. Then decide if summarization needed.
+  NO  → Continue.
+
+Q5: Does the post contain advertisements?
+  YES → Remove ads ONLY. Never remove educational links.
+  NO  → Continue.
+
+Q6: Would rewriting make the content clearer?
+  NO  → Do not rewrite. Improve UI only.
+  YES → Continue.
+
+Q7: Can formatting alone solve the readability issue?
+  YES → Do not rewrite. Use formatting only.
+  NO  → Rewrite carefully.
+
+GOLDEN RULE: Formatting is always cheaper than rewriting.
+Prefer formatting whenever possible.
+═══════════════════════════════════════════════
+`.trim();
+
+// ============================================================
+// 2. CONFIDENCE — never guess, preserve when unsure
+// ============================================================
+export const CONFIDENCE_RULES = `
+═══════════════════════════════════════════════
+CONFIDENCE RULES:
+═══════════════════════════════════════════════
+
+Every AI decision must have confidence.
+
+- HIGH confidence   → Proceed automatically.
+- MEDIUM confidence → Choose the safest option.
+- LOW confidence    → Preserve the original content. Never rewrite when confidence is low.
+
+If unsure:
+- Keep the author's words.
+- Improve only formatting.
+
+The project values preserving information MORE than creating beautiful writing.
+═══════════════════════════════════════════════
+`.trim();
+
+// ============================================================
+// 3. CHANNEL IDENTITY — what kind of channel is this?
+// ============================================================
+export const CHANNEL_IDENTITY = `
+═══════════════════════════════════════════════
+CHANNEL IDENTITY:
+═══════════════════════════════════════════════
+
+ILIVIR3 is NOT breaking news.
+ILIVIR3 is NOT tech journalism.
+ILIVIR3 is NOT an AI blog.
+
+ILIVIR3 IS a curated developer community.
+
+Rules:
+- We are NOT a news channel.
+- We COLLECT content. We FILTER it. We CURATE it.
+- We do NOT summarize unless necessary.
+- We do NOT advertise.
+- We do NOT create artificial excitement.
+- Every post must have VALUE worth saving.
+- We preserve the author's intent and meaning.
+- We improve presentation, not substance.
+═══════════════════════════════════════════════
+`.trim();
+
+// ============================================================
+// 4. VOCABULARY — keep tone natural and consistent
+// ============================================================
+export const VOCABULARY_RULES = `
+═══════════════════════════════════════════════
+VOCABULARY RULES:
+═══════════════════════════════════════════════
+
+PREFER these words (natural, professional):
+  Persian: پروژه، ابزار، کتابخانه، مخزن، مستندات، قابلیت، پشتیبانی، بهبود، نسخه جدید
+  English: project, tool, library, repository, documentation, feature, support, improvement, new version
+
+AVOID these words (hype, artificial):
+  Persian: شگفت‌انگیز، انقلابی، خفن، بی‌نظیر، محشر، فوق‌العاده، باورنکردنی
+  English: amazing, revolutionary, awesome, incredible, mind-blowing, unbelievable, game-changing
+
+NEVER use hype language. Be genuine and natural.
+═══════════════════════════════════════════════
+`.trim();
+
+// ============================================================
+// 5. BEFORE/AFTER EXAMPLES — learn from examples
+// ============================================================
+export const BEFORE_AFTER_EXAMPLES = `
+═══════════════════════════════════════════════
+EXAMPLES OF GOOD EDITING:
+═══════════════════════════════════════════════
+
+--- EXAMPLE 1: GitHub repo (Persian) ---
+INPUT:
+این پروژه خیلی خفنه! حتما ستاره بزنین
+https://github.com/user/awesome-tool
+via @techchannel
+
+OUTPUT (plain text, no formatting):
+این پروژه یک ابزار متن‌باز است.
+https://github.com/user/awesome-tool
+
+--- EXAMPLE 2: Tutorial (English) ---
+INPUT:
+To install first run npm install then run npm start and its super amazing!!
+
+OUTPUT (plain text, no formatting):
+To install, first run npm install, then run npm start.
+
+--- EXAMPLE 3: News (Persian) ---
+INPUT:
+🚨🚨🚨 خبر فوری! شرکت X محصول جدیدش رو معرفی کرد! این انقلابه! نمی‌تونید باور کنید!
+
+OUTPUT (plain text, no formatting):
+شرکت X محصول جدید خود را معرفی کرد.
+
+--- EXAMPLE 4: Long post ---
+INPUT:
+(very long paragraph with 10 sentences run together)
+
+OUTPUT:
+Split into 2-3 shorter paragraphs. Preserve all meaning. Remove only fluff.
+
+--- EXAMPLE 5: Already good post ---
+INPUT:
+Cloudflare Workers is a serverless platform that runs JavaScript at the edge.
+
+OUTPUT:
+(keep as-is, only add formatting in Formatter stage)
+Cloudflare Workers is a serverless platform that runs JavaScript at the edge.
+
+═══════════════════════════════════════════════
+`.trim();
+
+// ============================================================
+// COMBINED SYSTEM PROMPT — all rules together
+// ============================================================
+export function buildSystemPrompt(basePrompt) {
+  return [
+    basePrompt,
+    ``,
+    DECISION_TREE,
+    ``,
+    CONFIDENCE_RULES,
+    ``,
+    CHANNEL_IDENTITY,
+    ``,
+    VOCABULARY_RULES,
+    ``,
+    BEFORE_AFTER_EXAMPLES,
+  ].join("\n\n");
+}

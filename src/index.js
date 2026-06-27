@@ -477,7 +477,7 @@ async function runMediaGroupPipeline(env, items, update) {
 // ============================================================
 // CONTENT PIPELINE (with 55s timeout + AbortController)
 // ============================================================
-const PIPELINE_TIMEOUT_MS = 55_000;
+const PIPELINE_TIMEOUT_MS = 90_000; // 90s — generous; Cloudflare Workers can run up to 5min on paid, ~30s-2min on free with ctx.waitUntil
 
 async function runPipeline(env, content, feedbackChatId = null, update = null) {
   const SETTINGS = env.SETTINGS;
