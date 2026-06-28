@@ -622,24 +622,29 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiProvider = "none";
   let aiError = null;
 
-  const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
+  // SEPARATION OF CONCERNS (v0.3.7):
+  // - rewrite_mode controls HOW MUCH text is rewritten (none/light/normal/deep/summary)
+  // - edit_intensity controls ONLY UI formatting (quotes, bold, lists, emojis)
+  // These are INDEPENDENT. Changing intensity does NOT change rewrite amount.
+  const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "normal";
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
-  // If intensity is 0, skip AI rewrite entirely (format only)
-  // If intensity is 0 AND text is long, still summarize to fit Telegram limits
+  // Long text handling: force summary if text exceeds Telegram limits
   const hasMedia = !!content.mediaFileId;
-  const LONG_TEXT_THRESHOLD = hasMedia ? 800 : 1200;
-  let finalMode;
-  if (intensity === 0) {
-    // Format only — but still summarize if text is too long for Telegram
-    finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : "none";
-  } else {
-    // Normal: use rewrite_mode, but force summary if text is long
-    finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
+  const MEDIA_CAPTION_LIMIT = 800;   // Telegram caption limit is 1024, leave room
+  const TEXT_MESSAGE_LIMIT = 3000;    // Telegram text limit is 4096, leave room
+  const LONG_TEXT_THRESHOLD = hasMedia ? MEDIA_CAPTION_LIMIT : TEXT_MESSAGE_LIMIT;
+
+  let finalMode = effectiveRewriteMode;
+  // Force summary if text is too long for Telegram (regardless of rewrite_mode)
+  if (cleanedText.length > LONG_TEXT_THRESHOLD && effectiveRewriteMode !== "none") {
+    finalMode = "summary";
+    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${LONG_TEXT_THRESHOLD}${hasMedia ? " [MEDIA]" : ""})`);
   }
+  // If rewrite_mode is "none", never rewrite (even if long — formatter will truncate)
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""}${hasMedia ? " [MEDIA]" : ""})`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} (from settings: ${effectiveRewriteMode}) intensity=${intensity}% (UI only) should=${shouldRewrite} (input ${cleanedText.length} chars${hasMedia ? " [MEDIA]" : ""})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {

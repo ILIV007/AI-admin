@@ -257,36 +257,35 @@ export function buildRewriteUserMessage(text, mode, language, personality, editI
     news: "Concise, fact-first. Journalistic tone.",
   };
 
-  // Map edit_intensity to rewrite mode guidance
-  // Per UI Rules: intensity controls BOTH rewriting and formatting
-  // But in V2 architecture, Editor only does WORDS, Formatter does APPEARANCE
-  // So intensity affects how aggressively the Editor rewrites words
-  const intensityWordGuide = editIntensity === 0
+  // rewrite_mode controls HOW MUCH text is rewritten.
+  // edit_intensity is NOT used for rewriting — it only controls UI formatting.
+  const modeGuide = mode === "none"
     ? "Do NOT rewrite. Only remove spam/ads. Return text as-is."
-    : editIntensity <= 20
-    ? "Minimal word changes. Fix spacing, remove ads. Keep original voice completely."
-    : editIntensity <= 40
-    ? "Light word improvements. Better sentence flow. ~10-20% words change."
-    : editIntensity <= 60
-    ? "Moderate rewrite. Better introductions, transitions, conclusion. ~20-30% words change."
-    : editIntensity <= 80
-    ? "Creative restructuring. Reorder sections for impact. ~30-40% words change. Keep original meaning."
-    : "Complete redesign while preserving information. ~40-50% words change. Only for very poor content.";
+    : mode === "light"
+    ? "Minimal word changes. Fix grammar/typos, remove spam. ~10-15% words change. Keep original voice completely."
+    : mode === "normal"
+    ? "Moderate rewrite. Improve clarity, flow, readability. ~20-30% words change. Keep original structure mostly intact."
+    : mode === "deep"
+    ? "Significant rewrite. Restructure sentences, improve word choice. ~30-50% words change. Make real improvements."
+    : mode === "summary"
+    ? "Condense to 40-60% of original length. Keep ALL key points, technical details, and links. Remove only fluff and redundancy."
+    : "Moderate rewrite. ~20-30% words change.";
 
   return [
     `REWRITE_MODE: ${mode}`,
+    `REWRITE_GUIDE: ${modeGuide}`,
     `LANGUAGE_MODE: ${language}`,
     `PERSONALITY: ${personality}`,
     `PERSONALITY_GUIDE: ${personalityGuide[personality] || personalityGuide.friendly}`,
-    `EDIT_INTENSITY: ${editIntensity}%`,
-    `INTENSITY_GUIDE: ${intensityWordGuide}`,
+    ``,
+    `IMPORTANT: edit_intensity (${editIntensity}%) controls ONLY UI formatting (done by the formatter, not you). It does NOT affect your rewrite amount. Your rewrite amount is controlled ONLY by REWRITE_MODE above.`,
     ``,
     `POST TO PROCESS:`,
     `----`,
     text,
     `----`,
     ``,
-    `Return ONLY the plain edited text in the SAME LANGUAGE as the input. No formatting, no HTML, no emojis.`,
+    `Return ONLY the edited text in the SAME LANGUAGE as the input. Preserve existing emojis and markdown.`,
   ].join("\n");
 }
 
