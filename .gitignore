@@ -1,20 +1,47 @@
-# dependencies
+```
+# Dependencies
 node_modules/
 
-# Cloudflare
-.dev.vars
-.wrangler/
-.mf/
+# Logs and temp files
+*.log
+*.tmp
 
-# env
+# Environment
 .env
 .env.local
+*.env.*
 
-# OS
+# Editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build outputs
+dist/
+build/
+*.min.js
+*.bundle.js
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# OS generated files
 .DS_Store
 Thumbs.db
 
-# editor
-.vscode/
-.idea/
+# IDE
 *.swp
+*.swo
+
+# Testing
+.nyc_output/
+coverage/
+junit.xml
+```

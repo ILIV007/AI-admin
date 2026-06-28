@@ -119,16 +119,19 @@ console.log("\n🧪 formatter.js");
   const input = "Check this repo:\nhttps://github.com/user/repo";
   const { text, parseMode } = formatPost(input, { footer: "🌀 @ILIVIR3" });
   assert(parseMode === "HTML", "default engine is HTML");
-  assert(text.includes("<blockquote>https://github.com/user/repo</blockquote>"), "wraps URL in blockquote");
+  // URLs should be clickable links with shortened labels (not blockquoted)
+  assert(text.includes('<a href="https://github.com/user/repo">github.com/user/repo</a>'), "wraps URL in <a> tag with shortened label");
   assert(text.includes("<blockquote>🌀 @ILIVIR3</blockquote>"), "appends footer as blockquote");
 }
 
 {
   const input = "Multi link post\nhttps://a.com\nhttps://b.com";
   const { text } = formatPost(input, { footer: "🌀 @ILIVIR3" });
-  // Both URLs should be wrapped
+  // Both URLs should be clickable links, footer should be blockquote
+  const linkCount = (text.match(/<a href=/g) || []).length;
   const blockquoteCount = (text.match(/<blockquote>/g) || []).length;
-  assert(blockquoteCount === 3, `3 blockquotes expected (2 URLs + footer), got ${blockquoteCount}`);
+  assert(linkCount === 2, `2 links expected, got ${linkCount}`);
+  assert(blockquoteCount === 1, `1 blockquote expected (footer only), got ${blockquoteCount}`);
 }
 
 {
@@ -158,10 +161,10 @@ console.log("\n🧪 formatter.js");
 }
 
 {
-  // Test richmarkdown engine (placeholder — must still wrap links in blockquote per spec)
+  // Test richmarkdown engine (placeholder — uses <a> tags for links, blockquote for footer)
   const { text, parseMode } = formatPost("hello https://x.com", { footer: "F", engineName: "richmarkdown" });
   assert(parseMode === "HTML", "richmarkdown engine uses HTML parseMode (placeholder)");
-  assert(text.includes("<blockquote>https://x.com</blockquote>"), "richmarkdown engine wraps URL in blockquote (spec compliance)");
+  assert(text.includes('<a href="https://x.com">x.com</a>'), "richmarkdown engine uses <a> tag for URL");
   assert(text.includes("<blockquote>F</blockquote>"), "richmarkdown engine wraps footer in blockquote");
 }
 

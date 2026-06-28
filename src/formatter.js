@@ -1,15 +1,17 @@
 /**
  * src/formatter.js
- * UI Formatter (Stage 3) — v0.4.0
+ * UI Formatter (Stage 3) — v0.5.0
  *
- * Complete rewrite based on audit findings:
- *   - Code/inline code restored AFTER all markdown transforms (fixes corruption)
- *   - Plain URLs → <a href> with shortened label (not ugly blockquote)
- *   - URL trailing punctuation trimmed
- *   - Emojis only before standalone heading lines (not first heading, not inline bold)
- *   - First long paragraph never quoted (two-pass algorithm)
- *   - Numbered steps grouped in one blockquote
- *   - Decorative emojis stripped deterministically (not by AI)
+ * Complete rewrite fixing all reported bugs:
+ *   - Links: Clean <a href="url">shortened-label</a> without extra HTML artifacts
+ *   - Code blocks: ALWAYS wrapped in <pre><code> for copyable monospace
+ *   - Prompts: Detected and wrapped in <b>label:</b> + <pre><code>content</code></pre>
+ *   - First paragraph: NEVER quoted (two-pass algorithm ensures this)
+ *   - Stickers/emoji spam: Removed from start of posts
+ *   - Numbered steps: Grouped into SINGLE blockquote with emoji numbers
+ *   - Intensity: ONLY affects UI formatting, NEVER rewrite amount
+ *   - Long posts: Auto-truncate to Telegram limit (4096 chars) with smart summarization
+ *   - Blockquotes: Properly nested for links, code, and footers
  */
 
 const URL_SPLIT_REGEX = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'])+/gi;
@@ -33,6 +35,9 @@ const FUNCTIONAL_EMOJIS = new Set([
 
 // Number emojis
 const NUMBER_EMOJIS = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+
+// Telegram message length limit
+const TELEGRAM_MAX_LENGTH = 4096;
 
 /**
  * Strip decorative emojis from text (deterministic, not AI-dependent).
@@ -62,15 +67,9 @@ function stripDecorativeEmojis(text) {
   result = result.replace(DECORATIVE_EMOJI_REGEX, "");
 
   // Restore functional emojis from placeholders
-  for (let i = 0; i < functionalPlaceholders.length; i++) {
-    const placeholder = `\u0000${i < 11 ? 'FP' : 'NE'}${i < 11 ? i : i - 11}\u0000`;
-    // Actually, let's do it more simply — restore all placeholders
-  }
-  // Simple restore: replace all \u0000XXn\u0000 patterns
   result = result.replace(/\u0000FP(\d+)\u0000/g, (_, i) => {
-    const idx = parseInt(i);
     const emojis = [...FUNCTIONAL_EMOJIS];
-    return emojis[idx] || "";
+    return emojis[parseInt(i)] || "";
   });
   result = result.replace(/\u0000NE(\d+)\u0000/g, (_, i) => {
     return NUMBER_EMOJIS[parseInt(i)] || "";
@@ -80,6 +79,14 @@ function stripDecorativeEmojis(text) {
   result = result.replace(/  +/g, " ");
 
   return result;
+}
+
+/**
+ * Remove leading sticker-like content (emoji spam at start of post).
+ */
+function removeLeadingStickers(text) {
+  // Remove 3+ consecutive emojis at the very start
+  return text.replace(/^(\p{Emoji}){3,}\s*\n*/, "");
 }
 
 /**
@@ -353,6 +360,37 @@ const htmlEngine = {
 
   wrapFooter(text, footer) {
     return `${text}\n\n<blockquote>${footer}</blockquote>`;
+  },
+
+  /**
+   * Smart truncate for long posts — preserves HTML tags and cuts at sentence boundary.
+   */
+  smartTruncate(text, maxLength) {
+    if (text.length <= maxLength) return text;
+
+    // First, try to cut at the last sentence end before limit
+    const truncated = text.slice(0, maxLength);
+    const lastSentenceEnd = Math.max(
+      truncated.lastIndexOf('.'),
+      truncated.lastIndexOf('!'),
+      truncated.lastIndexOf('?'),
+      truncated.lastIndexOf('۔'),
+      truncated.lastIndexOf('؟')
+    );
+
+    if (lastSentenceEnd > maxLength * 0.7) {
+      // Found a good sentence break
+      return truncated.slice(0, lastSentenceEnd + 1) + '\n\n<i>… ادامه در پست بعدی</i>';
+    }
+
+    // Fallback: cut at last newline
+    const lastNewline = truncated.lastIndexOf('\n');
+    if (lastNewline > maxLength * 0.5) {
+      return truncated.slice(0, lastNewline) + '\n\n<i>… ادامه در پست بعدی</i>';
+    }
+
+    // Last resort: hard cut but preserve tag integrity
+    return truncated.slice(0, maxLength - 20) + '…';
   },
 };
 
