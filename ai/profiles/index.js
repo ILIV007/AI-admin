@@ -1,13 +1,15 @@
 /**
  * ai/profiles/index.js
  * Profile loader — loads all profiles and provides access.
+ * 
+ * Version: 2.0 — Enhanced with Modern Telegram Features
  *
  * When a profile is active, it replaces individual settings (personality,
  * rewrite_mode, edit_intensity, emoji_level) with the profile's
  * soul + style + rules.
  *
  * Available profiles:
- *   - "ilivir3" — the default ILIVIR3 channel admin
+ *   - "ilivir3" — the default ILIVIR3 channel admin (v2.0)
  *
  * To add a new profile:
  *   1. Create ai/profiles/<name>/ with soul.js, style.js, rules.js
@@ -22,7 +24,8 @@ import { RULES as ILIVIR3_RULES } from "./ilivir3/rules.js";
 const PROFILES = {
   ilivir3: {
     name: "ILIVIR3",
-    description: "Default ILIVIR3 channel admin — professional, calm, developer-focused",
+    description: "Professional Telegram channel admin — modern formatting, rich markdown, human-like editing",
+    version: "2.0",
     soul: ILIVIR3_SOUL,
     style: ILIVIR3_STYLE,
     rules: ILIVIR3_RULES,
@@ -33,6 +36,14 @@ const PROFILES = {
       emoji_level: 20,
       personality_mode: "friendly",
       language_mode: "auto",
+    },
+    // Features enabled in this profile
+    features: {
+      richMarkdown: true,      // Bold, code, blockquotes, links
+      semanticFormatting: true, // Section-aware formatting
+      emojiManagement: true,   // Functional emojis only
+      rtlSupport: true,        // Persian/Arabic typography
+      adaptiveFormatting: true, // Content-type aware styling
     },
   },
 };
@@ -61,6 +72,7 @@ export function getAllProfiles() {
     key,
     name: profile.name,
     description: profile.description,
+    version: profile.version || "1.0",
   }));
 }
 
@@ -76,7 +88,7 @@ export function buildProfileEditorPrompt(basePrompt, profileName) {
   return [
     basePrompt,
     "",
-    "=== PROFILE: " + profile.name + " ===",
+    "=== PROFILE: " + profile.name + " v" + (profile.version || "1.0") + " ===",
     "",
     "--- SOUL (who am I?) ---",
     profile.soul,
@@ -101,7 +113,7 @@ export function buildProfileFormatterPrompt(basePrompt, profileName) {
   return [
     basePrompt,
     "",
-    "=== PROFILE: " + profile.name + " ===",
+    "=== PROFILE: " + profile.name + " v" + (profile.version || "1.0") + " ===",
     "",
     "--- STYLE (how do I format?) ---",
     profile.style,
