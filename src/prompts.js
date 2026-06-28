@@ -111,9 +111,11 @@ EMOJI PRESERVATION RULES (CRITICAL):
 - PRESERVE number emojis (1️⃣ 2️⃣ 3️⃣ 4️⃣) — they're used for navigation
 - PRESERVE emoji-based formatting that's part of the content structure
 - REMOVE only decorative/emotional emojis (🔥🔥🔥 😍 😱 😂 🤣 😭 🎉)
-- Do NOT add new emojis (the formatter handles that)
+- Do NOT add ANY new emojis — the formatter handles all emoji placement
+- Do NOT add emojis at the start of the post
+- Do NOT add emojis before headings
 - If the input is emoji-rich, keep it emoji-rich
-- If the input has no emojis, don't add any
+- If the input has no emojis, output NO emojis
 
 ═══════════════════════════════════════════════
 MARKDOWN PRESERVATION:
