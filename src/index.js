@@ -35,6 +35,7 @@ import { cleanContent, detectLanguage } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
 import { isAuthorized, handleStart, handleFooterCommand, handleCallbackQuery } from "./admin.js";
+import { getProfile } from "../ai/profiles/index.js";
 import {
   checkDebugAuth,
   getStatus,
@@ -622,13 +623,21 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiProvider = "none";
   let aiError = null;
 
-  // SEPARATION OF CONCERNS (v0.3.7):
-  // - rewrite_mode controls HOW MUCH text is rewritten (none/light/normal/deep/summary)
-  // - edit_intensity controls ONLY UI formatting (quotes, bold, lists, emojis)
-  // These are INDEPENDENT. Changing intensity does NOT change rewrite amount.
-  const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "normal";
-  const intensity = settings.edit_intensity ?? 60;
-  const emojiLevel = settings.emoji_level ?? 20;
+  // SEPARATION OF CONCERNS (v0.4.1):
+  // - If a profile is active, use profile settings (soul + style + rules)
+  // - Otherwise, use individual settings (rewrite_mode, edit_intensity, etc.)
+  const profileActive = !!settings.active_profile;
+  const profile = profileActive ? getProfile(settings.active_profile) : null;
+
+  const effectiveRewriteMode = profileActive
+    ? (profile?.settings?.rewrite_mode || "normal")
+    : (decision.rewrite_mode || settings.rewrite_mode || "normal");
+  const intensity = profileActive
+    ? (profile?.settings?.edit_intensity ?? 60)
+    : (settings.edit_intensity ?? 60);
+  const emojiLevel = profileActive
+    ? (profile?.settings?.emoji_level ?? 20)
+    : (settings.emoji_level ?? 20);
 
   // Long text handling: force summary if text exceeds Telegram limits
   const hasMedia = !!content.mediaFileId;

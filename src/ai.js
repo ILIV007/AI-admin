@@ -279,11 +279,32 @@ export async function aiClassify(env, settings, text) {
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
   const { REWRITE_PROMPT, buildRewriteUserMessage } = await import("./prompts.js");
   const { buildEditorPrompt } = await import("../ai/index.js");
-  // Combine base prompt with full AI Knowledge Base (rules + examples)
-  const fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
+  const { buildProfileEditorPrompt, getProfile } = await import("../ai/profiles/index.js");
+
+  // If a profile is active, use profile-based prompt (soul + style + rules)
+  // Otherwise, use the standard knowledge base prompt
+  let fullSystemPrompt;
+  if (settings.active_profile) {
+    const profilePrompt = buildProfileEditorPrompt(REWRITE_PROMPT, settings.active_profile);
+    if (profilePrompt) {
+      fullSystemPrompt = profilePrompt;
+    } else {
+      fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
+    }
+  } else {
+    fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
+  }
+
+  // If profile is active, use profile's default settings
+  const profile = settings.active_profile ? getProfile(settings.active_profile) : null;
+  const effectiveMode = profile ? profile.settings.rewrite_mode : mode;
+  const effectiveIntensity = profile ? profile.settings.edit_intensity : editIntensity;
+  const effectiveEmoji = profile ? profile.settings.emoji_level : emojiLevel;
+  const effectivePersonality = profile ? profile.settings.personality_mode : personality;
+
   const res = await aiComplete(env, settings, {
     system: fullSystemPrompt,
-    user: buildRewriteUserMessage(text, mode, language, personality, editIntensity ?? 60, emojiLevel ?? 20),
+    user: buildRewriteUserMessage(text, effectiveMode, language, effectivePersonality, effectiveIntensity ?? 60, effectiveEmoji ?? 20),
   });
 
   if (!res.ok) return { ok: false, error: res.error };
@@ -296,7 +317,16 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 export async function aiSummarize(env, settings, text, language) {
   const { SUMMARIZE_PROMPT, buildSummarizeUserMessage } = await import("./prompts.js");
   const { buildEditorPrompt } = await import("../ai/index.js");
-  const fullSystemPrompt = buildEditorPrompt(SUMMARIZE_PROMPT);
+  const { buildProfileEditorPrompt } = await import("../ai/profiles/index.js");
+
+  let fullSystemPrompt;
+  if (settings.active_profile) {
+    const profilePrompt = buildProfileEditorPrompt(SUMMARIZE_PROMPT, settings.active_profile);
+    fullSystemPrompt = profilePrompt || buildEditorPrompt(SUMMARIZE_PROMPT);
+  } else {
+    fullSystemPrompt = buildEditorPrompt(SUMMARIZE_PROMPT);
+  }
+
   const res = await aiComplete(env, settings, {
     system: fullSystemPrompt,
     user: buildSummarizeUserMessage(text, language),
