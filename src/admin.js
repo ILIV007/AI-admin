@@ -167,7 +167,7 @@ function profileMenuText(currentProfile) {
     text.push(`<i>Language and Footer still work normally.</i>`);
   } else {
     text.push(`<b>Available profiles:</b>`);
-    for (const p of profiles || getAllProfiles()) {
+    for (const p of getAllProfiles()) {
       text.push(`• <b>${p.name}</b> — ${p.description}`);
     }
     text.push(``);
