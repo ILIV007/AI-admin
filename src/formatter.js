@@ -1,239 +1,233 @@
 /**
  * src/formatter.js
- * UI Formatter (Stage 3) — transforms plain text into beautiful Telegram HTML.
+ * UI Formatter (Stage 3) — v0.4.4
  *
- * Per V2 Architecture:
- *   - Formatter ONLY changes appearance, NEVER changes meaning
- *   - Editor outputs plain text, Formatter adds all visual presentation
- *   - Formatting is controlled by `intensity` (0-100%) and `emojiLevel` (0-100%)
- *
- * UI Rules (from ui_rules.md):
- *   - Bold: ONLY for important info (tool names, product names, etc.) — 2-6 per post
- *   - Monospace: for commands, filenames, env vars, API names
- *   - Quote blocks: for URLs, repos, docs, commands, footer
- *   - Bullet lists: convert inline lists to bullets
- *   - Numbered lists: when order matters
- *   - Headings: only when they improve navigation
- *   - Emojis: 1-5 per post, only allowed emojis, no emotional emojis
- *   - Paragraphs: max 3-4 sentences, split long ones
- *
- * Intensity mapping (formatting ONLY, not rewriting):
- *   10% = spacing + footer
- *   20% = + better paragraphs + bold keywords
- *   30% = + paragraph optimization + quote links
- *   40% = + lists + headings + monospace + quote repos/docs
- *   50% = + advanced visual layout
- *   60% = + magazine quality formatting
- *   80% = + professional editorial formatting
- *   100% = maximum visual optimization
+ * Fixes:
+ *   - NO emoji at start of post (only before standalone headings)
+ *   - First long paragraph NOT quoted (two-pass algorithm)
+ *   - Code blocks restored AFTER markdown transforms (no corruption)
+ *   - URLs → <a href> with shortened label (not ugly blockquote)
+ *   - Decorative emojis stripped deterministically
+ *   - Numbered steps grouped in one blockquote
  */
 
-// URL regex that stops at the next "https://" (handles stuck-together URLs)
 const URL_SPLIT_REGEX = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'])+/gi;
 
-// Allowed emojis per UI Rules (no emotional emojis)
 const ALLOWED_EMOJIS = ["🛠️", "🚀", "🤖", "📚", "⚡", "🔒", "🌐", "📦", "💡", "📝", "🎯", "🐞", "🧩"];
 
-// Patterns for detecting technical terms that should be monospace
-const MONOSPACE_PATTERNS = [
-  // Commands: npm install, pip install, git clone, docker run, etc.
-  /\b(npm|pip|yarn|pnpm|bun|cargo|go|git|docker|kubectl|terraform|wrangler|node|python|ruby|gem)\s+(install|run|build|clone|create|add|remove|start|stop|deploy|init|exec)\b/gi,
-  // Filenames: package.json, config.yml, docker-compose.yml, etc.
-  /\b[\w-]+\.(json|yml|yaml|toml|ini|env|sh|bash|zsh|py|js|ts|go|rs|rb|java|c|cpp|md|txt|xml|html|css|sql)\b/gi,
-  // Environment variables: ALL_CAPS_NAMES
-  /\b[A-Z]{2,}[A-Z0-9_]{2,}\b/g,
-  // File paths: /path/to/file
-  /\/[\w\-./]+/g,
-];
+const DECORATIVE_EMOJI_REGEX = /[\u{1F300}-\u{1F5FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}]/gu;
 
-// ============================================================
-// HTML ENGINE
-// ============================================================
+const FUNCTIONAL_EMOJIS = new Set([
+  "🛠️", "🚀", "🤖", "📚", "⚡", "🔒", "🌐", "📦", "💡", "📝", "🎯", "🐞", "🧩",
+  "⚠️", "✨", "📥", "🔗", "📊", "🔧", "✅", "❌",
+]);
+
+const NUMBER_EMOJIS = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+
+function stripDecorativeEmojis(text) {
+  // Protect functional emojis
+  const functionalPlaceholders = [];
+  let protected_text = text;
+  for (const emoji of FUNCTIONAL_EMOJIS) {
+    functionalPlaceholders.push(emoji);
+    protected_text = protected_text.split(emoji).join(`\u0000FP${functionalPlaceholders.length - 1}\u0000`);
+  }
+  for (let i = 0; i <= 10; i++) {
+    functionalPlaceholders.push(NUMBER_EMOJIS[i]);
+    protected_text = protected_text.split(NUMBER_EMOJIS[i]).join(`\u0000NE${i}\u0000`);
+  }
+  // Collapse consecutive decorative emojis
+  let result = protected_text.replace(/([\u{1F300}-\u{1F5FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}])\1+/gu, "$1");
+  // Remove decorative emojis
+  result = result.replace(DECORATIVE_EMOJI_REGEX, "");
+  // Restore functional emojis
+  result = result.replace(/\u0000FP(\d+)\u0000/g, (_, i) => [...FUNCTIONAL_EMOJIS][parseInt(i)] || "");
+  result = result.replace(/\u0000NE(\d+)\u0000/g, (_, i) => NUMBER_EMOJIS[parseInt(i)] || "");
+  // Clean up double spaces
+  result = result.replace(/  +/g, " ");
+  return result;
+}
+
+function shortenUrl(url) {
+  try {
+    const u = new URL(url);
+    let label = u.hostname + u.pathname;
+    label = label.replace(/\/$/, "");
+    if (label.length > 40) label = label.slice(0, 37) + "…";
+    return label;
+  } catch { return url; }
+}
+
+function trimUrlPunctuation(url) {
+  return url.replace(/[.,);:!?}\]]+$/, "");
+}
+
 const htmlEngine = {
   name: "html",
   parseMode: "HTML",
 
   escape(text) {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   },
 
-  wrapLink(url) {
-    return `<blockquote>${url}</blockquote>`;
-  },
-
-  /**
-   * Format plain text into beautiful Telegram HTML.
-   * @param {string} text - plain text from Editor stage
-   * @param {object} ctx - { footer, intensity, emojiLevel }
-   */
   format(text, ctx = {}) {
     const intensity = ctx.intensity ?? 60;
     const emojiLevel = ctx.emojiLevel ?? 20;
-    const footer = ctx.footer; // null = no footer (added separately in pipeline)
-
+    const footer = ctx.footer;
     if (!text || !text.trim()) return "";
 
-    // 1. Protect code blocks
+    // === PHASE 1: PROTECT ===
     const codeBlocks = [];
     let work = text.replace(/```([\s\S]*?)```/g, (_, code) => {
       codeBlocks.push(code.replace(/^\n+|\n+$/g, ""));
-      return `__CODEBLOCK_${codeBlocks.length - 1}__`;
+      return `\n§CB${codeBlocks.length - 1}§\n`;
     });
-
-    // 2. Protect inline code
     const inlineCodes = [];
     work = work.replace(/`([^`\n]+)`/g, (_, code) => {
       inlineCodes.push(code);
-      return `__INLINE_${inlineCodes.length - 1}__`;
+      return ` §IC${inlineCodes.length - 1}§ `;
     });
-
-    // 3. Convert markdown-style links [text](url) → HTML <a> tags (keep clickable)
-    //    This preserves the clickable text without creating long ugly URLs.
-    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
-
-    // 4. Remove angle brackets around URLs
+    const promptBlocks = [];
+    work = work.replace(/(?:^|\n)(Prompt|System Prompt|User):\s*(\{[\s\S]*?\})(?:\n|$)/gi, (_, label, content) => {
+      promptBlocks.push({ label, content });
+      return ` §P${promptBlocks.length - 1}§ `;
+    });
+    const linkPlaceholders = [];
+    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, linkText, url) => {
+      linkPlaceholders.push({ text: linkText, url });
+      return ` §L${linkPlaceholders.length - 1}§ `;
+    });
     work = work.replace(/<(https?:\/\/[^\s>]+)>/g, "$1");
 
-    // 5. Escape HTML
+    // === PHASE 2: STRIP + ESCAPE + URLS ===
+    work = stripDecorativeEmojis(work);
     work = this.escape(work);
+    // Plain URLs → <a href> with shortened label
+    work = work.replace(URL_SPLIT_REGEX, (urlRaw) => {
+      const url = trimUrlPunctuation(urlRaw);
+      const label = shortenUrl(url);
+      return `<a href="${url}">${this.escape(label)}</a>`;
+    });
+    // Markdown links → <a href>
+    work = work.replace(/§L(\d+)§/g, (_, i) => {
+      const link = linkPlaceholders[Number(i)];
+      return `<a href="${link.url}">${this.escape(link.text)}</a>`;
+    });
 
-    // 6. Replace URLs with blockquotes
-    work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
-
-    // 7. Restore inline code
-    work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
-
-    // 8. Restore code blocks
-    work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
-
-    // === FORMATTING BASED ON INTENSITY ===
-
-    // 9. Bold conversion (intensity >= 20)
+    // === PHASE 3: MARKDOWN TRANSFORMS (no code present) ===
     if (intensity >= 20) {
-      // **bold** → <b>bold</b>
       work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-      // *italic* → <i>italic</i> (after bold)
       work = work.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<i>$1</i>");
-      // ~~strike~~ → <s>strike</s>
-      if (intensity >= 40) {
-        work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
-      }
+      if (intensity >= 40) work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
     }
+    if (intensity >= 40) work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
+    if (intensity >= 20) work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
 
-    // 10. Headings (intensity >= 40)
-    if (intensity >= 40) {
-      // ### Title, ## Title, # Title → <b>Title</b>
-      work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
-    }
-
-    // 11. Bullet lists (intensity >= 20)
-    if (intensity >= 20) {
-      // - item, * item, • item → • item
-      work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
-    }
-
-    // 12. Numbered steps (intensity >= 30) → convert to quoted blocks with number emojis
-    // This makes steps easy to find and follow
+    // Numbered steps — GROUP into ONE blockquote
     if (intensity >= 30) {
-      // Convert "1. step" or "1) step" to <blockquote>1️⃣ step</blockquote>
-      const numberEmojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-      work = work.replace(/^(\d+)[.)]\s+(.+)$/gm, (match, num, text) => {
-        const n = parseInt(num);
-        if (n >= 0 && n <= 10) {
-          return `<blockquote>${numberEmojis[n]} ${text}</blockquote>`;
+      const lines = work.split("\n");
+      const processedLines = [];
+      let inStepGroup = false;
+      let stepGroup = [];
+      for (let i = 0; i < lines.length; i++) {
+        const stepMatch = lines[i].match(/^(\d+)[.)]\s+(.+)$/);
+        if (stepMatch) {
+          const num = parseInt(stepMatch[1]);
+          const emoji = (num >= 0 && num <= 10) ? NUMBER_EMOJIS[num] : `${num}.`;
+          stepGroup.push(`${emoji} ${stepMatch[2]}`);
+          inStepGroup = true;
+        } else {
+          if (inStepGroup && stepGroup.length > 0) {
+            processedLines.push(`<blockquote>${stepGroup.join("\n")}</blockquote>`);
+            stepGroup = [];
+            inStepGroup = false;
+          }
+          processedLines.push(lines[i]);
         }
-        return `<blockquote>${num}. ${text}</blockquote>`;
-      });
+      }
+      if (stepGroup.length > 0) processedLines.push(`<blockquote>${stepGroup.join("\n")}</blockquote>`);
+      work = processedLines.join("\n");
     }
 
-    // 13. Quote paragraphs (intensity >= 30)
-    // Per UI Rules: quote long paragraphs, commands, multi-line examples
+    // Quote long paragraphs — TWO-PASS (skip first eligible)
     if (intensity >= 30) {
       const minLength = intensity >= 80 ? 80 : 120;
       const lines = work.split("\n");
-      const quotedLines = lines.map((line) => {
+      let firstEligibleIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("<blockquote>")) continue;
+        if (trimmed.startsWith("<")) continue;
+        if (trimmed.startsWith("§")) continue;
+        if (trimmed.length < minLength) continue;
+        if (/^[•\-\*\d]/.test(trimmed)) continue;
+        const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
+        if (sentenceEnds < 2) continue;
+        firstEligibleIdx = i;
+        break;
+      }
+      const quotedLines = lines.map((line, i) => {
         const trimmed = line.trim();
         if (!trimmed) return line;
         if (trimmed.startsWith("<blockquote>")) return line;
-        if (/<[a-z/]/i.test(trimmed)) return line;
+        if (trimmed.startsWith("<")) return line;
+        if (trimmed.startsWith("§")) return line;
         if (trimmed.length < minLength) return line;
         if (/^[•\-\*\d]/.test(trimmed)) return line;
-        if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
         const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
         if (sentenceEnds < 2) return line;
+        if (i === firstEligibleIdx) return line; // Skip first
         return `<blockquote>${trimmed}</blockquote>`;
       });
       work = quotedLines.join("\n");
     }
 
-    // 14. Split long paragraphs (intensity >= 40)
-    // Per UI Rules: max 3-4 sentences per paragraph
-    if (intensity >= 40) {
-      work = work.replace(/([.!?؟!])\s+/g, "$1\n");
-    }
+    // === PHASE 4: RESTORE PROTECTED CONTENT (AFTER transforms) ===
+    work = work.replace(/§IC(\d+)§/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
+    work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
+    work = work.replace(/§P(\d+)§/g, (_, i) => {
+      const p = promptBlocks[Number(i)];
+      return `<b>${p.label}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
+    });
 
-    // 15. Add emojis (based on emojiLevel)
-    if (emojiLevel > 0) {
-      work = this.addEmojis(work, emojiLevel);
+    // === PHASE 5: POLISH ===
+    // Emojis ONLY before standalone heading lines (NOT first heading, NOT inline bold)
+    if (emojiLevel > 0 && intensity >= 40) {
+      work = this.addEmojisToHeadings(work, emojiLevel);
     }
-
-    // 16. Clean up extra blank lines
     work = work.replace(/\n{3,}/g, "\n\n");
-
-    // 17. Append footer (if provided)
-    if (footer) {
-      work = `${work}\n\n<blockquote>${footer}</blockquote>`;
-    }
-
+    if (footer) work = `${work}\n\n<blockquote>${footer}</blockquote>`;
     return work.trim();
   },
 
-  /**
-   * Add emojis based on emojiLevel.
-   * Per UI Rules: 1-5 emojis, only allowed emojis, no emotional emojis.
-   */
-  addEmojis(text, emojiLevel) {
+  addEmojisToHeadings(text, emojiLevel) {
     if (emojiLevel === 0) return text;
-
-    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 5;
+    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 6;
     let emojiCount = 0;
-
-    // Add emoji at the start of the post
-    if (emojiCount < maxEmojis) {
-      const startEmoji = ALLOWED_EMOJIS[Math.floor(Math.random() * 3)]; // 🛠️🚀🤖
-      text = `${startEmoji} ${text}`;
+    const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯", "🛠️", "🚀", "🤖"];
+    let seenFirstHeading = false;
+    const lines = text.split("\n");
+    const processedLines = lines.map((line) => {
+      const trimmed = line.trim();
+      const headingMatch = trimmed.match(/^<b>([^<]+)<\/b>$/);
+      if (!headingMatch) return line;
+      const content = headingMatch[1];
+      if (/[\u{1F300}-\u{1FAFF}]/u.test(content)) return line;
+      if (!seenFirstHeading) { seenFirstHeading = true; return line; }
+      if (emojiCount >= maxEmojis) return line;
       emojiCount++;
-    }
-
-    // Add emojis before headings (lines starting with <b>)
-    if (emojiCount < maxEmojis) {
-      const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯"];
-      text = text.replace(/<b>([^<]+)<\/b>/g, (match, content) => {
-        if (emojiCount >= maxEmojis) return match;
-        emojiCount++;
-        const emoji = headingEmojis[emojiCount % headingEmojis.length];
-        return `${emoji} <b>${content}</b>`;
-      });
-    }
-
-    return text;
+      const emoji = headingEmojis[emojiCount % headingEmojis.length];
+      return `${emoji} ${trimmed}`;
+    });
+    return processedLines.join("\n");
   },
 
-  wrapFooter(text, footer) {
-    return `${text}\n\n<blockquote>${footer}</blockquote>`;
-  },
+  wrapFooter(text, footer) { return `${text}\n\n<blockquote>${footer}</blockquote>`; },
 };
 
-// ============================================================
-// PLAIN TEXT ENGINE (fallback)
-// ============================================================
 const plainEngine = {
-  name: "plain",
-  parseMode: null,
-  wrapLink(url) { return url; },
+  name: "plain", parseMode: null,
   format(text, ctx = {}) {
     let work = text.trim();
     if (ctx.footer) work = `${work}\n\n${ctx.footer}`;
@@ -242,33 +236,17 @@ const plainEngine = {
   wrapFooter(text, footer) { return `${text}\n\n${footer}`; },
 };
 
-// ============================================================
-// REGISTRY
-// ============================================================
 const REGISTRY = new Map();
 REGISTRY.set("html", htmlEngine);
 REGISTRY.set("plain", plainEngine);
 
 export function registerEngine(engine) {
-  if (!engine?.name || typeof engine.format !== "function") {
-    throw new Error("Invalid engine");
-  }
+  if (!engine?.name || typeof engine.format !== "function") throw new Error("Invalid engine");
   REGISTRY.set(engine.name, engine);
 }
-
-export function getEngine(name = "html") {
-  return REGISTRY.get(name) || htmlEngine;
-}
-
-// ============================================================
-// PUBLIC API
-// ============================================================
+export function getEngine(name = "html") { return REGISTRY.get(name) || htmlEngine; }
 export function formatPost(text, ctx = {}) {
   const engine = getEngine(ctx.engineName || "html");
-  const formatted = engine.format(text, ctx);
-  return { text: formatted, parseMode: engine.parseMode };
+  return { text: engine.format(text, ctx), parseMode: engine.parseMode };
 }
-
-export function extractUrls(text) {
-  return [...new Set(text.match(URL_SPLIT_REGEX) || [])];
-}
+export function extractUrls(text) { return [...new Set(text.match(URL_SPLIT_REGEX) || [])]; }
