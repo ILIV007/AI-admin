@@ -28,7 +28,7 @@ function mainMenuKeyboard(settings) {
     ? "📺 Channel Edit: ON ✅"
     : "📺 Channel Edit: OFF";
   const profileLabel = settings?.active_profile
-    ? `👤 Profile: ${getProfile(settings.active_profile)?.name || "Unknown"} ✅`
+    ? `👤 Profile: ${getProfile(settings.active_profile)?.name || "?"} ✅`
     : "👤 Profile: None";
   return {
     inline_keyboard: [
@@ -147,17 +147,33 @@ function providerKeyboard(current) {
 function profileKeyboard(currentProfile) {
   const profiles = getAllProfiles();
   const rows = profiles.map((p) => [
-    {
-      text: `${currentProfile === p.key ? "✅ " : ""}${p.name}`,
-      callback_data: `set:profile:${p.key}`,
-    },
+    { text: `${currentProfile === p.key ? "✅ " : ""}${p.name}`, callback_data: `set:profile:${p.key}` },
   ]);
-  // Add deactivate button if a profile is active
   if (currentProfile) {
     rows.push([{ text: "❌ Deactivate Profile", callback_data: "set:profile:none" }]);
   }
   rows.push([{ text: "← Back", callback_data: "menu:main" }]);
   return { inline_keyboard: rows };
+}
+
+function profileMenuText(currentProfile) {
+  const activeProfile = currentProfile ? getProfile(currentProfile) : null;
+  let text = [`<b>👤 Profile</b>`, ``, `Current: <code>${activeProfile ? activeProfile.name : "None (individual settings)"}</code>`, ``];
+  if (activeProfile) {
+    text.push(`<b>Active: ${activeProfile.name}</b>`);
+    text.push(`<i>${activeProfile.description}</i>`);
+    text.push(``);
+    text.push(`<i>When active, Soul + Style + Rules replace individual settings (personality, intensity, emoji, rewrite).</i>`);
+    text.push(`<i>Language and Footer still work normally.</i>`);
+  } else {
+    text.push(`<b>Available profiles:</b>`);
+    for (const p of profiles || getAllProfiles()) {
+      text.push(`• <b>${p.name}</b> — ${p.description}`);
+    }
+    text.push(``);
+    text.push(`<i>Select a profile to activate it.</i>`);
+  }
+  return text.join("\n");
 }
 
 function backOnlyKeyboard() {
@@ -169,17 +185,10 @@ function backOnlyKeyboard() {
 // ============================================================
 
 function mainMenuText(settings) {
-  const profileName = settings.active_profile
-    ? getProfile(settings.active_profile)?.name || "Unknown"
-    : "None";
-  const profileNote = settings.active_profile
-    ? `\n<i>⚠️ Profile active — individual settings (personality, intensity, emoji, rewrite) are overridden by the profile.</i>`
-    : "";
   return [
     `<b>⚙️ AI Admin — Settings</b>`,
     ``,
     `<b>Current configuration:</b>`,
-    `👤 Profile: <code>${profileName}</code>`,
     `🌐 Language: <code>${settings.language_mode}</code>`,
     `✍️ Rewrite: <code>${settings.rewrite_mode}</code>`,
     `🎨 Intensity: <code>${settings.edit_intensity ?? 60}%</code>`,
@@ -188,43 +197,9 @@ function mainMenuText(settings) {
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
     `📺 Channel Edit: <code>${settings.channel_editing_enabled ? "ON" : "OFF"}</code>`,
-    profileNote,
     ``,
     `<i>Send any post to this bot to process and publish it.</i>`,
   ].join("\n");
-}
-
-function profileMenuText(currentProfile) {
-  const profiles = getAllProfiles();
-  const activeProfile = currentProfile ? getProfile(currentProfile) : null;
-
-  let text = [
-    `<b>👤 Profile</b>`,
-    ``,
-    `Current: <code>${activeProfile ? activeProfile.name : "None (individual settings)"}</code>`,
-    ``,
-  ];
-
-  if (activeProfile) {
-    text.push(`<b>Active profile: ${activeProfile.name}</b>`);
-    text.push(`<i>${activeProfile.description}</i>`);
-    text.push(``);
-    text.push(`<b>When a profile is active:</b>`);
-    text.push(`• Soul, Style, and Rules replace individual settings`);
-    text.push(`• Personality, Intensity, Emoji, Rewrite are overridden`);
-    text.push(`• Language and Footer still work normally`);
-    text.push(``);
-    text.push(`<i>To use individual settings again, deactivate the profile.</i>`);
-  } else {
-    text.push(`<b>Available profiles:</b>`);
-    for (const p of profiles) {
-      text.push(`• <b>${p.name}</b> — ${p.description}`);
-    }
-    text.push(``);
-    text.push(`<i>Select a profile to activate it. When active, the profile's soul + style + rules replace individual settings.</i>`);
-  }
-
-  return text.join("\n");
 }
 
 function intensityMenuText(current) {
@@ -476,16 +451,15 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
       newKb = providerKeyboard(updated.ai_provider);
       toast = "✅ Provider updated";
     } else if (scope === "profile") {
-      // Activate or deactivate a profile
       if (value === "none") {
-        const updated = await updateSetting(SETTINGS, userId, "active_profile", null);
+        await updateSetting(SETTINGS, userId, "active_profile", null);
         newText = profileMenuText(null);
         newKb = profileKeyboard(null);
         toast = "✅ Profile deactivated — individual settings restored";
       } else {
         const profile = getProfile(value);
         if (profile) {
-          const updated = await updateSetting(SETTINGS, userId, "active_profile", value);
+          await updateSetting(SETTINGS, userId, "active_profile", value);
           newText = profileMenuText(value);
           newKb = profileKeyboard(value);
           toast = `✅ Profile activated: ${profile.name}`;

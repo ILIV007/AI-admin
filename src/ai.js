@@ -281,30 +281,25 @@ export async function aiRewrite(env, settings, text, mode, language, personality
   const { buildEditorPrompt } = await import("../ai/index.js");
   const { buildProfileEditorPrompt, getProfile } = await import("../ai/profiles/index.js");
 
-  // If a profile is active, use profile-based prompt (soul + style + rules)
-  // Otherwise, use the standard knowledge base prompt
+  // Use profile prompt if active, otherwise standard knowledge base
   let fullSystemPrompt;
   if (settings.active_profile) {
-    const profilePrompt = buildProfileEditorPrompt(REWRITE_PROMPT, settings.active_profile);
-    if (profilePrompt) {
-      fullSystemPrompt = profilePrompt;
-    } else {
-      fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
-    }
+    const pp = buildProfileEditorPrompt(REWRITE_PROMPT, settings.active_profile);
+    fullSystemPrompt = pp || buildEditorPrompt(REWRITE_PROMPT);
   } else {
     fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
   }
 
-  // If profile is active, use profile's default settings
+  // If profile active, use profile settings
   const profile = settings.active_profile ? getProfile(settings.active_profile) : null;
-  const effectiveMode = profile ? profile.settings.rewrite_mode : mode;
-  const effectiveIntensity = profile ? profile.settings.edit_intensity : editIntensity;
-  const effectiveEmoji = profile ? profile.settings.emoji_level : emojiLevel;
-  const effectivePersonality = profile ? profile.settings.personality_mode : personality;
+  const effMode = profile ? profile.settings.rewrite_mode : mode;
+  const effIntensity = profile ? profile.settings.edit_intensity : editIntensity;
+  const effEmoji = profile ? profile.settings.emoji_level : emojiLevel;
+  const effPersonality = profile ? profile.settings.personality_mode : personality;
 
   const res = await aiComplete(env, settings, {
     system: fullSystemPrompt,
-    user: buildRewriteUserMessage(text, effectiveMode, language, effectivePersonality, effectiveIntensity ?? 60, effectiveEmoji ?? 20),
+    user: buildRewriteUserMessage(text, effMode, language, effPersonality, effIntensity ?? 60, effEmoji ?? 20),
   });
 
   if (!res.ok) return { ok: false, error: res.error };
@@ -321,8 +316,8 @@ export async function aiSummarize(env, settings, text, language) {
 
   let fullSystemPrompt;
   if (settings.active_profile) {
-    const profilePrompt = buildProfileEditorPrompt(SUMMARIZE_PROMPT, settings.active_profile);
-    fullSystemPrompt = profilePrompt || buildEditorPrompt(SUMMARIZE_PROMPT);
+    const pp = buildProfileEditorPrompt(SUMMARIZE_PROMPT, settings.active_profile);
+    fullSystemPrompt = pp || buildEditorPrompt(SUMMARIZE_PROMPT);
   } else {
     fullSystemPrompt = buildEditorPrompt(SUMMARIZE_PROMPT);
   }

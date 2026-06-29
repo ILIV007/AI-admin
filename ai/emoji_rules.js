@@ -50,12 +50,12 @@ RULES:
 - If the original post has decorative emojis, REPLACE them with functional ones
 - If the original post has functional emojis, KEEP them as-is
 
-EMOJI PLACEMENT (handled by FORMATTER, not AI):
-- The FORMATTER adds emojis before standalone headings (not at start of post)
-- The FORMATTER strips decorative emojis deterministically
-- The AI must NOT add any emojis — only preserve existing functional ones
-- NEVER add emojis at the start of the post
-- NEVER add emojis in the middle of a sentence
+EMOJI PLACEMENT:
+- Before section headings: 📦 نصب
+- Before list categories: 🛠️ ابزارها:
+- At the start of the post (1 emoji max)
+- NEVER in the middle of a sentence
+- NEVER at the end of every line
 
 The goal: emojis should help readers SCAN the post,
 NOT decorate it. Every emoji must have a PURPOSE.
