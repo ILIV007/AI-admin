@@ -1,6 +1,11 @@
 /**
  * src/admin.js
- * Telegram-based admin panel with inline keyboard buttons.
+ * Telegram-based admin panel with inline keyboard buttons — v0.5.0
+ *
+ * Improvements:
+ *   - Rich formatting preview support
+ *   - Better error handling
+ *   - Modern Telegram UI features
  */
 
 import { getSettings, updateSetting, getGlobalStats } from "./kv.js";
@@ -139,6 +144,7 @@ function providerKeyboard(current) {
     inline_keyboard: [
       [mk("gemini", "Google Gemini")],
       [mk("openrouter", "OpenRouter")],
+      [mk("auto", "Auto (race all)")],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -163,7 +169,7 @@ function profileMenuText(currentProfile) {
     text.push(`<b>Active: ${activeProfile.name}</b>`);
     text.push(`<i>${activeProfile.description}</i>`);
     text.push(``);
-    text.push(`<i>When active, Soul + Style + Rules replace individual settings (personality, intensity, emoji, rewrite).</i>`);
+    text.push(`<i>When active, Soul + Style + Rules replace individual settings.</i>`);
     text.push(`<i>Language and Footer still work normally.</i>`);
   } else {
     text.push(`<b>Available profiles:</b>`);
@@ -275,6 +281,7 @@ function providerMenuText(current) {
     ``,
     `<i>Gemini = primary (free tier)</i>`,
     `<i>OpenRouter = fallback (also free)</i>`,
+    `<i>Auto = race all available providers</i>`,
     ``,
     `<i>If primary fails, the other is used automatically.</i>`,
   ].join("\n");
@@ -444,7 +451,7 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
       const updated = await updateSetting(SETTINGS, userId, "emoji_level", parseInt(value));
       newText = emojiMenuText(updated.emoji_level);
       newKb = emojiKeyboard(updated.emoji_level);
-      toast = `✅ Emoji: ${["None", "Minimal", "Moderate", "Heavy"][updated.emoji_level]}`;
+      toast = `✅ Emoji: ${value}%`;
     } else if (scope === "prov") {
       const updated = await updateSetting(SETTINGS, userId, "ai_provider", value);
       newText = providerMenuText(updated.ai_provider);
