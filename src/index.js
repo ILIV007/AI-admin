@@ -725,7 +725,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
   const footerHtml = settings.footer_text
-    ? `\n\n<blockquote expandable>${settings.footer_text}</blockquote>`
+    ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
   const maxBodyLen = effectiveLimit - footerLen - 50;
@@ -733,7 +733,37 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let safeBody = formattedBody;
   if (formattedBody.length > maxBodyLen) {
     console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), truncating BEFORE footer`);
-    safeBody = formattedBody.slice(0, maxBodyLen - 30) + "\n\n<i>…(truncated)</i>";
+    // v0.4.6 FIX: Safe truncation — don't cut inside HTML tags
+    // Find a safe cut point: last newline before maxBodyLen
+    let cutPoint = maxBodyLen - 30;
+    // Walk back to avoid cutting inside an HTML tag
+    const lastGT = formattedBody.lastIndexOf(">", cutPoint);
+    const lastLT = formattedBody.lastIndexOf("<", cutPoint);
+    if (lastLT > lastGT) {
+      // We're inside a tag — cut before the tag start
+      cutPoint = lastLT - 1;
+    }
+    // Walk back to a newline for cleaner cut
+    const lastNewline = formattedBody.lastIndexOf("\n", cutPoint);
+    if (lastNewline > cutPoint - 200) cutPoint = lastNewline; // Only use newline if close enough
+
+    safeBody = formattedBody.slice(0, cutPoint);
+
+    // Close any unclosed blockquote tags
+    const openBQ = (safeBody.match(/<blockquote/g) || []).length;
+    const closeBQ = (safeBody.match(/<\/blockquote>/g) || []).length;
+    if (openBQ > closeBQ) {
+      safeBody += "</blockquote>".repeat(openBQ - closeBQ);
+    }
+
+    // Close any unclosed <a> tags
+    const openA = (safeBody.match(/<a\s/g) || []).length;
+    const closeA = (safeBody.match(/<\/a>/g) || []).length;
+    if (openA > closeA) {
+      safeBody += "</a>".repeat(openA - closeA);
+    }
+
+    safeBody += "\n\n<i>…(truncated)</i>";
     traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
   }
 

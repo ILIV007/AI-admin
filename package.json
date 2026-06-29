@@ -1,6 +1,6 @@
 {
   "name": "ai-admin",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "AI Admin v0.4.5 — Professional Telegram channel content processing bot on Cloudflare Workers. Rich formatting, modern architecture, zero cost.",
   "type": "module",
   "main": "src/index.js",

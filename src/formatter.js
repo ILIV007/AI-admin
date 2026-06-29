@@ -189,7 +189,8 @@ const htmlEngine = {
       }
 
       // v0.5.0: Allow quoting first paragraph when intensity >= 60
-      const skipFirst = intensity < 60;
+      // v0.4.6 FIX: ALWAYS skip first paragraph — quoting it makes posts look bad
+      const skipFirst = true;
 
       const quotedLines = lines.map((line, i) => {
         const trimmed = line.trim();
@@ -228,10 +229,9 @@ const htmlEngine = {
 
     work = work.replace(/\n{3,}/g, "\n\n");
 
-    // Footer with expandable blockquote for modern clients (v0.5.0)
+    // Footer with blockquote (v0.4.6: removed expandable — not supported by all clients)
     if (footer) {
-      // Use expandable blockquote for footer on modern clients
-      work = `${work}\n\n<blockquote expandable>${footer}</blockquote>`;
+      work = `${work}\n\n<blockquote>${footer}</blockquote>`;
     }
 
     return work.trim();
@@ -277,40 +277,21 @@ const htmlEngine = {
   },
 
   // ============================================================
-  // RTL spacing for Persian content
+  // RTL spacing for Persian content (v0.4.6: blockquote-safe)
   // ============================================================
   applyRTLSpacing(text) {
-    const lines = text.split("\n");
-    const processed = [];
-    let prevWasHeading = false;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      // Add empty line after heading
-      if (trimmed.startsWith("<b>") && !prevWasHeading) {
-        processed.push(line);
-        prevWasHeading = true;
-        continue;
-      }
-
-      prevWasHeading = false;
-
-      // Fix Persian punctuation spacing
-      let fixed = line
-        .replace(/\s*\(([^)]+)\)\s*/g, " ($1) ")  // (text) spacing
-        .replace(/([،؛؟!])\s+/g, "$1 ")            // Persian punctuation
-        .replace(/\s+([،؛؟!])/g, "$1");             // No space before punctuation
-
-      processed.push(fixed);
-    }
-
-    return processed.join("\n");
+    // v0.4.6 FIX: Don't split by lines — apply regex directly to avoid breaking blockquotes
+    let work = text;
+    // Add empty line after headings (before non-empty, non-heading line)
+    work = work.replace(/(<\/b>)\n([^\n])/g, "$1\n\n$2");
+    // Fix Persian punctuation spacing (only outside HTML tags)
+    work = work.replace(/([،؛؟!])\s+/g, "$1 ");
+    work = work.replace(/\s+([،؛؟!])/g, "$1");
+    return work;
   },
 
   wrapFooter(text, footer) {
-    return `${text}\n\n<blockquote expandable>${footer}</blockquote>`;
+    return `${text}\n\n<blockquote>${footer}</blockquote>`;
   },
 };
 
