@@ -1,7 +1,3 @@
-/**
- * ai/confidence.js
- */
-
 export const CONFIDENCE = `
 ═══════════════════════════════════════════════
 CONFIDENCE RULES

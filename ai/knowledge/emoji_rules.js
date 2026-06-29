@@ -1,8 +1,3 @@
-/**
- * ai/emoji_rules.js
- * Emoji classification: Functional vs Decorative.
- */
-
 export const EMOJI_RULES = `
 ═══════════════════════════════════════════════
 EMOJI RULES — Functional vs Decorative

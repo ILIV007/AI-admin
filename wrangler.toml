@@ -1,11 +1,10 @@
 # ============================================================
-# AI Admin — Cloudflare Worker configuration
-# Version: v0.2.1
+# AI Admin v0.5.0 — Cloudflare Worker configuration
 # ============================================================
 
 name = "ai-admin"
 main = "src/index.js"
-compatibility_date = "2024-12-01"
+compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # KV binding — configured by user.
@@ -25,28 +24,16 @@ FOOTER_TEXT = "🌀 @ILIVIR3"
 DEFAULT_AI_PROVIDER = "openrouter"
 
 # Gemini model (free tier)
-# Use gemini-2.5-flash (stable, reliable, free quota available)
-# Alternatives: gemini-2.5-flash-lite (cheapest), gemini-2.0-flash (legacy)
 GEMINI_MODEL = "gemini-2.5-flash"
 
-# OpenRouter primary model (fastest verified: nvidia/nemotron-3-nano)
+# OpenRouter primary model (fastest verified)
 OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 
-# OpenRouter FALLBACK models (comma-separated, ALL tried in parallel via Promise.any)
-# Ranked by speed + quality from real Test AI results:
-# 1. nvidia/nemotron-3-nano-30b (737ms - FASTEST)
-# 2. nvidia/nemotron-3-super-120b (1168ms - balanced)
-# 3. google/gemma-4-31b-it (1433ms - solid)
-# 4. openai/gpt-oss-20b (1837ms - OpenAI)
-# 5. google/gemma-4-26b-a4b-it (1860ms - solid)
-# 6. nvidia/nemotron-3-ultra-550b (1929ms - smartest)
-# 7. openrouter/free (2578ms - auto-router)
-# 8-10. rate-limited models (kept as fallback)
-# 11. poolside/laguna-m.1 (10418ms - slow but works)
+# OpenRouter FALLBACK models (comma-separated, ALL raced in parallel via Promise.any)
 OPENROUTER_FALLBACK_MODELS = "nvidia/nemotron-3-nano-30b-a3b:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openai/gpt-oss-20b:free,google/gemma-4-26b-a4b-it:free,nvidia/nemotron-3-ultra-550b-a55b:free,openrouter/free,qwen/qwen3-next-80b-a3b-instruct:free,cognitivecomputations/dolphin-mistral-24b-venice-edition:free,meta-llama/llama-3.2-3b-instruct:free,poolside/laguna-m.1:free"
 
 # ============================================================
-# Secrets (DO NOT put real values here — set via dashboard):
+# Secrets (set via Cloudflare dashboard or wrangler secret):
 #   BOT_TOKEN          →  from @BotFather
 #   GEMINI_API_KEY     →  from aistudio.google.com
 #   OPENROUTER_API_KEY →  from openrouter.ai/keys

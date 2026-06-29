@@ -1,7 +1,3 @@
-/**
- * ai/vocabulary.js
- */
-
 export const VOCABULARY = `
 ═══════════════════════════════════════════════
 VOCABULARY RULES

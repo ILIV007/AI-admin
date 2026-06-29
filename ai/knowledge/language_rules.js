@@ -1,7 +1,3 @@
-/**
- * ai/language_rules.js
- */
-
 export const LANGUAGE_RULES = `
 ═══════════════════════════════════════════════
 LANGUAGE RULES

@@ -1,7 +1,3 @@
-/**
- * ai/channel_identity.js
- */
-
 export const CHANNEL_IDENTITY = `
 ═══════════════════════════════════════════════
 CHANNEL IDENTITY

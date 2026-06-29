@@ -1,12 +1,3 @@
-/**
- * ai/semantic_formatter.js
- * Semantic Section detection — the most important file before soul.md.
- *
- * The Formatter should understand the STRUCTURE of the text, not just format words.
- * It detects sections like "Features", "Installation", "Warning" and applies
- * appropriate formatting automatically.
- */
-
 export const SEMANTIC_FORMATTER = `
 ═══════════════════════════════════════════════
 SEMANTIC FORMATTER — understand structure, not just words
@@ -54,36 +45,17 @@ When you see these patterns, convert them to proper headings with emojis:
 
 NUMBERED STEPS DETECTION:
 
-When you see numbered steps, convert them to quoted blocks for visibility:
+When you see numbered steps, convert them to quoted blocks:
 
   "1. First step" or "1) First step"
   → <blockquote>1️⃣ First step</blockquote>
 
-  "2. Second step"
-  → <blockquote>2️⃣ Second step</blockquote>
-
-This makes steps easy to find and follow.
-
 CODE/COMMAND DETECTION:
 
 When you see commands or code:
-  - Wrap inline commands in <code> tags: \`npm install\` → <code>npm install</code>
+  - Wrap inline commands in <code> tags
   - Wrap multi-line code in <pre><code> blocks
   - Wrap terminal output in <blockquote> for visibility
-
-PROMPT/LONG TEXT DETECTION:
-
-When you see long prompts or reference text that users don't need to read fully:
-  - Use expandable blockquote (if supported)
-  - Or use regular blockquote with a <b>Prompt:</b> label
-
-QUOTE RULES (what to put in blockquotes):
-  ✓ URLs (GitHub repos, docs, downloads)
-  ✓ Terminal commands
-  ✓ Numbered steps
-  ✓ Long reference text / prompts
-  ✓ Multi-line examples
-  ✓ Footer
 
 LIST DETECTION:
 

@@ -1,8 +1,3 @@
-/**
- * ai/rtl_rules.js
- * RTL (Right-to-Left) typography rules for Persian and other RTL languages.
- */
-
 export const RTL_RULES = `
 ═══════════════════════════════════════════════
 RTL RULES (Persian/Arabic typography)

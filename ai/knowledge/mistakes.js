@@ -1,8 +1,3 @@
-/**
- * ai/mistakes.js
- * Common mistakes to avoid — the "masterpiece" file.
- */
-
 export const MISTAKES = `
 ═══════════════════════════════════════════════
 COMMON MISTAKES — NEVER DO THESE

@@ -1,7 +1,3 @@
-/**
- * ai/formatting_levels.js
- */
-
 export const FORMATTING_LEVELS = `
 ═══════════════════════════════════════════════
 FORMATTING LEVELS (intensity %)

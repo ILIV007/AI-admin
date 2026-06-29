@@ -1,62 +1,64 @@
 /**
  * ai/profiles/index.js
- * Profile loader.
+ * Profile system — v0.5.0
+ *
+ * Profiles replace individual settings with a complete Soul + Style + Rules package.
  */
-import { SOUL as ILIVIR3_SOUL } from "./ilivir3/soul.js";
-import { STYLE as ILIVIR3_STYLE } from "./ilivir3/style.js";
-import { RULES as ILIVIR3_RULES } from "./ilivir3/rules.js";
 
-const PROFILES = {
-  ilivir3: {
-    name: "ILIVIR3",
-    description: "Default ILIVIR3 channel admin — professional, calm, developer-focused",
-    soul: ILIVIR3_SOUL,
-    style: ILIVIR3_STYLE,
-    rules: ILIVIR3_RULES,
-    settings: {
-      rewrite_mode: "normal",
-      edit_intensity: 60,
-      emoji_level: 20,
-      personality_mode: "friendly",
-      language_mode: "auto",
-    },
-  },
-};
+import { ILIVIR3_PROFILE } from "./ilivir3/index.js";
 
-export function getProfile(name) {
-  if (!name) return null;
-  return PROFILES[name] || null;
-}
+const PROFILES = new Map();
+PROFILES.set("ilivir3", ILIVIR3_PROFILE);
 
-export function getProfileNames() {
-  return Object.keys(PROFILES);
+export function getProfile(key) {
+  return PROFILES.get(key) || null;
 }
 
 export function getAllProfiles() {
-  return Object.entries(PROFILES).map(([key, profile]) => ({
-    key,
-    name: profile.name,
-    description: profile.description,
+  return Array.from(PROFILES.values()).map((p) => ({
+    key: p.key,
+    name: p.name,
+    description: p.description,
   }));
 }
 
-export function buildProfileEditorPrompt(basePrompt, profileName) {
-  const profile = getProfile(profileName);
+export function buildProfileEditorPrompt(basePrompt, profileKey) {
+  const profile = getProfile(profileKey);
   if (!profile) return null;
+
   return [
     basePrompt,
     "",
-    "=== PROFILE: " + profile.name + " ===",
+    "=== ACTIVE PROFILE ===",
+    `Profile: ${profile.name}`,
+    `Description: ${profile.description}`,
     "",
-    "--- SOUL ---",
+    "=== PROFILE SOUL ===",
     profile.soul,
     "",
-    "--- STYLE ---",
+    "=== PROFILE STYLE ===",
     profile.style,
     "",
-    "--- RULES ---",
+    "=== PROFILE RULES ===",
     profile.rules,
     "",
     "=== END PROFILE ===",
+  ].join("\n");
+}
+
+export function buildProfileFormatterPrompt(basePrompt, profileKey) {
+  const profile = getProfile(profileKey);
+  if (!profile) return null;
+
+  return [
+    basePrompt,
+    "",
+    "=== ACTIVE PROFILE FORMATTING ===",
+    `Profile: ${profile.name}`,
+    "",
+    "=== PROFILE FORMATTING RULES ===",
+    profile.formatting || profile.rules,
+    "",
+    "=== END PROFILE FORMATTING ===",
   ].join("\n");
 }

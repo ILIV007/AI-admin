@@ -1,7 +1,3 @@
-/**
- * ai/html_rules.js
- */
-
 export const HTML_RULES = `
 ═══════════════════════════════════════════════
 HTML RULES (Telegram HTML parse mode)
@@ -16,6 +12,7 @@ SUPPORTED TAGS:
 - <pre>block code</pre>
 - <pre><code>code block with language</code></pre>
 - <blockquote>quote</blockquote>
+- <blockquote expandable>collapsible quote</blockquote>
 - <a href="url">text</a>
 
 USAGE RULES:
@@ -33,6 +30,10 @@ USAGE RULES:
 - For: URLs, repos, docs, commands, footer
 - NOT for decoration
 - Never nest blockquotes
+
+<blockquote expandable> Collapsible Quote:
+- For: long reference text, footers, expandable content
+- Modern Telegram clients support this
 
 <pre><code> Code blocks:
 - For multi-line code

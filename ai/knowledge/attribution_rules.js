@@ -1,7 +1,3 @@
-/**
- * ai/attribution_rules.js
- */
-
 export const ATTRIBUTION_RULES = `
 ═══════════════════════════════════════════════
 ATTRIBUTION RULES

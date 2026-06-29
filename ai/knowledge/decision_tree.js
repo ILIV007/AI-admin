@@ -1,7 +1,3 @@
-/**
- * ai/decision_tree.js
- */
-
 export const DECISION_TREE = `
 ═══════════════════════════════════════════════
 DECISION TREE — ask these BEFORE editing

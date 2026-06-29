@@ -1,7 +1,3 @@
-/**
- * ai/rewrite_rules.js
- */
-
 export const REWRITE_RULES = `
 ═══════════════════════════════════════════════
 REWRITE RULES
@@ -39,16 +35,8 @@ WHAT TO PRESERVE (NEVER CHANGE):
 - File paths
 - Technical accuracy
 - Author's intent and meaning
-- ALL existing emojis in the post (don't remove or replace them)
-- Number emojis (1️⃣ 2️⃣ 3️⃣ 4️⃣) — keep these as-is, they're used for lists
-- Emoji-based formatting that's part of the content structure
-
-EMOJI RULES:
-- If the input already has emojis, PRESERVE them exactly as-is
-- Do NOT replace number emojis (1️⃣ 2️⃣ 3️⃣) with regular numbers (1. 2. 3.)
-- Do NOT remove emojis that are part of the content
-- Only add NEW emojis if the emoji_level setting allows it
-- If the post is already emoji-rich, don't add more
+- ALL existing emojis in the post
+- Number emojis (1️⃣ 2️⃣ 3️⃣ 4️⃣)
 
 WHAT TO REMOVE:
 - Channel mentions (@something) used as promo

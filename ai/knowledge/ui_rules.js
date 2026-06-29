@@ -1,7 +1,3 @@
-/**
- * ai/ui_rules.js
- */
-
 export const UI_RULES = `
 ═══════════════════════════════════════════════
 UI RULES
