@@ -81,8 +81,8 @@ PROMPT DETECTION (CRITICAL):
 53. Prompts are SACRED — never lose them, never corrupt them
 
 CODE HANDLING (CRITICAL):
-54. Code blocks (\\`\\`\\`...\\`\\`\\`) → <pre><code>content</code></pre>
-55. Inline code (\\`...\\`) → <blockquote><code>content</code></blockquote>
+54. Code blocks (```...```) → <pre><code>content</code></pre>
+55. Inline code (`...`) → <blockquote><code>content</code></blockquote>
 56. Commands (npm, pip, git, docker, etc.) → ALWAYS monospace + collapsible
 57. NEVER make code non-copyable — always use proper <code> tags
 
