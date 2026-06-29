@@ -1,4 +1,4 @@
-# AI Admin v0.5.0
+# AI Admin v0.4.5
 
 A professional Telegram channel content processing bot built on Cloudflare Workers. Processes, rewrites, formats, and publishes posts with rich formatting support.
 

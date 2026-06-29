@@ -1,10 +1,10 @@
 # ============================================================
-# AI Admin v0.5.0 — Cloudflare Worker configuration
+# AI Admin v0.4.5 — Cloudflare Worker configuration
 # ============================================================
 
 name = "ai-admin"
 main = "src/index.js"
-compatibility_date = "2025-01-01"
+compatibility_date = "20.4.51-01"
 compatibility_flags = ["nodejs_compat"]
 
 # KV binding — configured by user.
