@@ -166,19 +166,17 @@ function getOpenRouterModels(env) {
 // If ALL fail, returns combined error.
 // ============================================================
 export async function aiComplete(env, settings, params) {
-  // Build list of all providers to race
   const providers = [];
+  const preferred = settings?.ai_provider || env.DEFAULT_AI_PROVIDER || "openrouter";
 
-  // 1. Multiple Gemini models (if key exists) — fallback chain
-  if (env.GEMINI_API_KEY) {
-    // Primary Gemini model from env, plus fallback models
+  // 1. Gemini models — only if preferred is 'gemini' or if both keys exist for fallback
+  if (env.GEMINI_API_KEY && (preferred === "gemini" || preferred === "auto")) {
     const geminiModels = [
       env.GEMINI_MODEL || "gemini-2.5-flash",
-      "gemini-2.5-flash",           // stable fallback
-      "gemini-2.5-flash-lite",      // cheaper fallback
-      "gemini-2.0-flash",           // legacy fallback
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.0-flash",
     ];
-    // Deduplicate
     const uniqueGeminiModels = [...new Set(geminiModels)];
     for (const model of uniqueGeminiModels) {
       providers.push({
@@ -189,8 +187,8 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // 2. ALL OpenRouter free models (if key exists)
-  if (env.OPENROUTER_API_KEY) {
+  // 2. OpenRouter models — only if preferred is 'openrouter' or if both keys exist for fallback
+  if (env.OPENROUTER_API_KEY && (preferred === "openrouter" || preferred === "auto")) {
     const models = getOpenRouterModels(env);
     for (const model of models) {
       providers.push({
@@ -198,6 +196,17 @@ export async function aiComplete(env, settings, params) {
         model: model,
         complete: () => openRouterComplete(env.OPENROUTER_API_KEY, model, params),
       });
+    }
+  }
+
+  // If preferred provider has no API key, try the other one as fallback
+  if (providers.length === 0) {
+    if (env.GEMINI_API_KEY) {
+      providers.push({ name: "gemini", model: env.GEMINI_MODEL || "gemini-2.5-flash", complete: () => geminiComplete(env.GEMINI_API_KEY, env.GEMINI_MODEL || "gemini-2.5-flash", params) });
+    }
+    if (env.OPENROUTER_API_KEY) {
+      const m = env.OPENROUTER_MODEL || "nvidia/nemotron-3-nano-30b-a3b:free";
+      providers.push({ name: "openrouter", model: m, complete: () => openRouterComplete(env.OPENROUTER_API_KEY, m, params) });
     }
   }
 

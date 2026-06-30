@@ -180,6 +180,7 @@ function scheduleKeyboard(s) {
   const enabled = s?.scheduling_enabled;
   const delay = s?.schedule_delay_hours ?? 24;
   const interval = s?.schedule_interval_minutes ?? 30;
+  const ppd = s?.schedule_posts_per_day ?? 0;
   return {
     inline_keyboard: [
       [{ text: enabled ? "🟢 Stop Scheduling" : "🔴 Start Scheduling", callback_data: "set:sched:toggle" }],
@@ -195,6 +196,12 @@ function scheduleKeyboard(s) {
         { text: `${interval}m`, callback_data: "ignore" },
         { text: "+", callback_data: "set:sched:interval:inc" },
       ],
+      [
+        { text: "📊 Posts/day", callback_data: "ignore" },
+        { text: "−", callback_data: "set:sched:posts:dec" },
+        { text: `${ppd > 0 ? ppd : "∞"}`, callback_data: "ignore" },
+        { text: "+", callback_data: "set:sched:posts:inc" },
+      ],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -204,18 +211,21 @@ function scheduleMenuText(s) {
   const enabled = s?.scheduling_enabled;
   const delay = s?.schedule_delay_hours ?? 24;
   const interval = s?.schedule_interval_minutes ?? 30;
+  const ppd = s?.schedule_posts_per_day ?? 0;
+  const ppdText = ppd > 0 ? `${ppd} (auto-spacing: ${Math.floor(1440/ppd)}m)` : "∞ (manual spacing)";
   return [
     `<b>📅 Schedule Manager</b>`,
     ``,
     `Status: <b>${enabled ? "🟢 ON" : "🔴 OFF"}</b>`,
     `Delay: <b>${delay} hours</b>`,
     `Spacing: <b>${interval} minutes</b>`,
+    `Posts/day: <b>${ppdText}</b>`,
     ``,
     `<i>How it works:</i>`,
     `• Posts are delayed by ${delay}h`,
-    `• Multiple posts are spaced by ${interval}m`,
+    `• Multiple posts are spaced by ${ppd > 0 ? Math.floor(1440/ppd) : interval}m`,
     `• You still receive immediate feedback`,
-    `• Channel edits are NOT scheduled (immediate)`,
+    `• Channel edits are NOT scheduled`,
   ].join("\n");
 }
 
@@ -545,6 +555,18 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
         newText = scheduleMenuText(updated);
         newKb = scheduleKeyboard(updated);
         toast = `✅ Spacing: ${newInt}m`;
+      } else if (value === "posts:inc") {
+        const newVal = Math.min(50, (settings.schedule_posts_per_day ?? 0) + 1);
+        const updated = await updateSetting(SETTINGS, userId, "schedule_posts_per_day", newVal);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = `✅ Posts/day: ${newVal > 0 ? newVal : "∞"}`;
+      } else if (value === "posts:dec") {
+        const newVal = Math.max(0, (settings.schedule_posts_per_day ?? 0) - 1);
+        const updated = await updateSetting(SETTINGS, userId, "schedule_posts_per_day", newVal);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = `✅ Posts/day: ${newVal > 0 ? newVal : "∞"}`;
       } else {
         await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown schedule action");
         return;

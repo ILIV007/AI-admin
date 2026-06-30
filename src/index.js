@@ -477,26 +477,44 @@ async function runMediaGroupPipeline(env, items, update) {
 
   if (targetChannel) {
     if (settings.scheduling_enabled) {
-      // v0.5.1: Schedule media group using native Telegram schedule_date
-      const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
-      const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
-      const minNext = lastScheduled ? lastScheduled + (settings.schedule_interval_minutes * 60 * 1000) : 0;
-      const scheduledTime = Math.max(baseTime, minNext);
-      const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+      try {
+        let effectiveInterval = settings.schedule_interval_minutes ?? 30;
+        if (settings.schedule_posts_per_day > 0) {
+          effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
+          if (effectiveInterval < 5) effectiveInterval = 5;
+        }
 
-      await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
+        const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
+        const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
+        const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
+        const scheduledTime = Math.max(baseTime, minNext);
+        const scheduleDateUnix = Math.floor(scheduledTime / 1000);
 
-      const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
-        parse_mode: parseMode,
-        schedule_date: scheduleDateUnix,
-      });
-      publishOk = pubRes.ok;
-      console.log(`[mg-pipeline] scheduled for ${new Date(scheduledTime).toISOString()}`);
+        console.log(`[mg-pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}`);
 
-      if (feedbackChatId && processingMsgId) {
-        await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-          `📅 <b>Album Scheduled!</b>\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}`,
-          { disable_web_page_preview: true }).catch(() => {});
+        await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
+
+        const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
+          parse_mode: parseMode,
+          schedule_date: scheduleDateUnix,
+        });
+        publishOk = pubRes.ok;
+
+        if (!publishOk) {
+          console.error(`[mg-pipeline] Scheduling failed (${pubRes.description}), falling back to immediate`);
+          const fallbackRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
+          publishOk = fallbackRes.ok;
+        }
+
+        if (feedbackChatId && processingMsgId) {
+          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+            `📅 <b>Album Scheduled!</b>\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}`,
+            { disable_web_page_preview: true }).catch(() => {});
+        }
+      } catch (e) {
+        console.error(`[mg-pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
+        const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
+        publishOk = pubRes.ok;
       }
     } else {
       const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
@@ -791,30 +809,52 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     }
   }
 
-  // v0.5.1: Schedule or publish to channel (using Telegram native schedule_date)
+  // v0.5.2: Schedule or publish with try/catch fallback
   let publishRes;
   let scheduledTime = null;
 
   if (settings.scheduling_enabled) {
-    // Scheduling ON — compute next slot using native Telegram schedule_date
-    const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
-    const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
-    const minNext = lastScheduled ? lastScheduled + (settings.schedule_interval_minutes * 60 * 1000) : 0;
-    scheduledTime = Math.max(baseTime, minNext);
-    const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+    try {
+      // Calculate effective interval (posts_per_day overrides interval_minutes)
+      let effectiveInterval = settings.schedule_interval_minutes ?? 30;
+      if (settings.schedule_posts_per_day > 0) {
+        effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
+        if (effectiveInterval < 5) effectiveInterval = 5;
+      }
 
-    // Save the scheduled time for next post's interval calculation
-    await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
+      const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
+      const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
+      const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
+      scheduledTime = Math.max(baseTime, minNext);
+      const scheduleDateUnix = Math.floor(scheduledTime / 1000);
 
-    // Send to Telegram with schedule_date parameter
-    publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-      text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-      extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
-    });
-    publishRes.scheduled = publishRes.ok;
-    console.log(`[pipeline] scheduled for ${new Date(scheduledTime).toISOString()}`);
+      console.log(`[pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}`);
+
+      await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
+
+      publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+        extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
+      });
+      publishRes.scheduled = publishRes.ok;
+
+      if (!publishRes.ok) {
+        console.error(`[pipeline] Scheduling failed (${publishRes.description}), falling back to immediate`);
+        publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+          extra: { parse_mode: parseMode, disable_web_page_preview: false },
+        });
+        publishRes.scheduled = false;
+      }
+    } catch (e) {
+      console.error(`[pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
+      publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+        extra: { parse_mode: parseMode, disable_web_page_preview: false },
+      });
+      publishRes.scheduled = false;
+    }
   } else {
-    // Scheduling OFF — publish immediately
     publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
       text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },

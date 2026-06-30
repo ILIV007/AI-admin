@@ -20,6 +20,7 @@ export const DEFAULTS = Object.freeze({
   scheduling_enabled: false,
   schedule_delay_hours: 24,
   schedule_interval_minutes: 30,
+  schedule_posts_per_day: 0,
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 
