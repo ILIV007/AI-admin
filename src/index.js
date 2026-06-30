@@ -405,11 +405,20 @@ async function runMediaGroupPipeline(env, items, update) {
   let aiError = null;
 
   const effectiveRewriteMode = settings.rewrite_mode || "normal";
-  const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
+  // v0.5.0: Media group caption limit is 1024 — force summary if text is too long
+  const MG_CAPTION_LIMIT = 800; // leave room for footer + HTML tags
+  let shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
+  
+  // Force summary for media groups if text exceeds caption limit
+  if (cleanedText.length > MG_CAPTION_LIMIT) {
+    shouldRewrite = true;
+    console.log(`[mg-pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${MG_CAPTION_LIMIT} [MEDIA])`);
+  }
 
   if (shouldRewrite) {
     try {
-      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 60, settings.emoji_level ?? 20);
+      const mode = cleanedText.length > MG_CAPTION_LIMIT ? "summary" : effectiveRewriteMode;
+      const res = await aiRewrite(env, settings, cleanedText, mode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 60, settings.emoji_level ?? 20);
       if (res.ok && res.text) {
         finalText = res.text;
         wasRewritten = true;
@@ -425,9 +434,32 @@ async function runMediaGroupPipeline(env, items, update) {
     }
   }
 
-  const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
+  const { text: formattedBody, parseMode } = formatPost(finalText, {
+    footer: null, engineName: "html", intensity: settings.edit_intensity ?? 60, emojiLevel: settings.emoji_level ?? 20,
   });
+
+  // v0.5.0: Safe truncation for media groups (caption limit = 1024, we use 900 for safety)
+  const MG_LIMIT = 900;
+  const footerHtml = settings.footer_text ? `\n\n<blockquote>${settings.footer_text}</blockquote>` : "";
+  const maxBodyLen = MG_LIMIT - footerHtml.length - 50;
+  let safeBody = formattedBody;
+  if (formattedBody.length > maxBodyLen) {
+    let cutPoint = maxBodyLen - 30;
+    const lastGT = formattedBody.lastIndexOf(">", cutPoint);
+    const lastLT = formattedBody.lastIndexOf("<", cutPoint);
+    if (lastLT > lastGT) cutPoint = lastLT - 1;
+    const lastNL = formattedBody.lastIndexOf("\n", cutPoint);
+    if (lastNL > cutPoint - 200) cutPoint = lastNL;
+    safeBody = formattedBody.slice(0, cutPoint);
+    // Close unclosed tags
+    for (const tag of ["blockquote", "a", "b", "i", "code", "pre"]) {
+      const open = tag === "a" ? (safeBody.match(/<a\s/g) || []).length : (safeBody.match(new RegExp(`<${tag}>`, "g")) || []).length;
+      const close = (safeBody.match(new RegExp(`</${tag}>`, "g")) || []).length;
+      if (open > close) safeBody += `</${tag}>`.repeat(open - close);
+    }
+    safeBody += "\n\n<i>…(truncated)</i>";
+  }
+  const formattedText = safeBody + footerHtml;
 
   const mediaItems = items.map((it, i) => ({
     type: it.type, fileId: it.fileId,
@@ -629,13 +661,14 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const emojiLevel = settings.emoji_level ?? 20;
 
   // v0.4.8: Only summarize when ABSOLUTELY necessary (near Telegram limits)
-  // Don't summarize aggressively — only when text truly won't fit
+  // v0.5.0: Even if rewrite_mode is "none", force summary if text truly won't fit
   const hasMedia = !!content.mediaFileId;
-  const MEDIA_CAPTION_LIMIT = 900;   // Telegram caption limit is 1024
-  const TEXT_MESSAGE_LIMIT = 3500;    // Telegram text limit is 4096
+  const MEDIA_CAPTION_LIMIT = 900;
+  const TEXT_MESSAGE_LIMIT = 3500;
   const LONG_TEXT_THRESHOLD = hasMedia ? MEDIA_CAPTION_LIMIT : TEXT_MESSAGE_LIMIT;
   let finalMode = effectiveRewriteMode;
-  if (cleanedText.length > LONG_TEXT_THRESHOLD && effectiveRewriteMode !== "none") {
+  if (cleanedText.length > LONG_TEXT_THRESHOLD) {
+    // Force summary regardless of rewrite_mode (even "none") to avoid publish errors
     finalMode = "summary";
     console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${LONG_TEXT_THRESHOLD}${hasMedia ? " [MEDIA]" : ""})`);
   }
