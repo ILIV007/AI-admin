@@ -1,11 +1,6 @@
 /**
  * src/debug.js
- * Debug dashboard + logging utilities — v0.5.0
- *
- * Improvements:
- *   - Better error handling in ctx.waitUntil
- *   - Structured logging
- *   - Health check endpoint
+ * Debug dashboard + logging utilities for AI Admin.
  */
 
 const DEBUG_MAX_ENTRIES = 30;
@@ -118,7 +113,7 @@ export function checkDebugAuth(request, env) {
 }
 
 // ============================================================
-// STATUS GATHERER
+// STATUS GATHERER (parallel)
 // ============================================================
 function maskValue(val) {
   if (val === undefined || val === null || val === "") return { set: false };
@@ -220,11 +215,14 @@ export async function testKV(SETTINGS) {
 }
 
 export async function testAI(env) {
-  const userMsg = "Summarize this in one sentence: Telegram is a cloud-based instant messaging service.";
+  // Use a real-world test prompt (not just "AI_OK") to catch empty-response issues
+  const userMsg = "Summarize this in one sentence: Telegram is a cloud-based instant messaging service that focuses on speed and security.";
   const systemMsg = "You are a helpful assistant. Reply with a concise summary.";
 
+  // Build list of all models to test
   const tests = [];
 
+  // 1. Gemini
   if (env.GEMINI_API_KEY) {
     const geminiModel = env.GEMINI_MODEL || "gemini-2.5-flash";
     tests.push({
@@ -262,6 +260,7 @@ export async function testAI(env) {
     });
   }
 
+  // 2. ALL OpenRouter models
   if (env.OPENROUTER_API_KEY) {
     let models = [];
     if (env.OPENROUTER_FALLBACK_MODELS) {
@@ -300,6 +299,7 @@ export async function testAI(env) {
 
             const text = data?.choices?.[0]?.message?.content ?? "";
             if (!text || !text.trim()) {
+              // Check for finish_reason that explains the empty response
               const finishReason = data?.choices?.[0]?.finish_reason || "unknown";
               return { ok: false, httpStatus: 200, error: `Empty response (finish_reason: ${finishReason})`, errorType: "EMPTY_RESPONSE", ms };
             }
@@ -314,6 +314,7 @@ export async function testAI(env) {
     return { ok: false, error: "No AI keys configured (need GEMINI_API_KEY or OPENROUTER_API_KEY)" };
   }
 
+  // Run ALL tests in parallel
   console.log(`[debug] testing ${tests.length} AI models in parallel`);
   const results = await Promise.all(
     tests.map(async (t) => {
@@ -322,6 +323,7 @@ export async function testAI(env) {
     })
   );
 
+  // Categorize results
   const working = results.filter((r) => r.ok);
   const failed = results.filter((r) => !r.ok);
   const notFound = failed.filter((r) => r.errorType === "MODEL_NOT_FOUND");
@@ -346,8 +348,8 @@ export async function testAI(env) {
     fastest: fastest ? fastest.name : null,
     fastestMs: fastest ? fastest.ms : null,
     recommendation: working.length === 0
-      ? `ALL ${results.length} models failed. ${notFound.length} not found, ${rateLimited.length} rate-limited, ${empty.length} empty, ${timeouts.length} timeout.`
-      : `${working.length}/${results.length} models work. Fastest: ${fastest.name} (${fastest.ms}ms).`,
+      ? `ALL ${results.length} models failed. ${notFound.length} not found (update OPENROUTER_FALLBACK_MODELS in wrangler.toml), ${rateLimited.length} rate-limited, ${empty.length} empty, ${timeouts.length} timeout.`
+      : `${working.length}/${results.length} models work. Fastest: ${fastest.name} (${fastest.ms}ms). ${notFound.length} models have wrong slugs (404) — update OPENROUTER_FALLBACK_MODELS.`,
   };
 }
 
@@ -400,7 +402,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.0</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.2.1</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>

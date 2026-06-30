@@ -1,7 +1,7 @@
 {
   "name": "ai-admin",
-  "version": "0.4.6",
-  "description": "AI Admin v0.4.5 — Professional Telegram channel content processing bot on Cloudflare Workers. Rich formatting, modern architecture, zero cost.",
+  "version": "0.4.7",
+  "description": "AI Admin — Telegram channel content processing bot on Cloudflare Workers. Free, serverless, AI-powered.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -23,8 +23,7 @@
     "gemini",
     "openrouter",
     "content-processing",
-    "serverless",
-    "rich-formatting"
+    "serverless"
   ],
   "license": "MIT"
 }

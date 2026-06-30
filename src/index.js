@@ -1,15 +1,14 @@
 /**
  * src/index.js
- * AI Admin — Cloudflare Worker entry point (v0.5.0)
+ * AI Admin — Cloudflare Worker entry point (v0.2.1)
  *
- * Major refactor:
- *   - AbortController signal propagated to AI calls (real cancellation)
- *   - Better ctx.waitUntil error handling with try/catch
- *   - runChannelEditPipeline now uses replyToMessage + edit_intensity
- *   - edit_intensity properly passed to aiRewrite in channel pipeline
- *   - Self-reply loop prevention
- *   - Better structured error handling
- *   - Signal passed through all async chains
+ * Features:
+ *   - Pipeline with 55s timeout + AbortController
+ *   - Parallel AI providers (Gemini + OpenRouter race)
+ *   - Media group buffering (per-item KV keys, leader election)
+ *   - Reply chain context
+ *   - Debug dashboard at /debug
+ *   - Raw request logging
  */
 
 import {
@@ -36,7 +35,6 @@ import { cleanContent, detectLanguage } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
 import { isAuthorized, handleStart, handleFooterCommand, handleCallbackQuery } from "./admin.js";
-import { getProfile } from "../ai/profiles/index.js";
 import {
   checkDebugAuth,
   getStatus,
@@ -50,7 +48,7 @@ import {
   debugHTML,
 } from "./debug.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.2.1";
 
 // ============================================================
 // MAIN EXPORT
@@ -77,93 +75,67 @@ export default {
 
     // POST /webhook
     if (request.method === "POST" && url.pathname === "/webhook") {
-      return handleWebhook(request, url, env, ctx);
+      const SETTINGS = env.SETTINGS;
+      const secret = request.headers.get("x-telegram-bot-api-secret-token");
+      const hasSecretCheck = !!env.WEBHOOK_SECRET;
+      const secretMatches = !hasSecretCheck || secret === env.WEBHOOK_SECRET;
+
+      let update = null;
+      let bodyParseError = null;
+      let bodySize = 0;
+      try {
+        const text = await request.text();
+        bodySize = text.length;
+        update = JSON.parse(text);
+      } catch (e) {
+        bodyParseError = e.message;
+      }
+
+      const updateInfo = extractUpdateInfoForLog(update);
+
+      if (hasSecretCheck && !secretMatches) {
+        console.warn(`[webhook] 403 — secret mismatch`);
+        ctx.waitUntil(logRawRequest(SETTINGS, {
+          method: request.method, path: url.pathname,
+          hasSecret: !!secret, secretMatch: false, bodySize,
+          updateType: updateInfo.updateType, fromId: updateInfo.fromId,
+          chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
+          status: "rejected_403",
+          detail: `Expected ${env.WEBHOOK_SECRET.slice(0, 3)}…, got ${secret ? secret.slice(0, 3) + "…" : "(missing)"}`,
+        }));
+        return new Response("Forbidden", { status: 403 });
+      }
+
+      if (!update) {
+        console.warn("[webhook] 400 — invalid JSON");
+        ctx.waitUntil(logRawRequest(SETTINGS, {
+          method: request.method, path: url.pathname,
+          hasSecret: !!secret, secretMatch: secretMatches, bodySize,
+          updateType: "invalid_json", fromId: null, chatId: null,
+          textPreview: bodyParseError, status: "rejected_400",
+          detail: "Invalid JSON",
+        }));
+        return new Response("Bad Request", { status: 400 });
+      }
+
+      console.log(`[webhook] 200 — type=${updateInfo.updateType} from=${updateInfo.fromId}`);
+
+      ctx.waitUntil((async () => {
+        await logRawRequest(SETTINGS, {
+          method: request.method, path: url.pathname,
+          hasSecret: !!secret, secretMatch: secretMatches, bodySize,
+          updateType: updateInfo.updateType, fromId: updateInfo.fromId,
+          chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
+          status: "ok", detail: "processed",
+        });
+        await handleUpdate(update, env);
+      })());
+      return new Response("ok", { status: 200 });
     }
 
     return new Response("Not Found", { status: 404 });
   },
 };
-
-// ============================================================
-// WEBHOOK HANDLER — v0.5.0: Better error handling in ctx.waitUntil
-// ============================================================
-async function handleWebhook(request, url, env, ctx) {
-  const SETTINGS = env.SETTINGS;
-  const secret = request.headers.get("x-telegram-bot-api-secret-token");
-  const hasSecretCheck = !!env.WEBHOOK_SECRET;
-  const secretMatches = !hasSecretCheck || secret === env.WEBHOOK_SECRET;
-
-  let update = null;
-  let bodyParseError = null;
-  let bodySize = 0;
-  try {
-    const text = await request.text();
-    bodySize = text.length;
-    update = JSON.parse(text);
-  } catch (e) {
-    bodyParseError = e.message;
-  }
-
-  const updateInfo = extractUpdateInfoForLog(update);
-
-  if (hasSecretCheck && !secretMatches) {
-    console.warn(`[webhook] 403 — secret mismatch`);
-    ctx.waitUntil(
-      logRawRequest(SETTINGS, {
-        method: request.method, path: url.pathname,
-        hasSecret: !!secret, secretMatch: false, bodySize,
-        updateType: updateInfo.updateType, fromId: updateInfo.fromId,
-        chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
-        status: "rejected_403",
-        detail: `Expected ${env.WEBHOOK_SECRET.slice(0, 3)}…, got ${secret ? secret.slice(0, 3) + "…" : "(missing)"}`,
-      }).catch(e => console.error("[webhook] logRawRequest failed:", e.message))
-    );
-    return new Response("Forbidden", { status: 403 });
-  }
-
-  if (!update) {
-    console.warn("[webhook] 400 — invalid JSON");
-    ctx.waitUntil(
-      logRawRequest(SETTINGS, {
-        method: request.method, path: url.pathname,
-        hasSecret: !!secret, secretMatch: secretMatches, bodySize,
-        updateType: "invalid_json", fromId: null, chatId: null,
-        textPreview: bodyParseError, status: "rejected_400",
-        detail: "Invalid JSON",
-      }).catch(e => console.error("[webhook] logRawRequest failed:", e.message))
-    );
-    return new Response("Bad Request", { status: 400 });
-  }
-
-  console.log(`[webhook] 200 — type=${updateInfo.updateType} from=${updateInfo.fromId}`);
-
-  // v0.5.0: Proper error handling in ctx.waitUntil with individual try/catch for each operation
-  ctx.waitUntil((async () => {
-    try {
-      await logRawRequest(SETTINGS, {
-        method: request.method, path: url.pathname,
-        hasSecret: !!secret, secretMatch: secretMatches, bodySize,
-        updateType: updateInfo.updateType, fromId: updateInfo.fromId,
-        chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
-        status: "ok", detail: "processed",
-      });
-    } catch (e) {
-      console.error("[webhook] logRawRequest failed:", e.message);
-    }
-    try {
-      await handleUpdate(update, env);
-    } catch (e) {
-      console.error("[webhook] handleUpdate failed:", e.message);
-      try {
-        await logError(SETTINGS, e, "handleUpdate in ctx.waitUntil");
-      } catch (logErr) {
-        console.error("[webhook] logError failed:", logErr.message);
-      }
-    }
-  })());
-
-  return new Response("ok", { status: 200 });
-}
 
 // ============================================================
 // DEBUG ROUTE HANDLER
@@ -209,7 +181,7 @@ function handleDebugRoute(request, url, env) {
 }
 
 // ============================================================
-// UPDATE INFO EXTRACTOR
+// UPDATE INFO EXTRACTOR (for raw logging)
 // ============================================================
 function extractUpdateInfoForLog(update) {
   if (!update) return { updateType: "invalid", fromId: null, chatId: null, textPreview: "" };
@@ -230,6 +202,7 @@ function extractUpdateInfoForLog(update) {
 // ============================================================
 async function handleUpdate(update, env) {
   const SETTINGS = env.SETTINGS;
+  const startTime = Date.now();
 
   try {
     if (update.callback_query) {
@@ -302,6 +275,7 @@ async function handlePrivateMessage(env, content, update) {
 
   const text = content.text || "";
 
+  // Typing indicator immediately
   if (content.chatId) {
     await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
   }
@@ -331,7 +305,7 @@ async function handlePrivateMessage(env, content, update) {
 }
 
 // ============================================================
-// MEDIA GROUP HANDLER
+// MEDIA GROUP HANDLER (per-item keys + leader election)
 // ============================================================
 const MEDIA_GROUP_WAIT_MS = 2500;
 
@@ -360,6 +334,7 @@ async function handleMediaGroupUpdate(env, content, update) {
 
   if (fullGroup.length === 0) return;
 
+  // Leader election: smallest messageId processes
   const leader = fullGroup[0];
   if (leader.messageId !== content.messageId) {
     console.log(`[media-group] deferring to leader ${leader.messageId}`);
@@ -385,6 +360,10 @@ async function runMediaGroupPipeline(env, items, update) {
   const adminId = items[0].fromId || env.ADMIN_ID;
   const startTime = Date.now();
 
+  // Combine captions from all items.
+  // Only add "[Photo N]:" numbering when MULTIPLE items have captions.
+  // If only one item has a caption (even in a multi-photo album), use it directly
+  // without numbering — this avoids the bug where "[Photo 1:]" appeared on single-caption albums.
   const itemsWithCaptions = items.filter((it) => it.caption && it.caption.trim());
   const useNumbering = itemsWithCaptions.length > 1;
 
@@ -428,12 +407,9 @@ async function runMediaGroupPipeline(env, items, update) {
   const effectiveRewriteMode = settings.rewrite_mode || "normal";
   const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
 
-  // v0.5.0: Create AbortController for AI calls in media group
-  const abortCtrl = new AbortController();
-
   if (shouldRewrite) {
     try {
-      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 50, settings.emoji_level ?? 2, abortCtrl.signal);
+      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 60, settings.emoji_level ?? 20);
       if (res.ok && res.text) {
         finalText = res.text;
         wasRewritten = true;
@@ -451,7 +427,6 @@ async function runMediaGroupPipeline(env, items, update) {
 
   const { text: formattedText, parseMode } = formatPost(finalText, {
     footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
-    language: effectiveLang,
   });
 
   const mediaItems = items.map((it, i) => ({
@@ -500,9 +475,9 @@ async function runMediaGroupPipeline(env, items, update) {
 }
 
 // ============================================================
-// CONTENT PIPELINE — v0.5.0: Signal propagation, real cancellation
+// CONTENT PIPELINE (with 55s timeout + AbortController)
 // ============================================================
-const PIPELINE_TIMEOUT_MS = 90_000;
+const PIPELINE_TIMEOUT_MS = 90_000; // 90s — generous; Cloudflare Workers can run up to 5min on paid, ~30s-2min on free with ctx.waitUntil
 
 async function runPipeline(env, content, feedbackChatId = null, update = null) {
   const SETTINGS = env.SETTINGS;
@@ -559,10 +534,9 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
 
-  // v0.5.0: Create AbortController and pass signal to inner pipeline
+  // Inner pipeline with timeout
   const abortCtrl = new AbortController();
-
-  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime, abortCtrl.signal);
+  const innerPromise = runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime);
   const timeoutPromise = new Promise((_, reject) => {
     const t = setTimeout(() => {
       abortCtrl.abort();
@@ -602,12 +576,15 @@ async function runPipeline(env, content, feedbackChatId = null, update = null) {
 }
 
 // ============================================================
-// INNER PIPELINE — v0.5.0: Signal passed to AI calls
+// INNER PIPELINE
 // ============================================================
-async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime, signal) {
+async function runPipelineInner(env, content, settings, rawText, feedbackChatId, processingMsgId, trace, traceStep, startTime) {
   const SETTINGS = env.SETTINGS;
   const adminId = content.fromId || env.ADMIN_ID;
 
+  // When settings.language_mode is "auto", pass "auto" to AI (NOT detected lang).
+  // The prompt interprets "auto" as "keep input language exactly".
+  // Passing "fa" or "en" would make some models translate, which is wrong.
   const detectedLang = detectLanguage(rawText);
   const effectiveLang = settings.language_mode === "auto" ? "auto" : settings.language_mode;
   console.log(`[pipeline] lang=${effectiveLang} (settings=${settings.language_mode}, detected=${detectedLang})`);
@@ -623,7 +600,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     }
   }
 
-  // Classify
+  // Classify (rule-based only)
   let decision;
   try {
     const cls = await classify(env, settings, rawText);
@@ -645,35 +622,27 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   let aiProvider = "none";
   let aiError = null;
 
-  const profileActive = !!settings.active_profile;
-  const profile = profileActive ? getProfile(settings.active_profile) : null;
-
-  const effectiveRewriteMode = profileActive
-    ? (profile?.settings?.rewrite_mode || "normal")
-    : (decision.rewrite_mode || settings.rewrite_mode || "normal");
-  const intensity = profileActive
-    ? (profile?.settings?.edit_intensity ?? 60)
-    : (settings.edit_intensity ?? 60);
-  const emojiLevel = profileActive
-    ? (profile?.settings?.emoji_level ?? 20)
-    : (settings.emoji_level ?? 20);
+  // v0.4.7: SEPARATION OF CONCERNS — intensity controls ONLY UI, NOT AI rewrite
+  // rewrite_mode controls AI. intensity is completely independent.
+  const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "normal";
+  const intensity = settings.edit_intensity ?? 60;
+  const emojiLevel = settings.emoji_level ?? 20;
 
   const hasMedia = !!content.mediaFileId;
   const LONG_TEXT_THRESHOLD = hasMedia ? 800 : 1200;
-  let finalMode;
-  if (intensity === 0) {
-    finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : "none";
-  } else {
-    finalMode = cleanedText.length > LONG_TEXT_THRESHOLD ? "summary" : effectiveRewriteMode;
+  // Force summary if text is too long (regardless of rewrite_mode, unless mode is "none")
+  let finalMode = effectiveRewriteMode;
+  if (cleanedText.length > LONG_TEXT_THRESHOLD && effectiveRewriteMode !== "none") {
+    finalMode = "summary";
+    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${LONG_TEXT_THRESHOLD}${hasMedia ? " [MEDIA]" : ""})`);
   }
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars${cleanedText.length > LONG_TEXT_THRESHOLD ? " → AUTO SUMMARY FORCED" : ""}${hasMedia ? " [MEDIA]" : ""})`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% (UI only) should=${shouldRewrite}`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
       if (finalMode === "summary") {
-        // v0.5.0: Pass edit_intensity to aiSummarize
-        const res = await aiSummarize(env, settings, textForAI, effectiveLang, intensity, signal);
+        const res = await aiSummarize(env, settings, textForAI, effectiveLang);
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
@@ -684,8 +653,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
           traceStep("ai_summarize", false, res.error || "unknown");
         }
       } else {
-        // v0.5.0: Pass signal to aiRewrite
-        const res = await aiRewrite(env, settings, textForAI, finalMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 50, settings.emoji_level ?? 2, signal);
+        const res = await aiRewrite(env, settings, textForAI, finalMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 60, settings.emoji_level ?? 20);
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
@@ -697,76 +665,47 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
         }
       }
     } catch (e) {
-      // v0.5.0: Distinguish between abort and real errors
-      if (e.name === "AbortError" || e.message?.includes("Abort")) {
-        aiError = "ABORTED";
-        traceStep("ai_aborted", false, "Pipeline aborted by timeout or signal");
-      } else {
-        aiError = e.message;
-        traceStep("ai_exception", false, e.message);
-      }
+      aiError = e.message;
+      traceStep("ai_exception", false, e.message);
     }
   } else {
     traceStep("ai_skip", true, `mode=${finalMode}`);
   }
 
-  // Format WITHOUT footer first, then truncate, then add footer
+  // Format WITHOUT footer first, then truncate, then add footer.
+  // This ensures the footer is NEVER lost even when the text is truncated.
+  // (intensity and emojiLevel already declared above)
+
+  // Step 1: Format the body text (no footer yet)
   const { text: formattedBody, parseMode } = formatPost(finalText, {
-    footer: null,
+    footer: null, // No footer yet — we add it after truncation
     engineName: "html",
     intensity,
     emojiLevel,
-    language: effectiveLang,
   });
   traceStep("format_body", true, `${formattedBody.length} chars`);
 
+  // Step 2: Calculate available space for body (leave room for footer)
   const TELEGRAM_TEXT_LIMIT = 4000;
   const TELEGRAM_CAPTION_LIMIT = 1000;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
+  // Footer format: \n\n<blockquote>FOOTER</blockquote>
   const footerHtml = settings.footer_text
     ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
-  const maxBodyLen = effectiveLimit - footerLen - 50;
+  const maxBodyLen = effectiveLimit - footerLen - 50; // 50 chars safety margin
 
+  // Step 3: Truncate body if needed (BEFORE adding footer)
   let safeBody = formattedBody;
   if (formattedBody.length > maxBodyLen) {
     console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), truncating BEFORE footer`);
-    // v0.4.6 FIX: Safe truncation — don't cut inside HTML tags
-    // Find a safe cut point: last newline before maxBodyLen
-    let cutPoint = maxBodyLen - 30;
-    // Walk back to avoid cutting inside an HTML tag
-    const lastGT = formattedBody.lastIndexOf(">", cutPoint);
-    const lastLT = formattedBody.lastIndexOf("<", cutPoint);
-    if (lastLT > lastGT) {
-      // We're inside a tag — cut before the tag start
-      cutPoint = lastLT - 1;
-    }
-    // Walk back to a newline for cleaner cut
-    const lastNewline = formattedBody.lastIndexOf("\n", cutPoint);
-    if (lastNewline > cutPoint - 200) cutPoint = lastNewline; // Only use newline if close enough
-
-    safeBody = formattedBody.slice(0, cutPoint);
-
-    // Close any unclosed blockquote tags
-    const openBQ = (safeBody.match(/<blockquote/g) || []).length;
-    const closeBQ = (safeBody.match(/<\/blockquote>/g) || []).length;
-    if (openBQ > closeBQ) {
-      safeBody += "</blockquote>".repeat(openBQ - closeBQ);
-    }
-
-    // Close any unclosed <a> tags
-    const openA = (safeBody.match(/<a\s/g) || []).length;
-    const closeA = (safeBody.match(/<\/a>/g) || []).length;
-    if (openA > closeA) {
-      safeBody += "</a>".repeat(openA - closeA);
-    }
-
-    safeBody += "\n\n<i>…(truncated)</i>";
+    safeBody = formattedBody.slice(0, maxBodyLen - 30) + "\n\n<i>…(truncated)</i>";
     traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
   }
 
+  // Step 4: Append footer (guaranteed to fit now)
   const safeFormattedText = safeBody + footerHtml;
   traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
 
@@ -837,7 +776,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
 }
 
 // ============================================================
-// CHANNEL EDIT PIPELINE — v0.5.0: Fixed replyToMessage + edit_intensity
+// CHANNEL EDIT PIPELINE
 // ============================================================
 async function runChannelEditPipeline(env, content, update) {
   const SETTINGS = env.SETTINGS;
@@ -859,16 +798,6 @@ async function runChannelEditPipeline(env, content, update) {
 
   const effectiveLang = settings.language_mode === "auto" ? "auto" : settings.language_mode;
 
-  // v0.5.0: Build reply context for channel posts too
-  let replyContext = "";
-  if (content.replyToMessage) {
-    const orig = content.replyToMessage;
-    const origText = orig.text || orig.caption || "";
-    if (origText) {
-      replyContext = `[Original message being replied to]\n${origText}\n\n[Reply message]\n`;
-    }
-  }
-
   let decision;
   try {
     const cls = await classify(env, settings, rawText);
@@ -878,19 +807,15 @@ async function runChannelEditPipeline(env, content, update) {
   }
 
   const cleanedText = cleanContent(rawText);
-  const textForAI = replyContext + cleanedText;
 
   let finalText = cleanedText;
   let wasRewritten = false;
   const effectiveRewriteMode = decision.rewrite_mode || settings.rewrite_mode || "light";
   const shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
 
-  // v0.5.0: Pass edit_intensity to aiRewrite in channel pipeline
-  const channelIntensity = settings.edit_intensity ?? 60;
-
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
-      const res = await aiRewrite(env, settings, textForAI, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", channelIntensity, settings.emoji_level ?? 2);
+      const res = await aiRewrite(env, settings, cleanedText, effectiveRewriteMode, effectiveLang, settings.personality_mode || "friendly", settings.edit_intensity ?? 60, settings.emoji_level ?? 20);
       if (res.ok && res.text) {
         finalText = res.text;
         wasRewritten = true;
@@ -900,12 +825,8 @@ async function runChannelEditPipeline(env, content, update) {
     }
   }
 
-  // v0.5.0: Pass language to formatter for RTL support
   const { text: formattedText, parseMode } = formatPost(finalText, {
-    footer: settings.footer_text,
-    engineName: "html",
-    intensity: channelIntensity,
-    language: effectiveLang,
+    footer: settings.footer_text, engineName: "html", intensity: settings.edit_intensity ?? 60,
   });
 
   let editRes;

@@ -1,293 +1,226 @@
 /**
  * src/formatter.js
- * UI Formatter (Stage 3) — v0.5.0
+ * UI Formatter (Stage 3) — transforms plain text into beautiful Telegram HTML.
  *
- * Major improvements:
- *   - Rich formatting support (headings, expandable blockquotes, tables via MessageEntity)
- *   - Safe URL handling with try/catch
- *   - Emoji deduplication (Set-based)
- *   - Better RTL support for Persian
- *   - Modern Telegram formatting features
- *   - Strict separation: Editor changes words, Formatter changes appearance
+ * Per V2 Architecture:
+ *   - Formatter ONLY changes appearance, NEVER changes meaning
+ *   - Editor outputs plain text, Formatter adds all visual presentation
+ *   - Formatting is controlled by `intensity` (0-100%) and `emojiLevel` (0-100%)
+ *
+ * UI Rules (from ui_rules.md):
+ *   - Bold: ONLY for important info (tool names, product names, etc.) — 2-6 per post
+ *   - Monospace: for commands, filenames, env vars, API names
+ *   - Quote blocks: for URLs, repos, docs, commands, footer
+ *   - Bullet lists: convert inline lists to bullets
+ *   - Numbered lists: when order matters
+ *   - Headings: only when they improve navigation
+ *   - Emojis: 1-5 per post, only allowed emojis, no emotional emojis
+ *   - Paragraphs: max 3-4 sentences, split long ones
+ *
+ * Intensity mapping (formatting ONLY, not rewriting):
+ *   10% = spacing + footer
+ *   20% = + better paragraphs + bold keywords
+ *   30% = + paragraph optimization + quote links
+ *   40% = + lists + headings + monospace + quote repos/docs
+ *   50% = + advanced visual layout
+ *   60% = + magazine quality formatting
+ *   80% = + professional editorial formatting
+ *   100% = maximum visual optimization
  */
 
+// URL regex that stops at the next "https://" (handles stuck-together URLs)
 const URL_SPLIT_REGEX = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'])+/gi;
 
+// Allowed emojis per UI Rules (no emotional emojis)
 const ALLOWED_EMOJIS = ["🛠️", "🚀", "🤖", "📚", "⚡", "🔒", "🌐", "📦", "💡", "📝", "🎯", "🐞", "🧩"];
 
-const DECORATIVE_EMOJI_REGEX = /[\u{1F300}-\u{1F5FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}]/gu;
-
-const FUNCTIONAL_EMOJIS = new Set([
-  "🛠️", "🚀", "🤖", "📚", "⚡", "🔒", "🌐", "📦", "💡", "📝", "🎯", "🐞", "🧩",
-  "⚠️", "✨", "📥", "🔗", "📊", "🔧", "✅", "❌",
-]);
-
-const NUMBER_EMOJIS = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-
-// ============================================================
-// SAFE: Strip decorative emojis with deduplication
-// ============================================================
-function stripDecorativeEmojis(text) {
-  // Protect functional emojis using placeholders
-  const functionalPlaceholders = [];
-  let protected_text = text;
-
-  for (const emoji of FUNCTIONAL_EMOJIS) {
-    functionalPlaceholders.push(emoji);
-    protected_text = protected_text.split(emoji).join(`\u0000FP${functionalPlaceholders.length - 1}\u0000`);
-  }
-  for (let i = 0; i <= 10; i++) {
-    functionalPlaceholders.push(NUMBER_EMOJIS[i]);
-    protected_text = protected_text.split(NUMBER_EMOJIS[i]).join(`\u0000NE${i}\u0000`);
-  }
-
-  // Collapse consecutive decorative emojis
-  let result = protected_text.replace(/([\u{1F300}-\u{1F5FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA70}-\u{1FAFF}])\1+/gu, "$1");
-  // Remove decorative emojis
-  result = result.replace(DECORATIVE_EMOJI_REGEX, "");
-  // Restore functional emojis
-  result = result.replace(/\u0000FP(\d+)\u0000/g, (_, i) => [...FUNCTIONAL_EMOJIS][parseInt(i)] || "");
-  result = result.replace(/\u0000NE(\d+)\u0000/g, (_, i) => NUMBER_EMOJIS[parseInt(i)] || "");
-  // Clean up double spaces
-  result = result.replace(/  +/g, " ");
-  return result;
-}
+// Patterns for detecting technical terms that should be monospace
+const MONOSPACE_PATTERNS = [
+  // Commands: npm install, pip install, git clone, docker run, etc.
+  /\b(npm|pip|yarn|pnpm|bun|cargo|go|git|docker|kubectl|terraform|wrangler|node|python|ruby|gem)\s+(install|run|build|clone|create|add|remove|start|stop|deploy|init|exec)\b/gi,
+  // Filenames: package.json, config.yml, docker-compose.yml, etc.
+  /\b[\w-]+\.(json|yml|yaml|toml|ini|env|sh|bash|zsh|py|js|ts|go|rs|rb|java|c|cpp|md|txt|xml|html|css|sql)\b/gi,
+  // Environment variables: ALL_CAPS_NAMES
+  /\b[A-Z]{2,}[A-Z0-9_]{2,}\b/g,
+  // File paths: /path/to/file
+  /\/[\w\-./]+/g,
+];
 
 // ============================================================
-// SAFE: Shorten URL with try/catch protection
-// ============================================================
-function shortenUrl(url) {
-  try {
-    const u = new URL(url);
-    let label = u.hostname + u.pathname;
-    label = label.replace(/\/$/, "");
-    if (label.length > 40) label = label.slice(0, 37) + "…";
-    return label;
-  } catch {
-    // If URL is invalid, return the original string (truncated if too long)
-    return url.length > 40 ? url.slice(0, 37) + "…" : url;
-  }
-}
-
-function trimUrlPunctuation(url) {
-  return url.replace(/[.,);:!?}\]]+$/, "");
-}
-
-// ============================================================
-// HTML Engine — v0.5.0 with rich formatting support
+// HTML ENGINE
 // ============================================================
 const htmlEngine = {
   name: "html",
   parseMode: "HTML",
 
   escape(text) {
-    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   },
 
+  wrapLink(url) {
+    return `<blockquote>${url}</blockquote>`;
+  },
+
+  /**
+   * Format plain text into beautiful Telegram HTML.
+   * @param {string} text - plain text from Editor stage
+   * @param {object} ctx - { footer, intensity, emojiLevel }
+   */
   format(text, ctx = {}) {
     const intensity = ctx.intensity ?? 60;
     const emojiLevel = ctx.emojiLevel ?? 20;
-    const footer = ctx.footer;
-    const language = ctx.language ?? "auto";
+    const footer = ctx.footer; // null = no footer (added separately in pipeline)
+
     if (!text || !text.trim()) return "";
 
-    // === PHASE 1: PROTECT ===
+    // 1. Protect code blocks
     const codeBlocks = [];
     let work = text.replace(/```([\s\S]*?)```/g, (_, code) => {
       codeBlocks.push(code.replace(/^\n+|\n+$/g, ""));
-      return `\n§CB${codeBlocks.length - 1}§\n`;
+      return `__CODEBLOCK_${codeBlocks.length - 1}__`;
     });
+
+    // 2. Protect inline code
     const inlineCodes = [];
     work = work.replace(/`([^`\n]+)`/g, (_, code) => {
       inlineCodes.push(code);
-      return ` §IC${inlineCodes.length - 1}§ `;
+      return `__INLINE_${inlineCodes.length - 1}__`;
     });
-    const promptBlocks = [];
-    work = work.replace(/(?:^|\n)(Prompt|System Prompt|User):\s*(\{[\s\S]*?\})(?:\n|$)/gi, (_, label, content) => {
-      promptBlocks.push({ label, content });
-      return ` §P${promptBlocks.length - 1}§ `;
-    });
-    const linkPlaceholders = [];
-    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, linkText, url) => {
-      linkPlaceholders.push({ text: linkText, url });
-      return ` §L${linkPlaceholders.length - 1}§ `;
-    });
+
+    // 3. Convert markdown-style links [text](url) → HTML <a> tags (keep clickable)
+    //    This preserves the clickable text without creating long ugly URLs.
+    work = work.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+
+    // 4. Remove angle brackets around URLs
     work = work.replace(/<(https?:\/\/[^\s>]+)>/g, "$1");
 
-    // === PHASE 2: STRIP + ESCAPE + URLS ===
-    work = stripDecorativeEmojis(work);
+    // 5. Escape HTML
     work = this.escape(work);
 
-    // Plain URLs → <a href> with shortened label (SAFE)
-    work = work.replace(URL_SPLIT_REGEX, (urlRaw) => {
-      const url = trimUrlPunctuation(urlRaw);
-      const label = shortenUrl(url);
-      return `<a href="${url}">${this.escape(label)}</a>`;
-    });
+    // 6. Replace URLs with blockquotes
+    work = work.replace(URL_SPLIT_REGEX, (url) => this.wrapLink(url));
 
-    // Markdown links → <a href>
-    work = work.replace(/§L(\d+)§/g, (_, i) => {
-      const link = linkPlaceholders[Number(i)];
-      return `<a href="${link.url}">${this.escape(link.text)}</a>`;
-    });
+    // 7. Restore inline code
+    work = work.replace(/__INLINE_(\d+)__/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
 
-    // === PHASE 3: MARKDOWN TRANSFORMS ===
+    // 8. Restore code blocks
+    work = work.replace(/__CODEBLOCK_(\d+)__/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
+
+    // === FORMATTING BASED ON INTENSITY ===
+
+    // 9. Bold conversion (intensity >= 20)
     if (intensity >= 20) {
+      // **bold** → <b>bold</b>
       work = work.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+      // *italic* → <i>italic</i> (after bold)
       work = work.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<i>$1</i>");
-      if (intensity >= 40) work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
-    }
-
-    // Headings → bold (v0.5.0: could use MessageEntity for true headings in future)
-    if (intensity >= 40) work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
-
-    // Bullets
-    if (intensity >= 20) work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
-
-    // Numbered steps — GROUP into ONE blockquote
-    if (intensity >= 30) {
-      const lines = work.split("\n");
-      const processedLines = [];
-      let inStepGroup = false;
-      let stepGroup = [];
-      for (let i = 0; i < lines.length; i++) {
-        const stepMatch = lines[i].match(/^(\d+)[.)]\s+(.+)$/);
-        if (stepMatch) {
-          const num = parseInt(stepMatch[1]);
-          const emoji = (num >= 0 && num <= 10) ? NUMBER_EMOJIS[num] : `${num}.`;
-          stepGroup.push(`${emoji} ${stepMatch[2]}`);
-          inStepGroup = true;
-        } else {
-          if (inStepGroup && stepGroup.length > 0) {
-            processedLines.push(`<blockquote>${stepGroup.join("\n")}</blockquote>`);
-            stepGroup = [];
-            inStepGroup = false;
-          }
-          processedLines.push(lines[i]);
-        }
+      // ~~strike~~ → <s>strike</s>
+      if (intensity >= 40) {
+        work = work.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
       }
-      if (stepGroup.length > 0) processedLines.push(`<blockquote>${stepGroup.join("\n")}</blockquote>`);
-      work = processedLines.join("\n");
     }
 
-    // Quote long paragraphs — TWO-PASS with configurable skip
+    // 10. Headings (intensity >= 40)
+    if (intensity >= 40) {
+      // ### Title, ## Title, # Title → <b>Title</b>
+      work = work.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
+    }
+
+    // 11. Bullet lists (intensity >= 20)
+    if (intensity >= 20) {
+      // - item, * item, • item → • item
+      work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
+    }
+
+    // 12. Numbered steps (intensity >= 30) → convert to quoted blocks with number emojis
+    // This makes steps easy to find and follow
+    if (intensity >= 30) {
+      // Convert "1. step" or "1) step" to <blockquote>1️⃣ step</blockquote>
+      const numberEmojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+      work = work.replace(/^(\d+)[.)]\s+(.+)$/gm, (match, num, text) => {
+        const n = parseInt(num);
+        if (n >= 0 && n <= 10) {
+          return `<blockquote>${numberEmojis[n]} ${text}</blockquote>`;
+        }
+        return `<blockquote>${num}. ${text}</blockquote>`;
+      });
+    }
+
+    // 13. Quote paragraphs (intensity >= 30)
+    // Per UI Rules: quote long paragraphs, commands, multi-line examples
     if (intensity >= 30) {
       const minLength = intensity >= 80 ? 80 : 120;
       const lines = work.split("\n");
-      let firstEligibleIdx = -1;
-
-      // Find first eligible paragraph
-      for (let i = 0; i < lines.length; i++) {
-        const trimmed = lines[i].trim();
-        if (!trimmed || trimmed.startsWith("<blockquote>") || trimmed.startsWith("<") || trimmed.startsWith("§")) continue;
-        if (trimmed.length < minLength) continue;
-        if (/^[•\-\*\d]/.test(trimmed)) continue;
-        const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
-        if (sentenceEnds < 2) continue;
-        firstEligibleIdx = i;
-        break;
-      }
-
-      // v0.5.0: Allow quoting first paragraph when intensity >= 60
-      // v0.4.6 FIX: ALWAYS skip first paragraph — quoting it makes posts look bad
-      const skipFirst = true;
-
-      const quotedLines = lines.map((line, i) => {
+      const quotedLines = lines.map((line) => {
         const trimmed = line.trim();
         if (!trimmed) return line;
         if (trimmed.startsWith("<blockquote>")) return line;
-        if (trimmed.startsWith("<")) return line;
-        if (trimmed.startsWith("§")) return line;
+        if (/<[a-z/]/i.test(trimmed)) return line;
         if (trimmed.length < minLength) return line;
         if (/^[•\-\*\d]/.test(trimmed)) return line;
+        if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
         const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
         if (sentenceEnds < 2) return line;
-        if (skipFirst && i === firstEligibleIdx) return line;
         return `<blockquote>${trimmed}</blockquote>`;
       });
       work = quotedLines.join("\n");
     }
 
-    // === PHASE 4: RESTORE PROTECTED CONTENT ===
-    work = work.replace(/§IC(\d+)§/g, (_, i) => `<code>${this.escape(inlineCodes[Number(i)])}</code>`);
-    work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
-    work = work.replace(/§P(\d+)§/g, (_, i) => {
-      const p = promptBlocks[Number(i)];
-      return `<b>${p.label}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
-    });
-
-    // === PHASE 5: POLISH ===
-    // Emojis before headings with deduplication
-    if (emojiLevel > 0 && intensity >= 40) {
-      work = this.addEmojisToHeadings(work, emojiLevel);
+    // 14. Split long paragraphs (intensity >= 40)
+    // Per UI Rules: max 3-4 sentences per paragraph
+    if (intensity >= 40) {
+      work = work.replace(/([.!?؟!])\s+/g, "$1\n");
     }
 
-    // RTL-aware spacing for Persian
-    if (language === "fa" || (language === "auto" && /[\u0600-\u06FF]/.test(work))) {
-      work = this.applyRTLSpacing(work);
+    // 15. Add emojis (based on emojiLevel)
+    if (emojiLevel > 0) {
+      work = this.addEmojis(work, emojiLevel);
     }
 
+    // 16. Clean up extra blank lines
     work = work.replace(/\n{3,}/g, "\n\n");
 
-    // Footer with blockquote (v0.4.6: removed expandable — not supported by all clients)
+    // 17. Append footer (if provided)
     if (footer) {
       work = `${work}\n\n<blockquote>${footer}</blockquote>`;
     }
 
-    return work.trim();
+    // v0.4.7: Validate HTML before returning — fix any broken tags
+    return validateAndFixHtml(work.trim());
   },
 
-  // ============================================================
-  // Emoji before headings with deduplication (Set-based)
-  // ============================================================
-  addEmojisToHeadings(text, emojiLevel) {
+  /**
+   * Add emojis based on emojiLevel.
+   * Per UI Rules: 1-5 emojis, only allowed emojis, no emotional emojis.
+   */
+  addEmojis(text, emojiLevel) {
     if (emojiLevel === 0) return text;
-    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 6;
+
+    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 5;
     let emojiCount = 0;
-    const usedEmojis = new Set(); // Deduplication
-    const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯", "🛠️", "🚀", "🤖"];
-    let seenFirstHeading = false;
-    const lines = text.split("\n");
 
-    const processedLines = lines.map((line) => {
-      const trimmed = line.trim();
-      const headingMatch = trimmed.match(/^<b>([^<]+)<\/b>$/);
-      if (!headingMatch) return line;
-      const content = headingMatch[1];
-      if (/[\u{1F300}-\u{1FAFF}]/u.test(content)) return line;
-      if (!seenFirstHeading) { seenFirstHeading = true; return line; }
-      if (emojiCount >= maxEmojis) return line;
-
-      // Find an unused emoji
-      let emoji = null;
-      for (const e of headingEmojis) {
-        if (!usedEmojis.has(e)) {
-          emoji = e;
-          break;
-        }
-      }
-      if (!emoji) emoji = headingEmojis[emojiCount % headingEmojis.length];
-
-      usedEmojis.add(emoji);
+    // Add emoji at the start of the post
+    if (emojiCount < maxEmojis) {
+      const startEmoji = ALLOWED_EMOJIS[Math.floor(Math.random() * 3)]; // 🛠️🚀🤖
+      text = `${startEmoji} ${text}`;
       emojiCount++;
-      return `${emoji} ${trimmed}`;
-    });
+    }
 
-    return processedLines.join("\n");
-  },
+    // Add emojis before headings (lines starting with <b>)
+    if (emojiCount < maxEmojis) {
+      const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯"];
+      text = text.replace(/<b>([^<]+)<\/b>/g, (match, content) => {
+        if (emojiCount >= maxEmojis) return match;
+        emojiCount++;
+        const emoji = headingEmojis[emojiCount % headingEmojis.length];
+        return `${emoji} <b>${content}</b>`;
+      });
+    }
 
-  // ============================================================
-  // RTL spacing for Persian content (v0.4.6: blockquote-safe)
-  // ============================================================
-  applyRTLSpacing(text) {
-    // v0.4.6 FIX: Don't split by lines — apply regex directly to avoid breaking blockquotes
-    let work = text;
-    // Add empty line after headings (before non-empty, non-heading line)
-    work = work.replace(/(<\/b>)\n([^\n])/g, "$1\n\n$2");
-    // Fix Persian punctuation spacing (only outside HTML tags)
-    work = work.replace(/([،؛؟!])\s+/g, "$1 ");
-    work = work.replace(/\s+([،؛؟!])/g, "$1");
-    return work;
+    return text;
   },
 
   wrapFooter(text, footer) {
@@ -296,10 +229,64 @@ const htmlEngine = {
 };
 
 // ============================================================
-// Plain Engine
+// HTML VALIDATOR — fix broken tags before returning
+// ============================================================
+function validateAndFixHtml(html) {
+  let result = html;
+
+  // Close unclosed <blockquote> tags
+  const openBQ = (result.match(/<blockquote>/g) || []).length;
+  const closeBQ = (result.match(/<\/blockquote>/g) || []).length;
+  if (openBQ > closeBQ) {
+    result += "</blockquote>".repeat(openBQ - closeBQ);
+  }
+
+  // Close unclosed <a> tags
+  const openA = (result.match(/<a\s[^>]*>/g) || []).length;
+  const closeA = (result.match(/<\/a>/g) || []).length;
+  if (openA > closeA) {
+    result += "</a>".repeat(openA - closeA);
+  }
+
+  // Close unclosed <b> tags
+  const openB = (result.match(/<b>/g) || []).length;
+  const closeB = (result.match(/<\/b>/g) || []).length;
+  if (openB > closeB) {
+    result += "</b>".repeat(openB - closeB);
+  }
+
+  // Close unclosed <i> tags
+  const openI = (result.match(/<i>/g) || []).length;
+  const closeI = (result.match(/<\/i>/g) || []).length;
+  if (openI > closeI) {
+    result += "</i>".repeat(openI - closeI);
+  }
+
+  // Close unclosed <code> tags
+  const openCode = (result.match(/<code>/g) || []).length;
+  const closeCode = (result.match(/<\/code>/g) || []).length;
+  if (openCode > closeCode) {
+    result += "</code>".repeat(openCode - closeCode);
+  }
+
+  // Close unclosed <pre> tags
+  const openPre = (result.match(/<pre>/g) || []).length;
+  const closePre = (result.match(/<\/pre>/g) || []).length;
+  if (openPre > closePre) {
+    result += "</pre>".repeat(openPre - closePre);
+  }
+
+  // Remove nested blockquotes (Telegram doesn't support them)
+  result = result.replace(/<blockquote>([^<]*?)<blockquote>/g, "$1");
+  result = result.replace(/<\/blockquote>([^<]*?)<\/blockquote>/g, "$1</blockquote>");
+
+  return result;
+}
 // ============================================================
 const plainEngine = {
-  name: "plain", parseMode: null,
+  name: "plain",
+  parseMode: null,
+  wrapLink(url) { return url; },
   format(text, ctx = {}) {
     let work = text.trim();
     if (ctx.footer) work = `${work}\n\n${ctx.footer}`;
@@ -309,39 +296,32 @@ const plainEngine = {
 };
 
 // ============================================================
-// Rich Entity Engine (future: MessageEntity-based formatting)
-// ============================================================
-const richEntityEngine = {
-  name: "rich_entity",
-  parseMode: null, // Uses entities array instead of parse_mode
-  format(text, ctx = {}) {
-    // v0.5.0: Placeholder for future MessageEntity-based formatting
-    // For now, delegates to HTML engine
-    return htmlEngine.format(text, ctx);
-  },
-  wrapFooter(text, footer) {
-    return htmlEngine.wrapFooter(text, footer);
-  },
-};
-
-// ============================================================
-// Registry
+// REGISTRY
 // ============================================================
 const REGISTRY = new Map();
 REGISTRY.set("html", htmlEngine);
 REGISTRY.set("plain", plainEngine);
-REGISTRY.set("rich_entity", richEntityEngine);
 
 export function registerEngine(engine) {
-  if (!engine?.name || typeof engine.format !== "function") throw new Error("Invalid engine");
+  if (!engine?.name || typeof engine.format !== "function") {
+    throw new Error("Invalid engine");
+  }
   REGISTRY.set(engine.name, engine);
 }
 
-export function getEngine(name = "html") { return REGISTRY.get(name) || htmlEngine; }
-
-export function formatPost(text, ctx = {}) {
-  const engine = getEngine(ctx.engineName || "html");
-  return { text: engine.format(text, ctx), parseMode: engine.parseMode };
+export function getEngine(name = "html") {
+  return REGISTRY.get(name) || htmlEngine;
 }
 
-export function extractUrls(text) { return [...new Set(text.match(URL_SPLIT_REGEX) || [])]; }
+// ============================================================
+// PUBLIC API
+// ============================================================
+export function formatPost(text, ctx = {}) {
+  const engine = getEngine(ctx.engineName || "html");
+  const formatted = engine.format(text, ctx);
+  return { text: formatted, parseMode: engine.parseMode };
+}
+
+export function extractUrls(text) {
+  return [...new Set(text.match(URL_SPLIT_REGEX) || [])];
+}
