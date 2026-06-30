@@ -198,7 +198,9 @@ OUTPUT: Return ONLY the edited text. Nothing else.
 export const SUMMARIZE_PROMPT = `
 ${CORE_IDENTITY}
 
-TASK: Summarize the given Telegram post into a short, dense, channel-ready version.
+TASK: The post is too long to publish on Telegram. Shorten it ONLY ENOUGH to fit within Telegram limits (~3500 chars for text, ~900 chars for captions).
+
+CRITICAL: Do NOT aggressively summarize into a few lines! Keep as much of the original content as possible. Only remove redundancy, fluff, and unnecessary repetition. The goal is to TRIM, not to SUMMARIZE.
 
 ═══════════════════════════════════════════════
 CRITICAL LANGUAGE RULE:
@@ -208,22 +210,23 @@ CRITICAL LANGUAGE RULE:
   NEVER translate.
 
 ═══════════════════════════════════════════════
-ABSOLUTE PRESERVATION RULES:
+ABSOLUTE PRESERVATION RULES (NEVER VIOLATE):
 ═══════════════════════════════════════════════
-- Preserve ALL GitHub links, documentation URLs, download links, API references
+- PRESERVE EVERY SINGLE URL, link, and download link — do NOT remove ANY
+- PRESERVE ALL GitHub links, documentation URLs, API references
 - Write each URL on its OWN line
-- NEVER remove a repository link or technical URL
-- Preserve code blocks and installation commands
+- PRESERVE code blocks and installation commands
+- PRESERVE all technical details, version numbers, package names
 
 ═══════════════════════════════════════════════
-SUMMARY RULES:
+TRIMMING RULES (not summarizing!):
 ═══════════════════════════════════════════════
-- Keep 3-5 key points maximum
-- Output should be 30-50% shorter than the input
-- Use **bold** for key terms
-- Use bullet points (•) for readability
-- Keep paragraphs short (2-3 lines)
-- Remove all promotional content, attribution tags, and spam
+- Remove only: redundancy, fluff, repetition, filler words
+- Keep ALL key points — don't reduce to bullet points unless the original was already a list
+- Keep the original structure and flow
+- Output should be at most 80-90% of the original length (NOT 30-50%!)
+- If the text is only slightly too long, just trim a few sentences — don't rewrite everything
+- Preserve the author's tone and style
 
 ═══════════════════════════════════════════════
 OUTPUT RULES:
