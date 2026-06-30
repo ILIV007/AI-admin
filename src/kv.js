@@ -11,24 +11,39 @@ export const DEFAULTS = Object.freeze({
   rewrite_mode: "normal",
   personality_mode: "friendly",
   footer_text: "🌀 @ILIVIR3",
-  ai_provider: "openrouter", // Default to OpenRouter (Gemini often hits 429 on free tier)
+  ai_provider: "openrouter",
   channel_editing_enabled: false,
-  // edit_intensity controls BOTH AI rewrite strength AND formatter formatting level
-  //   0%   = format only (no AI, just links + footer in quotes)
-  //   20%  = minimal (links + footer in quotes, NO paragraph quoting)
-  //   40%  = light rewrite + light formatting (quote long paragraphs)
-  //   60%  = DEFAULT — quote long paragraphs + bold key terms + moderate rewrite
-  //   80%  = strong rewrite + heavy formatting + more emoji
-  //   100% = maximum — full rewrite + heavy quoting + bold everywhere + heavy emoji
   edit_intensity: 60,
-  // emoji_level controls how many emojis the AI adds (0-100%)
-  //   0%   = no emojis
-  //   20%  = DEFAULT — minimal emojis (1-3) for visual polish
-  //   50%  = moderate (3-5 emojis)
-  //   100% = heavy (lots of emojis)
   emoji_level: 20,
+  active_profile: null,
+  // v0.5.1: Smart Scheduling
+  scheduling_enabled: false,
+  schedule_delay_hours: 24,
+  schedule_interval_minutes: 30,
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
+
+// ============================================================
+// v0.5.1: NATIVE SCHEDULING — just store last scheduled timestamp
+// ============================================================
+const KEY_LAST_SCHEDULED = (channel) => `sched:last:${channel}`;
+
+export async function getLastScheduledTime(SETTINGS, channel) {
+  if (!SETTINGS || !channel) return null;
+  try {
+    const raw = await SETTINGS.get(KEY_LAST_SCHEDULED(channel));
+    return raw ? parseInt(raw, 10) : null;
+  } catch { return null; }
+}
+
+export async function setLastScheduledTime(SETTINGS, channel, timestamp) {
+  if (!SETTINGS || !channel) return;
+  try {
+    await SETTINGS.put(KEY_LAST_SCHEDULED(channel), String(timestamp));
+  } catch (e) {
+    console.error("[kv] setLastScheduledTime failed:", e.message);
+  }
+}
 
 /** Read the admin's settings, merged with defaults */
 export async function getSettings(SETTINGS, adminId) {

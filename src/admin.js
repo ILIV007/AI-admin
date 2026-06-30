@@ -30,10 +30,13 @@ function mainMenuKeyboard(settings) {
   const profileLabel = settings?.active_profile
     ? `👤 Profile: ${getProfile(settings.active_profile)?.name || "?"} ✅`
     : "👤 Profile: None";
+  const schedLabel = settings?.scheduling_enabled
+    ? "📅 Schedule: ON ✅"
+    : "📅 Schedule: OFF";
   return {
     inline_keyboard: [
       [
-        { text: "⚙️ Settings", callback_data: "menu:settings" },
+        { text: schedLabel, callback_data: "menu:schedule" },
         { text: profileLabel, callback_data: "menu:profile" },
       ],
       [
@@ -171,6 +174,49 @@ function profileMenuText(currentProfile) {
     }
   }
   return text.join("\n");
+}
+
+function scheduleKeyboard(s) {
+  const enabled = s?.scheduling_enabled;
+  const delay = s?.schedule_delay_hours ?? 24;
+  const interval = s?.schedule_interval_minutes ?? 30;
+  return {
+    inline_keyboard: [
+      [{ text: enabled ? "🟢 Stop Scheduling" : "🔴 Start Scheduling", callback_data: "set:sched:toggle" }],
+      [
+        { text: "⏱ Delay", callback_data: "ignore" },
+        { text: "−", callback_data: "set:sched:delay:dec" },
+        { text: `${delay}h`, callback_data: "ignore" },
+        { text: "+", callback_data: "set:sched:delay:inc" },
+      ],
+      [
+        { text: "📏 Spacing", callback_data: "ignore" },
+        { text: "−", callback_data: "set:sched:interval:dec" },
+        { text: `${interval}m`, callback_data: "ignore" },
+        { text: "+", callback_data: "set:sched:interval:inc" },
+      ],
+      [{ text: "← Back", callback_data: "menu:main" }],
+    ],
+  };
+}
+
+function scheduleMenuText(s) {
+  const enabled = s?.scheduling_enabled;
+  const delay = s?.schedule_delay_hours ?? 24;
+  const interval = s?.schedule_interval_minutes ?? 30;
+  return [
+    `<b>📅 Schedule Manager</b>`,
+    ``,
+    `Status: <b>${enabled ? "🟢 ON" : "🔴 OFF"}</b>`,
+    `Delay: <b>${delay} hours</b>`,
+    `Spacing: <b>${interval} minutes</b>`,
+    ``,
+    `<i>How it works:</i>`,
+    `• Posts are delayed by ${delay}h`,
+    `• Multiple posts are spaced by ${interval}m`,
+    `• You still receive immediate feedback`,
+    `• Channel edits are NOT scheduled (immediate)`,
+  ].join("\n");
 }
 
 function backOnlyKeyboard() {
@@ -373,9 +419,12 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   let toast = null;
 
   // ----- Navigation menus -----
-  if (data === "menu:main" || data === "menu:settings") {
+  if (data === "menu:main") {
     newText = mainMenuText(settings);
     newKb = mainMenuKeyboard(settings);
+  } else if (data === "menu:schedule") {
+    newText = scheduleMenuText(settings);
+    newKb = scheduleKeyboard(settings);
   } else if (data === "menu:profile") {
     newText = profileMenuText(settings.active_profile);
     newKb = profileKeyboard(settings.active_profile);
@@ -464,6 +513,41 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
           await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown profile");
           return;
         }
+      }
+    } else if (scope === "sched") {
+      // v0.5.1: Scheduling controls
+      if (value === "toggle") {
+        const updated = await updateSetting(SETTINGS, userId, "scheduling_enabled", !settings.scheduling_enabled);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = updated.scheduling_enabled ? "✅ Scheduling ON" : "✅ Scheduling OFF";
+      } else if (value === "delay:inc") {
+        const newDelay = Math.min(168, (settings.schedule_delay_hours ?? 24) + 1);
+        const updated = await updateSetting(SETTINGS, userId, "schedule_delay_hours", newDelay);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = `✅ Delay: ${newDelay}h`;
+      } else if (value === "delay:dec") {
+        const newDelay = Math.max(0, (settings.schedule_delay_hours ?? 24) - 1);
+        const updated = await updateSetting(SETTINGS, userId, "schedule_delay_hours", newDelay);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = `✅ Delay: ${newDelay}h`;
+      } else if (value === "interval:inc") {
+        const newInt = Math.min(360, (settings.schedule_interval_minutes ?? 30) + 5);
+        const updated = await updateSetting(SETTINGS, userId, "schedule_interval_minutes", newInt);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = `✅ Spacing: ${newInt}m`;
+      } else if (value === "interval:dec") {
+        const newInt = Math.max(5, (settings.schedule_interval_minutes ?? 30) - 5);
+        const updated = await updateSetting(SETTINGS, userId, "schedule_interval_minutes", newInt);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = `✅ Spacing: ${newInt}m`;
+      } else {
+        await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown schedule action");
+        return;
       }
     } else {
       await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown setting");
