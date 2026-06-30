@@ -14,6 +14,7 @@
 import {
   extractContent,
   publishToChannel,
+  verifyScheduled,
   sendMessage,
   answerCallbackQuery,
   getMe,
@@ -489,10 +490,13 @@ async function runMediaGroupPipeline(env, items, update) {
         const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
         let scheduledTime = Math.max(baseTime, minNext);
 
-        // v0.5.4: Ensure minimum 30 seconds in the future
+        // v0.5.6: Telegram requires schedule_date to be 60+ seconds in the future.
+        // Use 90s minimum for safety margin.
         const now = Date.now();
-        if (scheduledTime - now < 30 * 1000) {
-          scheduledTime = now + 30 * 1000;
+        const MIN_SCHEDULE_SECONDS = 90;
+        if (scheduledTime - now < MIN_SCHEDULE_SECONDS * 1000) {
+          console.log(`[mg-pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to ${MIN_SCHEDULE_SECONDS}s`);
+          scheduledTime = now + MIN_SCHEDULE_SECONDS * 1000;
         }
 
         const scheduleDateUnix = Math.floor(scheduledTime / 1000);
@@ -501,27 +505,44 @@ async function runMediaGroupPipeline(env, items, update) {
 
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-        const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
+        const schedRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
           parse_mode: parseMode,
           schedule_date: scheduleDateUnix,
         });
-        publishOk = pubRes.ok;
+
+        // v0.5.6: VERIFY that Telegram actually scheduled the message
+        const verification = verifyScheduled(schedRes, scheduleDateUnix);
+        publishOk = schedRes.ok && verification.scheduled;
 
         if (!publishOk) {
-          console.error(`[mg-pipeline] Scheduling failed (${pubRes.description}), falling back to immediate`);
+          const scheduleError = verification.description || schedRes.description || "unknown scheduling failure";
+          console.error(`[mg-pipeline] Scheduling FAILED: ${scheduleError}`);
+          console.error(`[mg-pipeline] Telegram response:`, JSON.stringify(schedRes).slice(0, 500));
+          // Fallback to immediate send (but report the error to the user)
           const fallbackRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
           publishOk = fallbackRes.ok;
-        }
-
-        if (feedbackChatId && processingMsgId) {
-          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-            `📅 <b>Album Scheduled!</b>\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}`,
-            { disable_web_page_preview: true }).catch(() => {});
+          if (feedbackChatId && processingMsgId) {
+            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+              `⚠️ <b>Scheduling FAILED — sent immediately</b>\n❌ <code>${(scheduleError || "").slice(0, 200)}</code>\n📅 <i>Was:</i> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+              { disable_web_page_preview: true }).catch(() => {});
+          }
+        } else {
+          console.log(`[mg-pipeline] Scheduling VERIFIED — album will appear at ${new Date(scheduledTime).toISOString()}`);
+          if (feedbackChatId && processingMsgId) {
+            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+              `📅 <b>Album Scheduled!</b>\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}`,
+              { disable_web_page_preview: true }).catch(() => {});
+          }
         }
       } catch (e) {
         console.error(`[mg-pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
         const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
         publishOk = pubRes.ok;
+        if (feedbackChatId && processingMsgId) {
+          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+            `⚠️ <b>Scheduling exception — sent immediately</b>\n❌ <code>${e.message.slice(0, 200)}</code>`,
+            { disable_web_page_preview: true }).catch(() => {});
+        }
       }
     } else {
       const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
@@ -545,13 +566,21 @@ async function runMediaGroupPipeline(env, items, update) {
   }
 
   if (feedbackChatId && processingMsgId) {
+    // v0.5.6: Don't overwrite the "Album Scheduled!" message if scheduling succeeded.
+    // Only show the "published" message if scheduling was NOT used (or failed and we fell back).
     const totalMs = Date.now() - startTime;
     const statusLine = aiError
       ? `⚠️ AI failed — format-only fallback`
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no"}`;
-    await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-      `✅ <b>Album published</b> (${items.length} photos) → <code>${targetChannel || "(none)"}</code>\n${statusLine} · ${totalMs}ms`,
-      { disable_web_page_preview: true }).catch(() => {});
+
+    // Only show this generic "published" message if scheduling was OFF
+    // (when scheduling is ON, the more specific "Scheduled!" or "Scheduling FAILED" message
+    // was already shown above and we shouldn't overwrite it).
+    if (!settings.scheduling_enabled) {
+      await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+        `✅ <b>Album published</b> (${items.length} photos) → <code>${targetChannel || "(none)"}</code>\n${statusLine} · ${totalMs}ms`,
+        { disable_web_page_preview: true }).catch(() => {});
+    }
   }
 
   if (update) await logUpdate(SETTINGS, update, publishOk ? "ok" : "error", `media-group: ${items.length} items, AI: ${wasRewritten ? "yes" : "no"}`);
@@ -816,9 +845,18 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     }
   }
 
-  // v0.5.2: Schedule or publish with try/catch fallback
+  // v0.5.6: Schedule or publish with PROPER verification
+  // Old code had two bugs:
+  //   1. Minimum schedule_date was 30s — Telegram requires 60s minimum, so it
+  //      silently fell back to immediate send.
+  //   2. Bot reported "Scheduled!" even when Telegram returned ok:true but
+  //      actually published immediately (silent scheduling failure).
+  // Fix: minimum is now 90s (60s + 30s buffer), AND we verify result.date
+  //      matches schedule_date. If verification fails, we surface the error
+  //      to the user instead of silently falling back.
   let publishRes;
   let scheduledTime = null;
+  let scheduleError = null;
 
   if (settings.scheduling_enabled) {
     try {
@@ -834,39 +872,57 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
       scheduledTime = Math.max(baseTime, minNext);
 
-      // v0.5.4: Ensure minimum 30 seconds in the future (Telegram requirement)
+      // v0.5.6: Telegram requires schedule_date to be 60+ seconds in the future.
+      // Use 90s minimum for safety margin (network latency, clock skew).
       const now = Date.now();
-      if (scheduledTime - now < 30 * 1000) {
-        scheduledTime = now + 30 * 1000;
+      const MIN_SCHEDULE_SECONDS = 90;
+      if (scheduledTime - now < MIN_SCHEDULE_SECONDS * 1000) {
+        console.log(`[pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to ${MIN_SCHEDULE_SECONDS}s`);
+        scheduledTime = now + MIN_SCHEDULE_SECONDS * 1000;
       }
 
       const scheduleDateUnix = Math.floor(scheduledTime / 1000);
 
       console.log(`[pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
 
+      // Save the scheduled time BEFORE publishing (so the next post respects the interval)
       await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
       publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
         text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
         extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
       });
-      publishRes.scheduled = publishRes.ok;
 
-      if (!publishRes.ok) {
-        console.error(`[pipeline] Scheduling failed (${publishRes.description}), falling back to immediate`);
-        publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+      // v0.5.6: VERIFY that Telegram actually scheduled the message
+      const verification = verifyScheduled(publishRes, scheduleDateUnix);
+      publishRes.scheduled = verification.scheduled;
+
+      if (!publishRes.ok || !verification.scheduled) {
+        // Scheduling failed — DON'T silently fall back. Surface the error.
+        scheduleError = verification.description || publishRes.description || "unknown scheduling failure";
+        console.error(`[pipeline] Scheduling FAILED: ${scheduleError}`);
+        console.error(`[pipeline] Telegram response:`, JSON.stringify(publishRes).slice(0, 500));
+
+        // Try ONE fallback to immediate send, but TELL the user it was immediate
+        const fallbackRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
           text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
           extra: { parse_mode: parseMode, disable_web_page_preview: false },
         });
+        publishRes = fallbackRes;
         publishRes.scheduled = false;
+        publishRes.scheduleError = scheduleError;
+      } else {
+        console.log(`[pipeline] Scheduling VERIFIED — message will appear at ${new Date(scheduledTime).toISOString()}`);
       }
     } catch (e) {
       console.error(`[pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
+      scheduleError = e.message;
       publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
         text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
         extra: { parse_mode: parseMode, disable_web_page_preview: false },
       });
       publishRes.scheduled = false;
+      publishRes.scheduleError = scheduleError;
     }
   } else {
     publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
@@ -890,12 +946,23 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
 
     if (feedbackChatId && processingMsgId) {
-      const schedMsg = publishRes.scheduled
-        ? `\n📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`
-        : `\n✅ <b>Published to:</b> <code>${targetChannel}</code>`;
+      // v0.5.6: If scheduling was requested but failed, surface the error clearly
+      let schedMsg;
+      let headerLine;
+      if (publishRes.scheduled) {
+        headerLine = `📅 <b>Scheduled!</b>`;
+        schedMsg = `\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`;
+      } else if (settings.scheduling_enabled && publishRes.scheduleError) {
+        // Scheduling was requested but FAILED — tell the user what went wrong
+        headerLine = `⚠️ <b>Scheduling FAILED — sent immediately</b>`;
+        schedMsg = `\n❌ <b>Schedule error:</b> <code>${(publishRes.scheduleError || "").slice(0, 200)}</code>\n✅ <b>Published to:</b> <code>${targetChannel}</code>`;
+      } else {
+        headerLine = `✅ <b>Done</b>`;
+        schedMsg = `\n✅ <b>Published to:</b> <code>${targetChannel}</code>`;
+      }
       await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
         [
-          publishRes.scheduled ? `📅 <b>Scheduled!</b>` : `✅ <b>Done</b>`,
+          headerLine,
           schedMsg,
           ``,
           `<blockquote><b>Type:</b> ${decision.content_type} / ${effectiveRewriteMode}`,

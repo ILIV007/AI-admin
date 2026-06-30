@@ -218,3 +218,45 @@ export async function publishToChannel(token, channel, post) {
       return sendMessage(token, channel, text, extra);
   }
 }
+
+// ============================================================
+// v0.5.6: Verify Telegram actually scheduled the message
+// ============================================================
+// Telegram's `schedule_date` parameter has several silent failure modes:
+//   1. If schedule_date < 60s in the future, Telegram returns 400 "schedule_date is too short"
+//   2. If the bot lacks admin rights, Telegram returns 400 "CHAT_ADMIN_REQUIRED"
+//   3. In some edge cases (e.g., supergroups with restricted permissions), Telegram
+//      may return ok:true but send the message IMMEDIATELY instead of at the
+//      scheduled time. The result.date field reveals this: it will be ~NOW
+//      instead of the requested schedule_date.
+//
+// This helper compares result.date with the requested schedule_date. If they
+// differ by more than 5 seconds, the message was sent immediately (NOT scheduled).
+// ============================================================
+export function verifyScheduled(response, scheduleDateUnix) {
+  if (!response || !response.ok || !response.result) {
+    return { scheduled: false, reason: "response_not_ok", description: response?.description || "no result" };
+  }
+
+  const actualDate = response.result.date;
+  if (typeof actualDate !== "number") {
+    // No date field — can't verify, assume scheduled
+    return { scheduled: true, reason: "no_date_field", actualDate: null };
+  }
+
+  const diff = Math.abs(actualDate - scheduleDateUnix);
+  if (diff <= 5) {
+    // result.date matches schedule_date (within 5s tolerance) — properly scheduled
+    return { scheduled: true, reason: "verified", actualDate };
+  }
+
+  // result.date does NOT match schedule_date — Telegram sent it immediately
+  return {
+    scheduled: false,
+    reason: "date_mismatch",
+    actualDate,
+    expectedDate: scheduleDateUnix,
+    diffSeconds: diff,
+    description: `Telegram returned ok:true but result.date (${actualDate}) != schedule_date (${scheduleDateUnix}), diff=${diff}s — message was sent immediately, NOT scheduled`,
+  };
+}

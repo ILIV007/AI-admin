@@ -163,15 +163,28 @@ function getOpenRouterModels(env) {
 // ============================================================
 // UNIFIED complete() — races Gemini + ALL OpenRouter models in PARALLEL
 // ============================================================
-// Uses Promise.any(): first provider to SUCCEED wins.
-// If ALL fail, returns combined error.
+// v0.5.6: CRITICAL FIX — Always include the OTHER provider as a fallback
+// even when the user has explicitly chosen one provider.
+//
+// Why? If ai_provider="gemini" and Gemini is rate-limited (429), the old code
+// had NO fallback — it would return "all providers failed" and the bot would
+// fall back to "format only" mode. Users were confused why their bot wasn't
+// using OpenRouter when Gemini was down.
+//
+// Now: preferred provider is added FIRST (priority), then the other provider
+// is ALWAYS added as a fallback if its API key exists. Promise.any races them
+// all in parallel, so the fastest successful response wins.
 // ============================================================
 export async function aiComplete(env, settings, params) {
   const providers = [];
   const preferred = settings?.ai_provider || env.DEFAULT_AI_PROVIDER || "openrouter";
 
-  // 1. Gemini models — only if preferred is 'gemini' or if both keys exist for fallback
-  if (env.GEMINI_API_KEY && (preferred === "gemini" || preferred === "auto")) {
+  // v0.5.6: Build providers in PREFERRED order, but ALWAYS add the other as fallback
+  const geminiProviders = [];
+  const openRouterProviders = [];
+
+  // 1. Gemini models
+  if (env.GEMINI_API_KEY) {
     const geminiModels = [
       env.GEMINI_MODEL || "gemini-2.5-flash",
       "gemini-2.5-flash",
@@ -180,7 +193,7 @@ export async function aiComplete(env, settings, params) {
     ];
     const uniqueGeminiModels = [...new Set(geminiModels)];
     for (const model of uniqueGeminiModels) {
-      providers.push({
+      geminiProviders.push({
         name: "gemini",
         model: model,
         complete: () => geminiComplete(env.GEMINI_API_KEY, model, params),
@@ -188,11 +201,11 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // 2. OpenRouter models — only if preferred is 'openrouter' or if both keys exist for fallback
-  if (env.OPENROUTER_API_KEY && (preferred === "openrouter" || preferred === "auto")) {
+  // 2. OpenRouter models
+  if (env.OPENROUTER_API_KEY) {
     const models = getOpenRouterModels(env);
     for (const model of models) {
-      providers.push({
+      openRouterProviders.push({
         name: "openrouter",
         model: model,
         complete: () => openRouterComplete(env.OPENROUTER_API_KEY, model, params),
@@ -200,15 +213,14 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // If preferred provider has no API key, try the other one as fallback
-  if (providers.length === 0) {
-    if (env.GEMINI_API_KEY) {
-      providers.push({ name: "gemini", model: env.GEMINI_MODEL || "gemini-2.5-flash", complete: () => geminiComplete(env.GEMINI_API_KEY, env.GEMINI_MODEL || "gemini-2.5-flash", params) });
-    }
-    if (env.OPENROUTER_API_KEY) {
-      const m = env.OPENROUTER_MODEL || "nvidia/nemotron-3-nano-30b-a3b:free";
-      providers.push({ name: "openrouter", model: m, complete: () => openRouterComplete(env.OPENROUTER_API_KEY, m, params) });
-    }
+  // v0.5.6: Order providers — preferred FIRST, then fallback
+  if (preferred === "gemini") {
+    providers.push(...geminiProviders, ...openRouterProviders);
+  } else if (preferred === "openrouter") {
+    providers.push(...openRouterProviders, ...geminiProviders);
+  } else {
+    // "auto" or unknown — race all in parallel (order doesn't matter for Promise.any)
+    providers.push(...geminiProviders, ...openRouterProviders);
   }
 
   if (providers.length === 0) {

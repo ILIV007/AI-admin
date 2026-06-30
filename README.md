@@ -397,9 +397,31 @@ MIT — هر بلایی می‌خوای سرش بیار. 😄
 
 ---
 
+## 📦 Changelog
+
+### v0.5.6 (2026-06-30) — Critical AI + Scheduling Fixes
+
+**🤖 AI Fallback Fix:**
+- **Bug:** When `ai_provider = "gemini"` and Gemini was rate-limited (429), the bot did NOT fall back to OpenRouter. It returned "format only" mode instead.
+- **Root cause:** `aiComplete()` only added OpenRouter providers when `preferred === "openrouter"` or `"auto"`. Choosing `"gemini"` excluded OpenRouter entirely.
+- **Fix:** Always include the OTHER provider as a fallback if its API key exists, regardless of `preferred` setting. The preferred provider is just tried first.
+
+**📅 Scheduling Fix:**
+- **Bug:** Bot reported "Scheduled!" but the message appeared immediately in the channel.
+- **Root causes:**
+  1. Minimum `schedule_date` was 30s — Telegram requires 60s minimum, so the call was silently failing and falling back to immediate send.
+  2. No verification that Telegram actually scheduled the message. Telegram could return `ok:true` but send immediately (silent failure).
+- **Fix:**
+  1. Minimum is now 90s (60s + 30s buffer).
+  2. Added `verifyScheduled()` helper that compares `result.date` with the requested `schedule_date`. If they differ by more than 5 seconds, the message was sent immediately (NOT scheduled).
+  3. When scheduling fails, the bot now clearly reports "⚠️ Scheduling FAILED — sent immediately" with the actual error from Telegram, instead of silently claiming success.
+  4. Added detailed logging of Telegram's response to help diagnose future issues.
+
+---
+
 <div dir="rtl">
 
 ساخته‌شده با ❤️ برای کانال **ILIVIR3**  
-نسخه: **0.1.0**
+نسخه: **0.5.6**
 
 </div>
