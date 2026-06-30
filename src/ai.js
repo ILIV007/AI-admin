@@ -284,39 +284,49 @@ export async function aiClassify(env, settings, text) {
 }
 
 // ============================================================
-// v0.5.4: COMPACT PROMPT BUILDER — lightweight to avoid token overflow
+// v0.5.5: ULTRA-COMPACT PROMPT — self-contained, no external rules needed
 // ============================================================
-function buildCompactPrompt(basePrompt) {
-  return [
-    basePrompt,
-    "",
-    "=== ESSENTIAL RULES ===",
-    "- NEVER translate. Keep input language exactly.",
-    "- PRESERVE: GitHub links, docs, APIs, commands, code blocks, filenames.",
-    "- REMOVE: spam, ads, channel mentions, 'join/follow', attribution lines.",
-    "- PRESERVE functional emojis (📚🛠️⚡💡🔒). Remove decorative (🔥😍😱🎉).",
-    "- PRESERVE number emojis (1️⃣2️⃣3️⃣).",
-    "- Detect and PRESERVE the author's emotional tone.",
-    "- Output plain text with markdown. NO HTML tags.",
-    "- Do NOT add footer. Do NOT add explanations.",
-    "=== END ===",
-  ].join("\n");
+const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
+
+RULES:
+- Keep input language. NEVER translate.
+- PRESERVE: GitHub links, docs, APIs, commands, code blocks, filenames, version numbers.
+- REMOVE: spam, ads, channel mentions (@xxx), "join/follow", attribution lines.
+- PRESERVE functional emojis (📚🛠️⚡💡🔒🌐📦). Remove decorative (🔥😍😱🎉🤣).
+- PRESERVE number emojis (1️⃣2️⃣3️⃣).
+- Preserve the author's emotional tone. Don't flatten excitement or urgency.
+- Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`code blocks\`\`\`).
+- Do NOT add footer. Do NOT add explanations. Do NOT add HTML tags.
+- Write each URL on its OWN line.`;
+
+const COMPACT_SUMMARIZE_PROMPT = `You are a Telegram channel content editor. The post is too long for Telegram. TRIM it (don't summarize into bullet points).
+
+RULES:
+- Keep input language. NEVER translate.
+- PRESERVE EVERY URL, link, and download link. Do NOT remove ANY.
+- PRESERVE code blocks and commands.
+- Remove only: redundancy, fluff, repetition, filler words.
+- Output should be 80-90% of original length (NOT 30-50%!).
+- Keep original structure and flow.
+- Output plain text with markdown. Do NOT add HTML or footer.`;
+
+function buildCompactPrompt(mode) {
+  return mode === "summary" ? COMPACT_SUMMARIZE_PROMPT : COMPACT_REWRITE_PROMPT;
 }
 
 // ============================================================
 // REWRITE
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
-  const { REWRITE_PROMPT, buildRewriteUserMessage } = await import("./prompts.js");
   const { buildProfileEditorPrompt, getProfile } = await import("../ai/profiles/index.js");
 
-  // v0.5.4: Use compact prompt to avoid token overflow on free models
+  // v0.5.5: Ultra-compact prompt — ~300 tokens instead of ~1700
   let fullSystemPrompt;
   if (settings.active_profile) {
-    const pp = buildProfileEditorPrompt(REWRITE_PROMPT, settings.active_profile);
-    fullSystemPrompt = pp || buildCompactPrompt(REWRITE_PROMPT);
+    const pp = buildProfileEditorPrompt(buildCompactPrompt("rewrite"), settings.active_profile);
+    fullSystemPrompt = pp || buildCompactPrompt("rewrite");
   } else {
-    fullSystemPrompt = buildCompactPrompt(REWRITE_PROMPT);
+    fullSystemPrompt = buildCompactPrompt("rewrite");
   }
 
   const profile = settings.active_profile ? getProfile(settings.active_profile) : null;
@@ -325,9 +335,29 @@ export async function aiRewrite(env, settings, text, mode, language, personality
   const effEmoji = profile ? profile.settings.emoji_level : emojiLevel;
   const effPersonality = profile ? profile.settings.personality_mode : personality;
 
+  // Build user message inline (no import needed)
+  const personalityGuide = {
+    friendly: "Write like a REAL HUMAN. Conversational. Use contractions. For Persian: محاوره‌ای.",
+    professional: "Clean, neutral, business-like.",
+    technical: "Precise, terminology-friendly.",
+    news: "Concise, fact-first.",
+  };
+  const userMsg = [
+    `REWRITE_MODE: ${effMode}`,
+    `LANGUAGE_MODE: ${language}`,
+    `PERSONALITY: ${effPersonality} (${personalityGuide[effPersonality] || personalityGuide.friendly})`,
+    ``,
+    `POST TO PROCESS:`,
+    `----`,
+    text,
+    `----`,
+    ``,
+    `Return ONLY the edited text in the SAME language.`,
+  ].join("\n");
+
   const res = await aiComplete(env, settings, {
     system: fullSystemPrompt,
-    user: buildRewriteUserMessage(text, effMode, language, effPersonality, effIntensity ?? 60, effEmoji ?? 20),
+    user: userMsg,
   });
 
   if (!res.ok) return { ok: false, error: res.error };
@@ -338,19 +368,30 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 // SUMMARIZE
 // ============================================================
 export async function aiSummarize(env, settings, text, language) {
-  const { SUMMARIZE_PROMPT, buildSummarizeUserMessage } = await import("./prompts.js");
   const { buildProfileEditorPrompt } = await import("../ai/profiles/index.js");
 
   let fullSystemPrompt;
   if (settings.active_profile) {
-    const pp = buildProfileEditorPrompt(SUMMARIZE_PROMPT, settings.active_profile);
-    fullSystemPrompt = pp || buildCompactPrompt(SUMMARIZE_PROMPT);
+    const pp = buildProfileEditorPrompt(buildCompactPrompt("summary"), settings.active_profile);
+    fullSystemPrompt = pp || buildCompactPrompt("summary");
   } else {
-    fullSystemPrompt = buildCompactPrompt(SUMMARIZE_PROMPT);
+    fullSystemPrompt = buildCompactPrompt("summary");
   }
+
+  const userMsg = [
+    `LANGUAGE_MODE: ${language}`,
+    ``,
+    `POST TO TRIM (too long for Telegram):`,
+    `----`,
+    text,
+    `----`,
+    ``,
+    `Return ONLY the trimmed text. Keep 80-90% of original. Preserve ALL links.`,
+  ].join("\n");
+
   const res = await aiComplete(env, settings, {
     system: fullSystemPrompt,
-    user: buildSummarizeUserMessage(text, language),
+    user: userMsg,
   });
 
   if (!res.ok) return { ok: false, error: res.error };
