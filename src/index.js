@@ -487,10 +487,17 @@ async function runMediaGroupPipeline(env, items, update) {
         const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
         const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
         const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
-        const scheduledTime = Math.max(baseTime, minNext);
+        let scheduledTime = Math.max(baseTime, minNext);
+
+        // v0.5.4: Ensure minimum 30 seconds in the future
+        const now = Date.now();
+        if (scheduledTime - now < 30 * 1000) {
+          scheduledTime = now + 30 * 1000;
+        }
+
         const scheduleDateUnix = Math.floor(scheduledTime / 1000);
 
-        console.log(`[mg-pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}`);
+        console.log(`[mg-pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
 
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
@@ -826,9 +833,16 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
       const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
       scheduledTime = Math.max(baseTime, minNext);
+
+      // v0.5.4: Ensure minimum 30 seconds in the future (Telegram requirement)
+      const now = Date.now();
+      if (scheduledTime - now < 30 * 1000) {
+        scheduledTime = now + 30 * 1000;
+      }
+
       const scheduleDateUnix = Math.floor(scheduledTime / 1000);
 
-      console.log(`[pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}`);
+      console.log(`[pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
 
       await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 

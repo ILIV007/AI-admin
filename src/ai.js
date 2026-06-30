@@ -37,17 +37,18 @@ const REQUEST_TIMEOUT_MS = 15_000; // 15s per model — fast fail so Promise.any
 //  -- | dolphin-mistral-24b            | 429      | --      | rate-limited (keep as fallback)
 //  -- | llama-3.2-3b                   | 429      | --      | rate-limited (keep as fallback)
 const DEFAULT_OPENROUTER_MODELS = [
-  "nvidia/nemotron-3-nano-30b-a3b:free",                // #1 FASTEST (737ms)
-  "nvidia/nemotron-3-super-120b-a12b:free",             // #2 balanced (1168ms)
-  "google/gemma-4-31b-it:free",                         // #3 solid (1433ms)
-  "openai/gpt-oss-20b:free",                            // #4 OpenAI (1837ms)
-  "google/gemma-4-26b-a4b-it:free",                     // #5 solid (1860ms)
-  "nvidia/nemotron-3-ultra-550b-a55b:free",             // #6 smartest (1929ms)
-  "openrouter/free",                                    // #7 auto-router (2578ms)
-  "qwen/qwen3-next-80b-a3b-instruct:free",              // #8 rate-limited but good for Persian
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", // #9 fallback
-  "meta-llama/llama-3.2-3b-instruct:free",              // #10 fallback
-  "poolside/laguna-m.1:free",                           // #11 slow but works
+  "nvidia/nemotron-3-nano-30b-a3b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "google/gemma-4-31b-it:free",
+  "openai/gpt-oss-20b:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "openrouter/free",
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "poolside/laguna-m.1:free",
 ];
 
 // ============================================================
@@ -77,7 +78,7 @@ async function geminiComplete(apiKey, model, { system, user, jsonMode = false })
     generationConfig: {
       temperature: 0.7,
       topP: 0.9,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 3096,
       ...(jsonMode ? { responseMimeType: "application/json" } : {}),
     },
   };
@@ -113,7 +114,7 @@ async function openRouterComplete(apiKey, model, { system, user, jsonMode = fals
       { role: "user", content: user },
     ],
     temperature: 0.7,
-    max_tokens: 2048,
+    max_tokens: 3096,
     ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
   };
 
@@ -283,23 +284,41 @@ export async function aiClassify(env, settings, text) {
 }
 
 // ============================================================
+// v0.5.4: COMPACT PROMPT BUILDER — lightweight to avoid token overflow
+// ============================================================
+function buildCompactPrompt(basePrompt) {
+  return [
+    basePrompt,
+    "",
+    "=== ESSENTIAL RULES ===",
+    "- NEVER translate. Keep input language exactly.",
+    "- PRESERVE: GitHub links, docs, APIs, commands, code blocks, filenames.",
+    "- REMOVE: spam, ads, channel mentions, 'join/follow', attribution lines.",
+    "- PRESERVE functional emojis (📚🛠️⚡💡🔒). Remove decorative (🔥😍😱🎉).",
+    "- PRESERVE number emojis (1️⃣2️⃣3️⃣).",
+    "- Detect and PRESERVE the author's emotional tone.",
+    "- Output plain text with markdown. NO HTML tags.",
+    "- Do NOT add footer. Do NOT add explanations.",
+    "=== END ===",
+  ].join("\n");
+}
+
+// ============================================================
 // REWRITE
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
   const { REWRITE_PROMPT, buildRewriteUserMessage } = await import("./prompts.js");
-  const { buildEditorPrompt } = await import("../ai/index.js");
   const { buildProfileEditorPrompt, getProfile } = await import("../ai/profiles/index.js");
 
-  // v0.5.0: Use profile prompt if active, otherwise standard knowledge base
+  // v0.5.4: Use compact prompt to avoid token overflow on free models
   let fullSystemPrompt;
   if (settings.active_profile) {
     const pp = buildProfileEditorPrompt(REWRITE_PROMPT, settings.active_profile);
-    fullSystemPrompt = pp || buildEditorPrompt(REWRITE_PROMPT);
+    fullSystemPrompt = pp || buildCompactPrompt(REWRITE_PROMPT);
   } else {
-    fullSystemPrompt = buildEditorPrompt(REWRITE_PROMPT);
+    fullSystemPrompt = buildCompactPrompt(REWRITE_PROMPT);
   }
 
-  // If profile active, use profile settings
   const profile = settings.active_profile ? getProfile(settings.active_profile) : null;
   const effMode = profile ? profile.settings.rewrite_mode : mode;
   const effIntensity = profile ? profile.settings.edit_intensity : editIntensity;
@@ -320,15 +339,14 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 // ============================================================
 export async function aiSummarize(env, settings, text, language) {
   const { SUMMARIZE_PROMPT, buildSummarizeUserMessage } = await import("./prompts.js");
-  const { buildEditorPrompt } = await import("../ai/index.js");
   const { buildProfileEditorPrompt } = await import("../ai/profiles/index.js");
 
   let fullSystemPrompt;
   if (settings.active_profile) {
     const pp = buildProfileEditorPrompt(SUMMARIZE_PROMPT, settings.active_profile);
-    fullSystemPrompt = pp || buildEditorPrompt(SUMMARIZE_PROMPT);
+    fullSystemPrompt = pp || buildCompactPrompt(SUMMARIZE_PROMPT);
   } else {
-    fullSystemPrompt = buildEditorPrompt(SUMMARIZE_PROMPT);
+    fullSystemPrompt = buildCompactPrompt(SUMMARIZE_PROMPT);
   }
   const res = await aiComplete(env, settings, {
     system: fullSystemPrompt,
