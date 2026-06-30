@@ -149,21 +149,38 @@ const htmlEngine = {
       });
     }
 
-    // 13. Quote paragraphs (intensity >= 30)
-    // Per UI Rules: quote long paragraphs, commands, multi-line examples
+    // 13. Quote paragraphs (intensity >= 30) — TWO-PASS: skip first eligible
     if (intensity >= 30) {
       const minLength = intensity >= 80 ? 80 : 120;
       const lines = work.split("\n");
-      const quotedLines = lines.map((line) => {
+
+      // Pass 1: find first eligible paragraph
+      let firstEligibleIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (!trimmed || trimmed.startsWith("<blockquote>")) continue;
+        if (/<[a-z/]/i.test(trimmed)) continue;
+        if (trimmed.startsWith("__")) continue;
+        if (trimmed.length < minLength) continue;
+        if (/^[•\-\*\d]/.test(trimmed)) continue;
+        const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
+        if (sentenceEnds < 2) continue;
+        firstEligibleIdx = i;
+        break;
+      }
+
+      // Pass 2: quote all eligible EXCEPT the first
+      const quotedLines = lines.map((line, i) => {
         const trimmed = line.trim();
         if (!trimmed) return line;
         if (trimmed.startsWith("<blockquote>")) return line;
         if (/<[a-z/]/i.test(trimmed)) return line;
+        if (trimmed.startsWith("__")) return line;
         if (trimmed.length < minLength) return line;
         if (/^[•\-\*\d]/.test(trimmed)) return line;
-        if (trimmed.startsWith("__CODEBLOCK") || trimmed.startsWith("__INLINE")) return line;
         const sentenceEnds = (trimmed.match(/[.!?؟!]/g) || []).length;
         if (sentenceEnds < 2) return line;
+        if (i === firstEligibleIdx) return line; // Skip first
         return `<blockquote>${trimmed}</blockquote>`;
       });
       work = quotedLines.join("\n");
@@ -175,9 +192,9 @@ const htmlEngine = {
       work = work.replace(/([.!?؟!])\s+/g, "$1\n");
     }
 
-    // 15. Add emojis (based on emojiLevel)
-    if (emojiLevel > 0) {
-      work = this.addEmojis(work, emojiLevel);
+    // 15. Add emojis ONLY before headings (NOT at start of post) — v0.4.8
+    if (emojiLevel > 0 && intensity >= 40) {
+      work = this.addEmojisToHeadings(work, emojiLevel);
     }
 
     // 16. Clean up extra blank lines
@@ -193,34 +210,43 @@ const htmlEngine = {
   },
 
   /**
-   * Add emojis based on emojiLevel.
-   * Per UI Rules: 1-5 emojis, only allowed emojis, no emotional emojis.
+   * v0.4.8: Add emojis ONLY before standalone heading lines.
+   * NOT at start of post. NOT to inline bold.
    */
-  addEmojis(text, emojiLevel) {
+  addEmojisToHeadings(text, emojiLevel) {
     if (emojiLevel === 0) return text;
-
-    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 5;
+    const maxEmojis = emojiLevel <= 20 ? 2 : emojiLevel <= 50 ? 4 : 6;
     let emojiCount = 0;
+    const usedEmojis = new Set();
+    const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯", "🛠️", "🚀", "🤖"];
+    let seenFirstHeading = false;
+    const lines = text.split("\n");
 
-    // Add emoji at the start of the post
-    if (emojiCount < maxEmojis) {
-      const startEmoji = ALLOWED_EMOJIS[Math.floor(Math.random() * 3)]; // 🛠️🚀🤖
-      text = `${startEmoji} ${text}`;
+    const processedLines = lines.map((line) => {
+      const trimmed = line.trim();
+      // Match ONLY standalone heading lines: entire line is <b>...</b>
+      const headingMatch = trimmed.match(/^<b>([^<]+)<\/b>$/);
+      if (!headingMatch) return line;
+      const content = headingMatch[1];
+      // Skip if heading already has an emoji
+      if (/[\u{1F300}-\u{1FAFF}]/u.test(content)) return line;
+      // Skip the first heading (don't add emoji to it)
+      if (!seenFirstHeading) { seenFirstHeading = true; return line; }
+      if (emojiCount >= maxEmojis) return line;
+
+      // Find an unused emoji
+      let emoji = null;
+      for (const e of headingEmojis) {
+        if (!usedEmojis.has(e)) { emoji = e; break; }
+      }
+      if (!emoji) emoji = headingEmojis[emojiCount % headingEmojis.length];
+
+      usedEmojis.add(emoji);
       emojiCount++;
-    }
+      return `${emoji} ${trimmed}`;
+    });
 
-    // Add emojis before headings (lines starting with <b>)
-    if (emojiCount < maxEmojis) {
-      const headingEmojis = ["📚", "⚡", "🔒", "📦", "💡", "📝", "🎯"];
-      text = text.replace(/<b>([^<]+)<\/b>/g, (match, content) => {
-        if (emojiCount >= maxEmojis) return match;
-        emojiCount++;
-        const emoji = headingEmojis[emojiCount % headingEmojis.length];
-        return `${emoji} <b>${content}</b>`;
-      });
-    }
-
-    return text;
+    return processedLines.join("\n");
   },
 
   wrapFooter(text, footer) {

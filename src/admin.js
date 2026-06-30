@@ -9,6 +9,7 @@ import {
   editMessageText,
   answerCallbackQuery,
 } from "./telegram.js";
+import { getAllProfiles, getProfile } from "../ai/profiles/index.js";
 
 // ============================================================
 // AUTHORIZATION
@@ -26,11 +27,14 @@ function mainMenuKeyboard(settings) {
   const channelEditLabel = settings?.channel_editing_enabled
     ? "📺 Channel Edit: ON ✅"
     : "📺 Channel Edit: OFF";
+  const profileLabel = settings?.active_profile
+    ? `👤 Profile: ${getProfile(settings.active_profile)?.name || "?"} ✅`
+    : "👤 Profile: None";
   return {
     inline_keyboard: [
       [
         { text: "⚙️ Settings", callback_data: "menu:settings" },
-        { text: "🧠 AI Mode", callback_data: "menu:aimode" },
+        { text: profileLabel, callback_data: "menu:profile" },
       ],
       [
         { text: "🌐 Language", callback_data: "menu:language" },
@@ -138,6 +142,35 @@ function providerKeyboard(current) {
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
+}
+
+function profileKeyboard(currentProfile) {
+  const profiles = getAllProfiles();
+  const rows = profiles.map((p) => [
+    { text: `${currentProfile === p.key ? "✅ " : ""}${p.name}`, callback_data: `set:profile:${p.key}` },
+  ]);
+  if (currentProfile) {
+    rows.push([{ text: "❌ Deactivate Profile", callback_data: "set:profile:none" }]);
+  }
+  rows.push([{ text: "← Back", callback_data: "menu:main" }]);
+  return { inline_keyboard: rows };
+}
+
+function profileMenuText(currentProfile) {
+  const activeProfile = currentProfile ? getProfile(currentProfile) : null;
+  let text = [`<b>👤 Profile</b>`, ``, `Current: <code>${activeProfile ? activeProfile.name : "None (individual settings)"}</code>`, ``];
+  if (activeProfile) {
+    text.push(`<b>Active: ${activeProfile.name}</b>`);
+    text.push(`<i>${activeProfile.description}</i>`);
+    text.push(``);
+    text.push(`<i>When active, Soul + Style + Rules replace individual settings.</i>`);
+  } else {
+    text.push(`<b>Available profiles:</b>`);
+    for (const p of getAllProfiles()) {
+      text.push(`• <b>${p.name}</b> — ${p.description}`);
+    }
+  }
+  return text.join("\n");
 }
 
 function backOnlyKeyboard() {
@@ -343,6 +376,9 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   if (data === "menu:main" || data === "menu:settings") {
     newText = mainMenuText(settings);
     newKb = mainMenuKeyboard(settings);
+  } else if (data === "menu:profile") {
+    newText = profileMenuText(settings.active_profile);
+    newKb = profileKeyboard(settings.active_profile);
   } else if (data === "menu:intensity") {
     newText = intensityMenuText(settings.edit_intensity);
     newKb = intensityKeyboard(settings.edit_intensity);
@@ -411,6 +447,24 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
       newText = providerMenuText(updated.ai_provider);
       newKb = providerKeyboard(updated.ai_provider);
       toast = "✅ Provider updated";
+    } else if (scope === "profile") {
+      if (value === "none") {
+        await updateSetting(SETTINGS, userId, "active_profile", null);
+        newText = profileMenuText(null);
+        newKb = profileKeyboard(null);
+        toast = "✅ Profile deactivated";
+      } else {
+        const profile = getProfile(value);
+        if (profile) {
+          await updateSetting(SETTINGS, userId, "active_profile", value);
+          newText = profileMenuText(value);
+          newKb = profileKeyboard(value);
+          toast = `✅ Profile: ${profile.name}`;
+        } else {
+          await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown profile");
+          return;
+        }
+      }
     } else {
       await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Unknown setting");
       return;

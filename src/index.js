@@ -628,9 +628,12 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
+  // v0.4.8: Only summarize when ABSOLUTELY necessary (near Telegram limits)
+  // Don't summarize aggressively — only when text truly won't fit
   const hasMedia = !!content.mediaFileId;
-  const LONG_TEXT_THRESHOLD = hasMedia ? 800 : 1200;
-  // Force summary if text is too long (regardless of rewrite_mode, unless mode is "none")
+  const MEDIA_CAPTION_LIMIT = 900;   // Telegram caption limit is 1024
+  const TEXT_MESSAGE_LIMIT = 3500;    // Telegram text limit is 4096
+  const LONG_TEXT_THRESHOLD = hasMedia ? MEDIA_CAPTION_LIMIT : TEXT_MESSAGE_LIMIT;
   let finalMode = effectiveRewriteMode;
   if (cleanedText.length > LONG_TEXT_THRESHOLD && effectiveRewriteMode !== "none") {
     finalMode = "summary";
