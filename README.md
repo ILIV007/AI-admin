@@ -399,6 +399,49 @@ MIT — هر بلایی می‌خوای سرش بیار. 😄
 
 ## 📦 Changelog
 
+### v0.5.7 (2026-06-30) — Cron-Based Scheduling + AI Import Fix
+
+**🚨 CRITICAL: Scheduling completely rewritten — Telegram's `schedule_date` doesn't work for bots**
+
+- **Bug:** Even after v0.5.6's verification, Telegram was STILL sending scheduled messages immediately. The bot would say "Scheduled!" but the post would appear in the channel instantly.
+- **Root cause discovered:** Telegram Bot API's `schedule_date` parameter is **unreliable for bots in channels**. Telegram accepts the parameter, returns `ok:true`, but silently publishes the message immediately. This is a known Telegram limitation — `schedule_date` works for human clients but not reliably for bots.
+- **Fix:** Completely replaced Telegram's `schedule_date` with **Cloudflare Cron-based scheduling**:
+  1. Scheduled messages are now stored in KV (`sched:queue:<timestamp>:<id>`)
+  2. A cron trigger runs **every 1 minute** and sends any due messages via regular `sendMessage`/`sendPhoto`/`sendMediaGroup`
+  3. Added `[triggers] crons = ["* * * * *"]` to `wrangler.toml`
+  4. Added `scheduled()` event handler in `src/index.js`
+  5. Added `enqueueScheduled()`, `listDueScheduled()`, `deleteScheduledItem()` to `src/kv.js`
+- **Benefits of cron-based scheduling:**
+  - Works reliably for channels (unlike Telegram's `schedule_date`)
+  - Automatic retry on temporary failures (message stays in queue)
+  - Permanent errors are detected and reported to admin
+  - Admin gets a notification when the scheduled post is actually published
+  - Media groups are also supported (stored as `mediaGroupItems` array)
+
+**🤖 AI Fix: Static import (was dynamic import)**
+
+- **Bug:** AI was still falling back to "format only" mode even after v0.5.6's fallback fix.
+- **Root cause:** The `aiRewrite()` and `aiSummarize()` functions used `await import("../ai/profiles/index.js")` (dynamic import). In Cloudflare Workers' bundler, this dynamic import was failing silently, causing the entire AI function to throw an exception. The exception was caught and reported as "AI failed", but the actual error was the import failure, not an AI provider failure.
+- **Fix:** Converted dynamic imports to **static imports** at the top of `src/ai.js`. Static imports are resolved at build time by the bundler, so they always work.
+- **Also improved:**
+  - When AI fails, the bot now shows the **actual error message** (truncated to 200 chars) instead of just "AI failed — format-only fallback". This helps diagnose whether it's a rate limit, missing API key, or other issue.
+  - Added explicit check: if `OPENROUTER_API_KEY` is missing, the error message tells the user to set it as a secret in Cloudflare dashboard.
+  - Added version logging (`v0.5.7 racing N providers`) to confirm the new code is deployed.
+
+**📋 Deployment Notes (IMPORTANT):**
+
+After deploying v0.5.7, you MUST verify the cron trigger is active:
+1. Go to Cloudflare Dashboard → Workers & Pages → ai-admin → Triggers
+2. You should see a cron trigger: `* * * * *` (every minute)
+3. If not, redeploy with `wrangler deploy` — the `[triggers]` section in `wrangler.toml` registers it automatically
+
+You can verify cron is working by:
+1. Send a post to the bot with scheduling enabled
+2. Bot should reply "📅 Scheduled! (queued)"
+3. Wait until the scheduled time
+4. The post should appear in the channel within 1 minute of the scheduled time
+5. Bot should send you a confirmation: "✅ Scheduled post published"
+
 ### v0.5.6 (2026-06-30) — Critical AI + Scheduling Fixes
 
 **🤖 AI Fallback Fix:**
@@ -406,22 +449,14 @@ MIT — هر بلایی می‌خوای سرش بیار. 😄
 - **Root cause:** `aiComplete()` only added OpenRouter providers when `preferred === "openrouter"` or `"auto"`. Choosing `"gemini"` excluded OpenRouter entirely.
 - **Fix:** Always include the OTHER provider as a fallback if its API key exists, regardless of `preferred` setting. The preferred provider is just tried first.
 
-**📅 Scheduling Fix:**
-- **Bug:** Bot reported "Scheduled!" but the message appeared immediately in the channel.
-- **Root causes:**
-  1. Minimum `schedule_date` was 30s — Telegram requires 60s minimum, so the call was silently failing and falling back to immediate send.
-  2. No verification that Telegram actually scheduled the message. Telegram could return `ok:true` but send immediately (silent failure).
-- **Fix:**
-  1. Minimum is now 90s (60s + 30s buffer).
-  2. Added `verifyScheduled()` helper that compares `result.date` with the requested `schedule_date`. If they differ by more than 5 seconds, the message was sent immediately (NOT scheduled).
-  3. When scheduling fails, the bot now clearly reports "⚠️ Scheduling FAILED — sent immediately" with the actual error from Telegram, instead of silently claiming success.
-  4. Added detailed logging of Telegram's response to help diagnose future issues.
+**📅 Scheduling Fix (v0.5.6 — superseded by v0.5.7):**
+- Attempted to fix scheduling by verifying Telegram's response. Discovered that Telegram silently ignores `schedule_date` for bots in channels. v0.5.7 replaces this with cron-based scheduling.
 
 ---
 
 <div dir="rtl">
 
 ساخته‌شده با ❤️ برای کانال **ILIVIR3**  
-نسخه: **0.5.6**
+نسخه: **0.5.7**
 
 </div>

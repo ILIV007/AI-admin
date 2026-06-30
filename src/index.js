@@ -32,6 +32,9 @@ import {
   deleteMediaGroup,
   getLastScheduledTime,
   setLastScheduledTime,
+  enqueueScheduled,
+  listDueScheduled,
+  deleteScheduledItem,
 } from "./kv.js";
 import { classify } from "./classifier.js";
 import { cleanContent, detectLanguage } from "./cleaner.js";
@@ -138,6 +141,12 @@ export default {
 
     return new Response("Not Found", { status: 404 });
   },
+
+  // v0.5.7: CRON HANDLER — sends scheduled messages stored in KV
+  // Telegram's `schedule_date` is unreliable for bots, so we use our own queue.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(processScheduledQueue(env));
+  },
 };
 
 // ============================================================
@@ -181,6 +190,74 @@ function handleDebugRoute(request, url, env) {
   }
 
   return new Response("Not Found", { status: 404 });
+}
+
+// ============================================================
+// v0.5.7: SCHEDULED QUEUE PROCESSOR (called by cron trigger every minute)
+// ============================================================
+async function processScheduledQueue(env) {
+  const SETTINGS = env.SETTINGS;
+  if (!SETTINGS) {
+    console.error("[cron] SETTINGS KV not bound");
+    return;
+  }
+
+  console.log(`[cron] Checking for due scheduled messages at ${new Date().toISOString()}`);
+  const due = await listDueScheduled(SETTINGS);
+  console.log(`[cron] Found ${due.length} due messages`);
+
+  for (const item of due) {
+    try {
+      console.log(`[cron] Sending scheduled message ${item.id} to ${item.chatId} (was scheduled for ${new Date(item.scheduledTime).toISOString()})`);
+
+      let res;
+
+      // v0.5.7: Handle media groups (stored as mediaGroupItems array)
+      if (item.mediaGroupItems && item.mediaGroupItems.length > 0) {
+        res = await sendMediaGroup(env.BOT_TOKEN, item.chatId, item.mediaGroupItems, {
+          parse_mode: item.parseMode,
+        });
+      } else {
+        // Regular message (text or single media)
+        res = await publishToChannel(env.BOT_TOKEN, item.chatId, {
+          text: item.text,
+          mediaType: item.mediaType,
+          mediaFileId: item.mediaFileId,
+          extra: { parse_mode: item.parseMode, disable_web_page_preview: false },
+        });
+      }
+
+      if (res.ok) {
+        console.log(`[cron] ✓ Sent message ${item.id}`);
+        await deleteScheduledItem(SETTINGS, item._kvKey);
+
+        // Notify admin
+        if (item.notifyChatId) {
+          await sendMessage(env.BOT_TOKEN, item.notifyChatId,
+            `✅ <b>Scheduled post published</b>\n📅 Was scheduled for: ${new Date(item.scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n📍 Channel: <code>${item.chatId}</code>`,
+            { disable_web_page_preview: true }).catch(() => {});
+        }
+      } else {
+        console.error(`[cron] ✗ Failed to send message ${item.id}: ${res.description}`);
+        // If it's a permanent error, delete to avoid retries
+        const permanentErrors = ["chat not found", "bot was blocked by the user", "CHAT_ADMIN_REQUIRED", "bad request: chat not found"];
+        const isPermanent = permanentErrors.some((e) => (res.description || "").toLowerCase().includes(e.toLowerCase()));
+        if (isPermanent) {
+          console.error(`[cron] Permanent error — deleting message ${item.id} from queue`);
+          await deleteScheduledItem(SETTINGS, item._kvKey);
+          if (item.notifyChatId) {
+            await sendMessage(env.BOT_TOKEN, item.notifyChatId,
+              `❌ <b>Scheduled post failed permanently</b>\n📅 Was scheduled for: ${new Date(item.scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n❌ <code>${(res.description || "").slice(0, 200)}</code>`,
+              { disable_web_page_preview: true }).catch(() => {});
+          }
+        } else {
+          console.warn(`[cron] Temporary error — will retry on next cron run`);
+        }
+      }
+    } catch (e) {
+      console.error(`[cron] Exception processing message ${item.id}:`, e.message);
+    }
+  }
 }
 
 // ============================================================
@@ -471,6 +548,8 @@ async function runMediaGroupPipeline(env, items, update) {
 
   const targetChannel = env.TARGET_CHANNEL;
   let publishOk = false;
+  let wasScheduled = false;
+  let scheduledTime = null;
 
   if (feedbackChatId) {
     await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, { parse_mode: parseMode });
@@ -488,51 +567,42 @@ async function runMediaGroupPipeline(env, items, update) {
         const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
         const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
         const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
-        let scheduledTime = Math.max(baseTime, minNext);
+        scheduledTime = Math.max(baseTime, minNext);
 
-        // v0.5.6: Telegram requires schedule_date to be 60+ seconds in the future.
-        // Use 90s minimum for safety margin.
+        // v0.5.7: Minimum 2 minutes in the future (cron runs every 1 minute)
         const now = Date.now();
-        const MIN_SCHEDULE_SECONDS = 90;
-        if (scheduledTime - now < MIN_SCHEDULE_SECONDS * 1000) {
-          console.log(`[mg-pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to ${MIN_SCHEDULE_SECONDS}s`);
-          scheduledTime = now + MIN_SCHEDULE_SECONDS * 1000;
+        const MIN_SCHEDULE_MS = 2 * 60 * 1000;
+        if (scheduledTime - now < MIN_SCHEDULE_MS) {
+          console.log(`[mg-pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to 2 minutes`);
+          scheduledTime = now + MIN_SCHEDULE_MS;
         }
 
-        const scheduleDateUnix = Math.floor(scheduledTime / 1000);
-
-        console.log(`[mg-pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
+        console.log(`[mg-pipeline] Scheduling via KV queue: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}`);
 
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-        const schedRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
-          parse_mode: parseMode,
-          schedule_date: scheduleDateUnix,
+        // v0.5.7: Enqueue media group in KV (store all items so cron can sendMediaGroup)
+        const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        await enqueueScheduled(SETTINGS, {
+          id: schedId,
+          scheduledTime,
+          chatId: targetChannel,
+          // For media groups, store the items array
+          mediaGroupItems: mediaItems,
+          parseMode,
+          adminId,
+          notifyChatId: feedbackChatId,
+          createdAt: Date.now(),
         });
 
-        // v0.5.6: VERIFY that Telegram actually scheduled the message
-        const verification = verifyScheduled(schedRes, scheduleDateUnix);
-        publishOk = schedRes.ok && verification.scheduled;
+        publishOk = true;
+        wasScheduled = true;
+        console.log(`[mg-pipeline] Album queued for ${new Date(scheduledTime).toISOString()}`);
 
-        if (!publishOk) {
-          const scheduleError = verification.description || schedRes.description || "unknown scheduling failure";
-          console.error(`[mg-pipeline] Scheduling FAILED: ${scheduleError}`);
-          console.error(`[mg-pipeline] Telegram response:`, JSON.stringify(schedRes).slice(0, 500));
-          // Fallback to immediate send (but report the error to the user)
-          const fallbackRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
-          publishOk = fallbackRes.ok;
-          if (feedbackChatId && processingMsgId) {
-            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-              `⚠️ <b>Scheduling FAILED — sent immediately</b>\n❌ <code>${(scheduleError || "").slice(0, 200)}</code>\n📅 <i>Was:</i> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
-              { disable_web_page_preview: true }).catch(() => {});
-          }
-        } else {
-          console.log(`[mg-pipeline] Scheduling VERIFIED — album will appear at ${new Date(scheduledTime).toISOString()}`);
-          if (feedbackChatId && processingMsgId) {
-            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-              `📅 <b>Album Scheduled!</b>\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}`,
-              { disable_web_page_preview: true }).catch(() => {});
-          }
+        if (feedbackChatId && processingMsgId) {
+          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+            `📅 <b>Album Scheduled!</b> (queued)\n📅 <b>Will be published at:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}\n⏰ <i>Cron will send it within 1 minute of this time</i>`,
+            { disable_web_page_preview: true }).catch(() => {});
         }
       } catch (e) {
         console.error(`[mg-pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
@@ -845,18 +915,13 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     }
   }
 
-  // v0.5.6: Schedule or publish with PROPER verification
-  // Old code had two bugs:
-  //   1. Minimum schedule_date was 30s — Telegram requires 60s minimum, so it
-  //      silently fell back to immediate send.
-  //   2. Bot reported "Scheduled!" even when Telegram returned ok:true but
-  //      actually published immediately (silent scheduling failure).
-  // Fix: minimum is now 90s (60s + 30s buffer), AND we verify result.date
-  //      matches schedule_date. If verification fails, we surface the error
-  //      to the user instead of silently falling back.
+  // v0.5.7: CRON-BASED SCHEDULING (replaces unreliable Telegram schedule_date)
+  // Telegram's schedule_date parameter silently sends messages immediately for
+  // bots in channels. Instead, we store the message in KV and a cron trigger
+  // sends it at the scheduled time.
   let publishRes;
   let scheduledTime = null;
-  let scheduleError = null;
+  let wasScheduled = false;
 
   if (settings.scheduling_enabled) {
     try {
@@ -872,57 +937,46 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
       scheduledTime = Math.max(baseTime, minNext);
 
-      // v0.5.6: Telegram requires schedule_date to be 60+ seconds in the future.
-      // Use 90s minimum for safety margin (network latency, clock skew).
+      // v0.5.7: Minimum 2 minutes in the future (cron runs every 1 minute,
+      // so we need at least 1 cron cycle to pick it up)
       const now = Date.now();
-      const MIN_SCHEDULE_SECONDS = 90;
-      if (scheduledTime - now < MIN_SCHEDULE_SECONDS * 1000) {
-        console.log(`[pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to ${MIN_SCHEDULE_SECONDS}s`);
-        scheduledTime = now + MIN_SCHEDULE_SECONDS * 1000;
+      const MIN_SCHEDULE_MS = 2 * 60 * 1000;
+      if (scheduledTime - now < MIN_SCHEDULE_MS) {
+        console.log(`[pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to 2 minutes`);
+        scheduledTime = now + MIN_SCHEDULE_MS;
       }
 
-      const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+      console.log(`[pipeline] Scheduling via KV queue: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}`);
 
-      console.log(`[pipeline] Scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
-
-      // Save the scheduled time BEFORE publishing (so the next post respects the interval)
+      // Save the scheduled time (for interval calculation of next post)
       await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-      publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-        extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
+      // v0.5.7: Enqueue the message in KV — cron will send it at scheduledTime
+      const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      await enqueueScheduled(SETTINGS, {
+        id: schedId,
+        scheduledTime,
+        chatId: targetChannel,
+        text: safeFormattedText,
+        mediaType: content.mediaType,
+        mediaFileId: content.mediaFileId,
+        parseMode,
+        adminId,
+        notifyChatId: feedbackChatId, // notify admin when sent
+        createdAt: Date.now(),
       });
 
-      // v0.5.6: VERIFY that Telegram actually scheduled the message
-      const verification = verifyScheduled(publishRes, scheduleDateUnix);
-      publishRes.scheduled = verification.scheduled;
-
-      if (!publishRes.ok || !verification.scheduled) {
-        // Scheduling failed — DON'T silently fall back. Surface the error.
-        scheduleError = verification.description || publishRes.description || "unknown scheduling failure";
-        console.error(`[pipeline] Scheduling FAILED: ${scheduleError}`);
-        console.error(`[pipeline] Telegram response:`, JSON.stringify(publishRes).slice(0, 500));
-
-        // Try ONE fallback to immediate send, but TELL the user it was immediate
-        const fallbackRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-          extra: { parse_mode: parseMode, disable_web_page_preview: false },
-        });
-        publishRes = fallbackRes;
-        publishRes.scheduled = false;
-        publishRes.scheduleError = scheduleError;
-      } else {
-        console.log(`[pipeline] Scheduling VERIFIED — message will appear at ${new Date(scheduledTime).toISOString()}`);
-      }
+      publishRes = { ok: true, scheduled: true };
+      wasScheduled = true;
+      traceStep("enqueue_scheduled", true, `id=${schedId} ts=${scheduledTime}`);
     } catch (e) {
       console.error(`[pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
-      scheduleError = e.message;
       publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
         text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
         extra: { parse_mode: parseMode, disable_web_page_preview: false },
       });
       publishRes.scheduled = false;
-      publishRes.scheduleError = scheduleError;
+      publishRes.scheduleError = e.message;
     }
   } else {
     publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
@@ -942,16 +996,16 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
 
     const totalMs = Date.now() - startTime;
     const statusLine = aiError
-      ? `⚠️ AI failed — format-only fallback`
+      ? `⚠️ AI failed — format-only fallback\n   <i>Error:</i> <code>${(aiError || "").slice(0, 200)}</code>`
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
 
     if (feedbackChatId && processingMsgId) {
-      // v0.5.6: If scheduling was requested but failed, surface the error clearly
+      // v0.5.7: Cron-based scheduling — message is queued, will be sent by cron
       let schedMsg;
       let headerLine;
-      if (publishRes.scheduled) {
-        headerLine = `📅 <b>Scheduled!</b>`;
-        schedMsg = `\n📅 <b>Time:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`;
+      if (wasScheduled) {
+        headerLine = `📅 <b>Scheduled!</b> (queued)`;
+        schedMsg = `\n📅 <b>Will be published at:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n⏰ <i>Cron will send it within 1 minute of this time</i>`;
       } else if (settings.scheduling_enabled && publishRes.scheduleError) {
         // Scheduling was requested but FAILED — tell the user what went wrong
         headerLine = `⚠️ <b>Scheduling FAILED — sent immediately</b>`;

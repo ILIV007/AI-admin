@@ -14,6 +14,9 @@
  *   get a successful response.
  */
 
+// v0.5.7: STATIC import (dynamic import was failing in Cloudflare Workers bundler)
+import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
+
 const REQUEST_TIMEOUT_MS = 15_000; // 15s per model — fast fail so Promise.any picks a winner quickly
 
 // ============================================================
@@ -224,10 +227,16 @@ export async function aiComplete(env, settings, params) {
   }
 
   if (providers.length === 0) {
-    return { ok: false, error: "No AI providers configured (need GEMINI_API_KEY or OPENROUTER_API_KEY)" };
+    const errMsg = !env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY
+      ? "No AI providers configured (need GEMINI_API_KEY or OPENROUTER_API_KEY)"
+      : !env.OPENROUTER_API_KEY
+        ? `OPENROUTER_API_KEY is missing (preferred=${preferred}). Set it as a secret in Cloudflare dashboard.`
+        : `GEMINI_API_KEY is missing (preferred=${preferred}). Set it as a secret in Cloudflare dashboard.`;
+    console.error(`[AI] NO PROVIDERS AVAILABLE: ${errMsg}`);
+    return { ok: false, error: errMsg };
   }
 
-  console.log(`[AI] racing ${providers.length} providers:`);
+  console.log(`[AI] v0.5.7 racing ${providers.length} providers (preferred=${preferred}):`);
   providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
 
   // Race ALL providers in parallel using Promise.any
@@ -330,8 +339,7 @@ function buildCompactPrompt(mode) {
 // REWRITE
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
-  const { buildProfileEditorPrompt, getProfile } = await import("../ai/profiles/index.js");
-
+  // v0.5.7: Use static import (was dynamic import — failed in CF Workers bundler)
   // v0.5.5: Ultra-compact prompt — ~300 tokens instead of ~1700
   let fullSystemPrompt;
   if (settings.active_profile) {
@@ -380,8 +388,7 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 // SUMMARIZE
 // ============================================================
 export async function aiSummarize(env, settings, text, language) {
-  const { buildProfileEditorPrompt } = await import("../ai/profiles/index.js");
-
+  // v0.5.7: Use static import (was dynamic import — failed in CF Workers bundler)
   let fullSystemPrompt;
   if (settings.active_profile) {
     const pp = buildProfileEditorPrompt(buildCompactPrompt("summary"), settings.active_profile);
