@@ -1,8 +1,6 @@
 /**
  * ai/profiles/index.js
- * Profile system — v0.5.0
- *
- * Profiles replace individual settings with a complete Soul + Style + Rules package.
+ * Profile system — v0.5.3
  */
 
 import { ILIVIR3_PROFILE } from "./ilivir3/index.js";
@@ -31,7 +29,6 @@ export function buildProfileEditorPrompt(basePrompt, profileKey) {
     "",
     "=== ACTIVE PROFILE ===",
     `Profile: ${profile.name}`,
-    `Description: ${profile.description}`,
     "",
     "=== PROFILE SOUL ===",
     profile.soul,
@@ -54,9 +51,6 @@ export function buildProfileFormatterPrompt(basePrompt, profileKey) {
     basePrompt,
     "",
     "=== ACTIVE PROFILE FORMATTING ===",
-    `Profile: ${profile.name}`,
-    "",
-    "=== PROFILE FORMATTING RULES ===",
     profile.formatting || profile.rules,
     "",
     "=== END PROFILE FORMATTING ===",

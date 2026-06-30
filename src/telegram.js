@@ -6,13 +6,21 @@
 const TG_API = (token) => `https://api.telegram.org/bot${token}`;
 
 async function tgCall(token, method, payload = {}) {
+  // Remove undefined/null values — Telegram API rejects them
+  const cleanPayload = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (value !== undefined && value !== null) {
+      cleanPayload[key] = value;
+    }
+  }
+
   const url = `${TG_API(token)}/${method}`;
   let res;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(cleanPayload),
     });
   } catch (e) {
     throw new Error(`TG_NETWORK_ERROR: ${e.message}`);
