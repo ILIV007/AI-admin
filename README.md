@@ -399,64 +399,66 @@ MIT — هر بلایی می‌خوای سرش بیار. 😄
 
 ## 📦 Changelog
 
-### v0.5.7 (2026-06-30) — Cron-Based Scheduling + AI Import Fix
+### v0.5.8 (2026-06-30) — Native Telegram Scheduling + Permission Checking
 
-**🚨 CRITICAL: Scheduling completely rewritten — Telegram's `schedule_date` doesn't work for bots**
+**📅 Scheduling reverted to native Telegram (with permission checking)**
 
-- **Bug:** Even after v0.5.6's verification, Telegram was STILL sending scheduled messages immediately. The bot would say "Scheduled!" but the post would appear in the channel instantly.
-- **Root cause discovered:** Telegram Bot API's `schedule_date` parameter is **unreliable for bots in channels**. Telegram accepts the parameter, returns `ok:true`, but silently publishes the message immediately. This is a known Telegram limitation — `schedule_date` works for human clients but not reliably for bots.
-- **Fix:** Completely replaced Telegram's `schedule_date` with **Cloudflare Cron-based scheduling**:
-  1. Scheduled messages are now stored in KV (`sched:queue:<timestamp>:<id>`)
-  2. A cron trigger runs **every 1 minute** and sends any due messages via regular `sendMessage`/`sendPhoto`/`sendMediaGroup`
-  3. Added `[triggers] crons = ["* * * * *"]` to `wrangler.toml`
-  4. Added `scheduled()` event handler in `src/index.js`
-  5. Added `enqueueScheduled()`, `listDueScheduled()`, `deleteScheduledItem()` to `src/kv.js`
-- **Benefits of cron-based scheduling:**
-  - Works reliably for channels (unlike Telegram's `schedule_date`)
-  - Automatic retry on temporary failures (message stays in queue)
-  - Permanent errors are detected and reported to admin
-  - Admin gets a notification when the scheduled post is actually published
-  - Media groups are also supported (stored as `mediaGroupItems` array)
+- **User request:** Posts should appear in Telegram's native "Scheduled Messages" view so the admin can review/edit/delete them before publishing.
+- **Previous approach (v0.5.7):** Used a KV-based cron queue. This worked reliably but posts did NOT appear in Telegram's scheduled view — the admin couldn't review them.
+- **New approach (v0.5.8):** Reverted to Telegram's native `schedule_date` parameter, BUT added **permission checking** to solve the root cause of the previous failures.
+- **Root cause discovered:** Telegram's `schedule_date` silently sends messages immediately when the bot lacks the **"Post Messages"** permission in the channel. The bot was an admin, but only had "Edit Messages" permission — not "Post Messages". This caused Telegram to accept `schedule_date` but send immediately.
+- **Fix:**
+  1. Added `checkSchedulingPermissions()` function that calls `getChatMember` to verify the bot's status and `can_post_messages` permission.
+  2. Before scheduling, the bot checks permissions. If missing, it shows a clear error explaining exactly what to fix.
+  3. After scheduling, the bot verifies `result.date` matches `schedule_date` (within 5s tolerance). If they don't match, Telegram sent immediately — the bot reports this as a failure.
+  4. When scheduling fails, the bot does **NOT** fall back to immediate send. It shows the error and tells the user to fix permissions and resend.
+  5. Capped `schedule_date` to Telegram's valid range: 90 seconds to 7 days from now.
+  6. Removed the cron trigger from `wrangler.toml` (no longer needed).
 
-**🤖 AI Fix: Static import (was dynamic import)**
+**🆕 New command: `/checkperms`**
 
-- **Bug:** AI was still falling back to "format only" mode even after v0.5.6's fallback fix.
-- **Root cause:** The `aiRewrite()` and `aiSummarize()` functions used `await import("../ai/profiles/index.js")` (dynamic import). In Cloudflare Workers' bundler, this dynamic import was failing silently, causing the entire AI function to throw an exception. The exception was caught and reported as "AI failed", but the actual error was the import failure, not an AI provider failure.
-- **Fix:** Converted dynamic imports to **static imports** at the top of `src/ai.js`. Static imports are resolved at build time by the bundler, so they always work.
-- **Also improved:**
-  - When AI fails, the bot now shows the **actual error message** (truncated to 200 chars) instead of just "AI failed — format-only fallback". This helps diagnose whether it's a rate limit, missing API key, or other issue.
-  - Added explicit check: if `OPENROUTER_API_KEY` is missing, the error message tells the user to set it as a secret in Cloudflare dashboard.
-  - Added version logging (`v0.5.7 racing N providers`) to confirm the new code is deployed.
+- Admin can run `/checkperms` to verify the bot's permissions in the channel.
+- Shows: bot status (administrator/creator/member), `can_post_messages` permission, and all other admin permissions.
+- If permissions are missing, shows step-by-step instructions on how to fix them.
 
-**📋 Deployment Notes (IMPORTANT):**
+**📋 How to access scheduled messages in Telegram:**
 
-After deploying v0.5.7, you MUST verify the cron trigger is active:
-1. Go to Cloudflare Dashboard → Workers & Pages → ai-admin → Triggers
-2. You should see a cron trigger: `* * * * *` (every minute)
-3. If not, redeploy with `wrangler deploy` — the `[triggers]` section in `wrangler.toml` registers it automatically
+After the bot schedules a post:
+1. Open the channel in Telegram
+2. Tap the channel name at the top
+3. Select **"Scheduled Messages"** (clock icon 🕐)
+4. You'll see all scheduled posts — you can edit or delete any of them
+5. Posts auto-publish at the scheduled time
 
-You can verify cron is working by:
-1. Send a post to the bot with scheduling enabled
-2. Bot should reply "📅 Scheduled! (queued)"
-3. Wait until the scheduled time
-4. The post should appear in the channel within 1 minute of the scheduled time
-5. Bot should send you a confirmation: "✅ Scheduled post published"
+**🔐 Permission requirements for scheduling:**
+
+The bot MUST be an admin in the channel with these permissions:
+- ✅ **Post Messages** (required for scheduling)
+- ✅ **Edit Messages** (required for channel editing feature)
+- ✅ **Delete Messages** (optional, for cleanup)
+
+To set permissions:
+1. Open the channel → Channel Settings → Administrators
+2. Find the bot → tap it
+3. Enable **"Post Messages"**
+
+### v0.5.7 (2026-06-30) — Cron-Based Scheduling + AI Import Fix (SUPERSEDED)
+
+- Used KV-based cron queue for scheduling. Worked reliably but posts didn't appear in Telegram's scheduled view.
+- Fixed AI dynamic import issue (converted to static import).
+- v0.5.8 reverts scheduling to native Telegram (with permission checking) per user request.
 
 ### v0.5.6 (2026-06-30) — Critical AI + Scheduling Fixes
 
-**🤖 AI Fallback Fix:**
-- **Bug:** When `ai_provider = "gemini"` and Gemini was rate-limited (429), the bot did NOT fall back to OpenRouter. It returned "format only" mode instead.
-- **Root cause:** `aiComplete()` only added OpenRouter providers when `preferred === "openrouter"` or `"auto"`. Choosing `"gemini"` excluded OpenRouter entirely.
-- **Fix:** Always include the OTHER provider as a fallback if its API key exists, regardless of `preferred` setting. The preferred provider is just tried first.
-
-**📅 Scheduling Fix (v0.5.6 — superseded by v0.5.7):**
-- Attempted to fix scheduling by verifying Telegram's response. Discovered that Telegram silently ignores `schedule_date` for bots in channels. v0.5.7 replaces this with cron-based scheduling.
+- Fixed AI fallback: always include the OTHER provider as fallback if API key exists.
+- Added scheduling verification (compare result.date with schedule_date).
+- Discovered Telegram silently sends immediately for bots lacking "Post Messages" permission.
 
 ---
 
 <div dir="rtl">
 
 ساخته‌شده با ❤️ برای کانال **ILIVIR3**  
-نسخه: **0.5.7**
+نسخه: **0.5.8**
 
 </div>

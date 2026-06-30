@@ -1,6 +1,6 @@
 # ============================================================
 # AI Admin — Cloudflare Worker configuration
-# Version: v0.5.7
+# Version: v0.5.8
 # ============================================================
 
 name = "ai-admin"
@@ -13,14 +13,8 @@ compatibility_flags = ["nodejs_compat"]
 binding = "SETTINGS"
 id = "c8adbda37ee642d194adabf79f458f0d"
 
-# ============================================================
-# v0.5.7: CRON TRIGGER — runs every minute to send scheduled messages
-# ============================================================
-# Why? Telegram's `schedule_date` parameter is UNRELIABLE for bots in channels.
-# Telegram silently sends messages immediately instead of scheduling them.
-# Solution: Store scheduled messages in KV, send them via this cron trigger.
-[triggers]
-crons = ["* * * * *"]
+# v0.5.8: No cron trigger needed — using Telegram's native schedule_date
+# (v0.5.7 used cron, but user wants posts in Telegram's scheduled view for review)
 
 # ============================================================
 # Environment Variables (non-secret)

@@ -144,6 +144,83 @@ export async function getMe(token) {
   return tgCall(token, "getMe");
 }
 
+// v0.5.8: Get chat info (channel type, permissions, etc.)
+export async function getChat(token, chatId) {
+  return tgCall(token, "getChat", { chat_id: chatId });
+}
+
+// v0.5.8: Get a member's info (status, permissions)
+export async function getChatMember(token, chatId, userId) {
+  return tgCall(token, "getChatMember", { chat_id: chatId, user_id: userId });
+}
+
+// ============================================================
+// v0.5.8: Check if the bot has permission to schedule messages in a channel
+// ============================================================
+// Telegram's `schedule_date` parameter requires:
+//   1. Bot must be an administrator in the channel (status = "administrator" or "creator")
+//   2. Bot must have `can_post_messages = true` permission
+//
+// If either is missing, Telegram silently sends the message immediately
+// instead of scheduling it. This is the root cause of the scheduling bug
+// where posts appeared in the channel instantly despite schedule_date being set.
+// ============================================================
+export async function checkSchedulingPermissions(token, channel, botId) {
+  if (!botId) {
+    const me = await getMe(token);
+    if (!me.ok) return { ok: false, error: `Cannot identify bot: ${me.description || "getMe failed"}` };
+    botId = me.result.id;
+  }
+
+  const member = await getChatMember(token, channel, botId);
+  if (!member.ok) {
+    return {
+      ok: false,
+      error: `Cannot check bot permissions: ${member.description || "getChatMember failed"}`,
+      details: member,
+    };
+  }
+
+  const status = member.result.status;
+  if (status !== "administrator" && status !== "creator") {
+    return {
+      ok: false,
+      error: `Bot is "${status}" (not admin). Bot must be promoted to admin with 'Post Messages' permission in the channel.`,
+      status,
+      canPostMessages: false,
+    };
+  }
+
+  // For "creator", all permissions are implied
+  if (status === "creator") {
+    return { ok: true, status, canPostMessages: true };
+  }
+
+  // For "administrator", check can_post_messages
+  const canPost = member.result.can_post_messages === true;
+  if (!canPost) {
+    return {
+      ok: false,
+      error: `Bot is admin but does NOT have 'Post Messages' permission. Please edit the bot's admin permissions in the channel and enable 'Post Messages'.`,
+      status,
+      canPostMessages: false,
+      rawPermissions: {
+        can_post_messages: member.result.can_post_messages,
+        can_edit_messages: member.result.can_edit_messages,
+        can_delete_messages: member.result.can_delete_messages,
+        can_promote_members: member.result.can_promote_members,
+        can_restrict_members: member.result.can_restrict_members,
+        can_invite_users: member.result.can_invite_users,
+        can_change_info: member.result.can_change_info,
+        can_pin_messages: member.result.can_pin_messages,
+        can_manage_chat: member.result.can_manage_chat,
+      },
+    };
+  }
+
+  return { ok: true, status, canPostMessages: true };
+}
+
 export function extractContent(update) {
   const msg = update.message || update.channel_post || update.edited_message || update.edited_channel_post;
   if (!msg) return null;
@@ -238,7 +315,13 @@ export function verifyScheduled(response, scheduleDateUnix) {
     return { scheduled: false, reason: "response_not_ok", description: response?.description || "no result" };
   }
 
-  const actualDate = response.result.date;
+  // v0.5.8: For sendMediaGroup, result is an array — check the first message
+  const result = Array.isArray(response.result) ? response.result[0] : response.result;
+  if (!result) {
+    return { scheduled: false, reason: "no_result", description: "Empty result array" };
+  }
+
+  const actualDate = result.date;
   if (typeof actualDate !== "number") {
     // No date field — can't verify, assume scheduled
     return { scheduled: true, reason: "no_date_field", actualDate: null };
@@ -257,6 +340,6 @@ export function verifyScheduled(response, scheduleDateUnix) {
     actualDate,
     expectedDate: scheduleDateUnix,
     diffSeconds: diff,
-    description: `Telegram returned ok:true but result.date (${actualDate}) != schedule_date (${scheduleDateUnix}), diff=${diff}s — message was sent immediately, NOT scheduled`,
+    description: `Telegram returned ok:true but result.date (${actualDate}) != schedule_date (${scheduleDateUnix}), diff=${diff}s — message was sent immediately, NOT scheduled. Bot may lack 'Post Messages' permission.`,
   };
 }

@@ -15,6 +15,7 @@ import {
   extractContent,
   publishToChannel,
   verifyScheduled,
+  checkSchedulingPermissions,
   sendMessage,
   answerCallbackQuery,
   getMe,
@@ -375,8 +376,65 @@ async function handlePrivateMessage(env, content, update) {
 
   if (/^\/help\b/i.test(text)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/help — This message`);
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/help — This message`);
     await logUpdate(SETTINGS, update, "ok", "/help");
+    return;
+  }
+
+  // v0.5.8: /checkperms — check if bot has permission to schedule messages
+  if (/^\/checkperms\b/i.test(text)) {
+    const targetChannel = env.TARGET_CHANNEL;
+    if (!targetChannel) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `❌ <code>TARGET_CHANNEL</code> is not configured.`);
+      await logUpdate(SETTINGS, update, "ok", "/checkperms: no channel");
+      return;
+    }
+
+    await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
+    const botId = await getBotId(env);
+    const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
+
+    let message;
+    if (permCheck.ok) {
+      message = [
+        `✅ <b>Permissions OK</b>`,
+        ``,
+        `📍 <b>Channel:</b> <code>${targetChannel}</code>`,
+        `👤 <b>Bot status:</b> <code>${permCheck.status}</code>`,
+        `📮 <b>Can post messages:</b> <code>${permCheck.canPostMessages ? "YES ✅" : "NO ❌"}</code>`,
+        ``,
+        `<b>Scheduling should work correctly.</b>`,
+        ``,
+        `<i>Scheduled posts will appear in the channel's "Scheduled Messages" view (clock icon).</i>`,
+      ].join("\n");
+    } else {
+      const perms = permCheck.rawPermissions
+        ? Object.entries(permCheck.rawPermissions).map(([k, v]) => `  ${k}: ${v ? "✅" : "❌"}`).join("\n")
+        : "(no details)";
+      message = [
+        `❌ <b>Permission Issue</b>`,
+        ``,
+        `📍 <b>Channel:</b> <code>${targetChannel}</code>`,
+        `👤 <b>Bot status:</b> <code>${permCheck.status || "unknown"}</code>`,
+        ``,
+        `<b>Error:</b>`,
+        `<code>${permCheck.error}</code>`,
+        ``,
+        `<b>Current permissions:</b>`,
+        `<code>${perms}</code>`,
+        ``,
+        `<b>How to fix:</b>`,
+        `1. Open the channel in Telegram`,
+        `2. Go to <b>Channel Settings → Administrators</b>`,
+        `3. Find the bot and tap it`,
+        `4. Enable <b>"Post Messages"</b> permission`,
+        `5. Run /checkperms again to verify`,
+      ].join("\n");
+    }
+
+    await sendMessage(env.BOT_TOKEN, content.chatId, message, { disable_web_page_preview: true });
+    await logUpdate(SETTINGS, update, "ok", `/checkperms: ${permCheck.ok ? "OK" : "FAIL"}`);
     return;
   }
 
@@ -550,6 +608,7 @@ async function runMediaGroupPipeline(env, items, update) {
   let publishOk = false;
   let wasScheduled = false;
   let scheduledTime = null;
+  let scheduleError = null;
 
   if (feedbackChatId) {
     await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, { parse_mode: parseMode });
@@ -558,59 +617,101 @@ async function runMediaGroupPipeline(env, items, update) {
   if (targetChannel) {
     if (settings.scheduling_enabled) {
       try {
-        let effectiveInterval = settings.schedule_interval_minutes ?? 30;
-        if (settings.schedule_posts_per_day > 0) {
-          effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
-          if (effectiveInterval < 5) effectiveInterval = 5;
+        // v0.5.8: Check bot permissions FIRST
+        const botId = await getBotId(env);
+        const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
+        if (!permCheck.ok) {
+          console.error(`[mg-pipeline] Scheduling blocked — permissions: ${permCheck.error}`);
+          scheduleError = permCheck.error;
+          publishOk = false;
+        } else {
+          let effectiveInterval = settings.schedule_interval_minutes ?? 30;
+          if (settings.schedule_posts_per_day > 0) {
+            effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
+            if (effectiveInterval < 5) effectiveInterval = 5;
+          }
+
+          const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
+          const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
+          const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
+          scheduledTime = Math.max(baseTime, minNext);
+
+          // v0.5.8: Telegram requires schedule_date between 60s and 7 days from now
+          const now = Date.now();
+          const MIN_SCHEDULE_MS = 90 * 1000;
+          const MAX_SCHEDULE_MS = 7 * 24 * 3600 * 1000;
+
+          if (scheduledTime - now < MIN_SCHEDULE_MS) {
+            scheduledTime = now + MIN_SCHEDULE_MS;
+          }
+          if (scheduledTime - now > MAX_SCHEDULE_MS) {
+            scheduledTime = now + MAX_SCHEDULE_MS;
+          }
+
+          const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+          console.log(`[mg-pipeline] Native scheduling: scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
+
+          await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
+
+          const schedRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
+            parse_mode: parseMode,
+            schedule_date: scheduleDateUnix,
+          });
+
+          // v0.5.8: VERIFY that Telegram actually scheduled the message
+          const verification = verifyScheduled(schedRes, scheduleDateUnix);
+          publishOk = schedRes.ok && verification.scheduled;
+
+          if (!publishOk) {
+            scheduleError = verification.description || schedRes.description || "unknown scheduling failure";
+            console.error(`[mg-pipeline] Scheduling FAILED: ${scheduleError}`);
+            console.error(`[mg-pipeline] Telegram response:`, JSON.stringify(schedRes).slice(0, 500));
+          } else {
+            wasScheduled = true;
+            console.log(`[mg-pipeline] Scheduling VERIFIED — album will appear at ${new Date(scheduledTime).toISOString()}`);
+          }
         }
 
-        const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
-        const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
-        const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
-        scheduledTime = Math.max(baseTime, minNext);
-
-        // v0.5.7: Minimum 2 minutes in the future (cron runs every 1 minute)
-        const now = Date.now();
-        const MIN_SCHEDULE_MS = 2 * 60 * 1000;
-        if (scheduledTime - now < MIN_SCHEDULE_MS) {
-          console.log(`[mg-pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to 2 minutes`);
-          scheduledTime = now + MIN_SCHEDULE_MS;
-        }
-
-        console.log(`[mg-pipeline] Scheduling via KV queue: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}`);
-
-        await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
-
-        // v0.5.7: Enqueue media group in KV (store all items so cron can sendMediaGroup)
-        const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        await enqueueScheduled(SETTINGS, {
-          id: schedId,
-          scheduledTime,
-          chatId: targetChannel,
-          // For media groups, store the items array
-          mediaGroupItems: mediaItems,
-          parseMode,
-          adminId,
-          notifyChatId: feedbackChatId,
-          createdAt: Date.now(),
-        });
-
-        publishOk = true;
-        wasScheduled = true;
-        console.log(`[mg-pipeline] Album queued for ${new Date(scheduledTime).toISOString()}`);
-
+        // v0.5.8: Show result message to user
         if (feedbackChatId && processingMsgId) {
-          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-            `📅 <b>Album Scheduled!</b> (queued)\n📅 <b>Will be published at:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n<b>Items:</b> ${items.length}\n⏰ <i>Cron will send it within 1 minute of this time</i>`,
-            { disable_web_page_preview: true }).catch(() => {});
+          if (wasScheduled) {
+            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+              [
+                `📅 <b>Album Scheduled!</b>`,
+                `📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+                `📸 <b>Items:</b> ${items.length}`,
+                ``,
+                `<b>📋 To review/edit/delete:</b>`,
+                `1. Open the channel <code>${targetChannel}</code>`,
+                `2. Tap the channel name at the top`,
+                `3. Select <b>"Scheduled Messages"</b> (clock icon 🕐)`,
+                ``,
+                `<i>The album will auto-publish at the scheduled time.</i>`,
+              ].join("\n"),
+              { disable_web_page_preview: true }).catch(() => {});
+          } else {
+            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+              [
+                `⚠️ <b>Scheduling FAILED</b>`,
+                `❌ <b>Error:</b> <code>${(scheduleError || "").slice(0, 250)}</code>`,
+                ``,
+                `<b>How to fix:</b>`,
+                `• Run <code>/checkperms</code> to verify bot permissions`,
+                `• Bot needs <b>"Post Messages"</b> permission in the channel`,
+                `• Schedule must be between 90s and 7 days from now`,
+                ``,
+                `<i>Your album was NOT published. Fix the issue and resend.</i>`,
+              ].join("\n"),
+              { disable_web_page_preview: true }).catch(() => {});
+          }
         }
       } catch (e) {
-        console.error(`[mg-pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
-        const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
-        publishOk = pubRes.ok;
+        console.error(`[mg-pipeline] Scheduling exception: ${e.message}`);
+        scheduleError = e.message;
+        publishOk = false;
         if (feedbackChatId && processingMsgId) {
           await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-            `⚠️ <b>Scheduling exception — sent immediately</b>\n❌ <code>${e.message.slice(0, 200)}</code>`,
+            `⚠️ <b>Scheduling exception</b>\n❌ <code>${e.message.slice(0, 200)}</code>`,
             { disable_web_page_preview: true }).catch(() => {});
         }
       }
@@ -915,68 +1016,84 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     }
   }
 
-  // v0.5.7: CRON-BASED SCHEDULING (replaces unreliable Telegram schedule_date)
-  // Telegram's schedule_date parameter silently sends messages immediately for
-  // bots in channels. Instead, we store the message in KV and a cron trigger
-  // sends it at the scheduled time.
+  // v0.5.8: NATIVE TELEGRAM SCHEDULING (schedule_date)
+  // User wants posts to appear in Telegram's native "Scheduled Messages" view
+  // so they can review/edit/delete them before publishing.
+  //
+  // Root cause of previous failures: Bot lacked 'Post Messages' permission in channel.
+  // Telegram silently sends immediately when this permission is missing.
+  // Fix: Check permissions BEFORE scheduling. If missing, show clear error.
+  //      If scheduling still fails after permission check, show error (DON'T send immediately).
   let publishRes;
   let scheduledTime = null;
   let wasScheduled = false;
 
   if (settings.scheduling_enabled) {
     try {
-      // Calculate effective interval (posts_per_day overrides interval_minutes)
-      let effectiveInterval = settings.schedule_interval_minutes ?? 30;
-      if (settings.schedule_posts_per_day > 0) {
-        effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
-        if (effectiveInterval < 5) effectiveInterval = 5;
+      // v0.5.8: Check bot permissions FIRST
+      const botId = await getBotId(env);
+      const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
+      if (!permCheck.ok) {
+        // Permissions missing — DON'T schedule, DON'T send immediately
+        console.error(`[pipeline] Scheduling blocked — permissions: ${permCheck.error}`);
+        publishRes = { ok: false, scheduled: false, scheduleError: permCheck.error };
+      } else {
+        // Permissions OK — proceed with scheduling
+        let effectiveInterval = settings.schedule_interval_minutes ?? 30;
+        if (settings.schedule_posts_per_day > 0) {
+          effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
+          if (effectiveInterval < 5) effectiveInterval = 5;
+        }
+
+        const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
+        const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
+        const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
+        scheduledTime = Math.max(baseTime, minNext);
+
+        // v0.5.8: Telegram requires schedule_date between 60s and 7 days from now
+        const now = Date.now();
+        const MIN_SCHEDULE_MS = 90 * 1000; // 90s (60s + buffer)
+        const MAX_SCHEDULE_MS = 7 * 24 * 3600 * 1000; // 7 days
+
+        if (scheduledTime - now < MIN_SCHEDULE_MS) {
+          console.log(`[pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to 90s`);
+          scheduledTime = now + MIN_SCHEDULE_MS;
+        }
+        if (scheduledTime - now > MAX_SCHEDULE_MS) {
+          console.log(`[pipeline] Scheduled time too far (${Math.floor((scheduledTime - now) / (3600 * 1000))}h), capping to 7 days`);
+          scheduledTime = now + MAX_SCHEDULE_MS;
+        }
+
+        const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+
+        console.log(`[pipeline] Native scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
+
+        await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
+
+        publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+          extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
+        });
+
+        // v0.5.8: VERIFY that Telegram actually scheduled the message
+        const verification = verifyScheduled(publishRes, scheduleDateUnix);
+        publishRes.scheduled = verification.scheduled;
+
+        if (!publishRes.ok || !verification.scheduled) {
+          // Scheduling failed — show error, DON'T send immediately
+          const scheduleError = verification.description || publishRes.description || "unknown scheduling failure";
+          console.error(`[pipeline] Scheduling FAILED: ${scheduleError}`);
+          console.error(`[pipeline] Telegram response:`, JSON.stringify(publishRes).slice(0, 500));
+          publishRes.scheduleError = scheduleError;
+          wasScheduled = false;
+        } else {
+          wasScheduled = true;
+          console.log(`[pipeline] Scheduling VERIFIED — message will appear at ${new Date(scheduledTime).toISOString()}`);
+        }
       }
-
-      const lastScheduled = await getLastScheduledTime(SETTINGS, targetChannel);
-      const baseTime = Date.now() + (settings.schedule_delay_hours * 3600 * 1000);
-      const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
-      scheduledTime = Math.max(baseTime, minNext);
-
-      // v0.5.7: Minimum 2 minutes in the future (cron runs every 1 minute,
-      // so we need at least 1 cron cycle to pick it up)
-      const now = Date.now();
-      const MIN_SCHEDULE_MS = 2 * 60 * 1000;
-      if (scheduledTime - now < MIN_SCHEDULE_MS) {
-        console.log(`[pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to 2 minutes`);
-        scheduledTime = now + MIN_SCHEDULE_MS;
-      }
-
-      console.log(`[pipeline] Scheduling via KV queue: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, ppd=${settings.schedule_posts_per_day}, scheduled=${new Date(scheduledTime).toISOString()}`);
-
-      // Save the scheduled time (for interval calculation of next post)
-      await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
-
-      // v0.5.7: Enqueue the message in KV — cron will send it at scheduledTime
-      const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      await enqueueScheduled(SETTINGS, {
-        id: schedId,
-        scheduledTime,
-        chatId: targetChannel,
-        text: safeFormattedText,
-        mediaType: content.mediaType,
-        mediaFileId: content.mediaFileId,
-        parseMode,
-        adminId,
-        notifyChatId: feedbackChatId, // notify admin when sent
-        createdAt: Date.now(),
-      });
-
-      publishRes = { ok: true, scheduled: true };
-      wasScheduled = true;
-      traceStep("enqueue_scheduled", true, `id=${schedId} ts=${scheduledTime}`);
     } catch (e) {
-      console.error(`[pipeline] Scheduling exception: ${e.message}, falling back to immediate`);
-      publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-        extra: { parse_mode: parseMode, disable_web_page_preview: false },
-      });
-      publishRes.scheduled = false;
-      publishRes.scheduleError = e.message;
+      console.error(`[pipeline] Scheduling exception: ${e.message}`);
+      publishRes = { ok: false, scheduled: false, scheduleError: e.message };
     }
   } else {
     publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
@@ -1000,16 +1117,34 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
 
     if (feedbackChatId && processingMsgId) {
-      // v0.5.7: Cron-based scheduling — message is queued, will be sent by cron
+      // v0.5.8: Native Telegram scheduling — posts appear in channel's scheduled view
       let schedMsg;
       let headerLine;
       if (wasScheduled) {
-        headerLine = `📅 <b>Scheduled!</b> (queued)`;
-        schedMsg = `\n📅 <b>Will be published at:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC\n⏰ <i>Cron will send it within 1 minute of this time</i>`;
+        headerLine = `📅 <b>Scheduled!</b>`;
+        schedMsg = [
+          `\n📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+          ``,
+          `<b>📋 To review/edit/delete:</b>`,
+          `1. Open the channel <code>${targetChannel}</code>`,
+          `2. Tap the channel name at the top`,
+          `3. Select <b>"Scheduled Messages"</b> (clock icon 🕐)`,
+          ``,
+          `<i>The post will auto-publish at the scheduled time.</i>`,
+        ].join("\n");
       } else if (settings.scheduling_enabled && publishRes.scheduleError) {
         // Scheduling was requested but FAILED — tell the user what went wrong
-        headerLine = `⚠️ <b>Scheduling FAILED — sent immediately</b>`;
-        schedMsg = `\n❌ <b>Schedule error:</b> <code>${(publishRes.scheduleError || "").slice(0, 200)}</code>\n✅ <b>Published to:</b> <code>${targetChannel}</code>`;
+        headerLine = `⚠️ <b>Scheduling FAILED</b>`;
+        schedMsg = [
+          `\n❌ <b>Error:</b> <code>${(publishRes.scheduleError || "").slice(0, 250)}</code>`,
+          ``,
+          `<b>How to fix:</b>`,
+          `• Run <code>/checkperms</code> to verify bot permissions`,
+          `• Bot needs <b>"Post Messages"</b> permission in the channel`,
+          `• Schedule must be between 90s and 7 days from now`,
+          ``,
+          `<i>Your post was NOT published. Fix the issue and resend.</i>`,
+        ].join("\n");
       } else {
         headerLine = `✅ <b>Done</b>`;
         schedMsg = `\n✅ <b>Published to:</b> <code>${targetChannel}</code>`;
@@ -1029,14 +1164,24 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
     await bumpGlobalStats(SETTINGS, "failed");
-    console.error("[pipeline] publish failed:", publishRes.description);
+    console.error("[pipeline] publish failed:", publishRes.description || publishRes.scheduleError);
 
+    // v0.5.8: If scheduling failed (not general publish failure), show helpful message
+    const errorMsg = publishRes.scheduleError || publishRes.description || "unknown error";
     if (feedbackChatId && processingMsgId) {
       await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-        `❌ <b>Publish failed:</b> <code>${publishRes.description || "unknown"}</code>`,
+        [
+          `❌ <b>Failed</b>`,
+          ``,
+          `<b>Error:</b> <code>${(errorMsg || "").slice(0, 250)}</code>`,
+          ``,
+          settings.scheduling_enabled
+            ? `<i>Run <code>/checkperms</code> to verify bot has "Post Messages" permission.</i>`
+            : `<i>Check bot configuration and try again.</i>`,
+        ].join("\n"),
         { disable_web_page_preview: true }).catch(() => {});
     }
-    return { ok: false, detail: `publish: ${publishRes.description}` };
+    return { ok: false, detail: `publish: ${errorMsg}` };
   }
 }
 
