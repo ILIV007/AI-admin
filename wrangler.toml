@@ -1,6 +1,6 @@
 # ============================================================
 # AI Admin — Cloudflare Worker configuration
-# Version: v0.5.8.1
+# Version: v0.5.9
 # ============================================================
 
 name = "ai-admin"
@@ -13,11 +13,9 @@ compatibility_flags = ["nodejs_compat"]
 binding = "SETTINGS"
 id = "c8adbda37ee642d194adabf79f458f0d"
 
-# v0.5.8.1: Cron trigger for scheduling FALLBACK
-# Primary: native Telegram schedule_date (posts appear in scheduled view for review)
-# Fallback: if native fails (Telegram silently sends immediately), KV cron queue sends at scheduled time
-[triggers]
-crons = ["* * * * *"]
+# v0.5.9 TASK 1: NO cron trigger — removed per user request.
+# Only native Telegram schedule_date is used (no KV-based fallback).
+# If native fails, the bot shows an error to the user.
 
 # ============================================================
 # Environment Variables (non-secret)
@@ -26,6 +24,10 @@ crons = ["* * * * *"]
 ADMIN_ID = "126679582"
 TARGET_CHANNEL = "@ILIVIR3"
 FOOTER_TEXT = "🌀 @ILIVIR3"
+
+# v0.5.9 TASK 4: DEBUG_MODE — when "true", debug logs are written to KV.
+# When "false" (default), logs only go to console.log (saves KV writes).
+DEBUG_MODE = "false"
 
 # AI Provider: "openrouter" (default — works even when Gemini quota is exceeded)
 DEFAULT_AI_PROVIDER = "openrouter"

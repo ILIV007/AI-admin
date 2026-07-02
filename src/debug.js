@@ -1,6 +1,13 @@
 /**
  * src/debug.js
- * Debug dashboard + logging utilities for AI Admin.
+ * Debug dashboard + logging utilities for AI Admin — v0.5.9
+ *
+ * v0.5.9 (TASK 4): Conditional KV writes.
+ *   - logUpdate / logError / logRawRequest now only write to KV if
+ *     env.DEBUG_MODE === "true". Otherwise they just console.log.
+ *   - This drastically reduces KV writes on the free tier (1,000/day limit).
+ *   - When DEBUG_MODE is on, logs overwrite a single key with the latest 30
+ *     entries (no append → still 1 write per event, but bounded).
  */
 
 const DEBUG_MAX_ENTRIES = 30;
@@ -9,10 +16,33 @@ const KEY_DEBUG_ERRORS = "debug:errors";
 const KEY_DEBUG_RAW = "debug:raw_requests";
 
 // ============================================================
-// LOGGING
+// v0.5.9: Helper — should we write debug logs to KV?
 // ============================================================
-export async function logUpdate(SETTINGS, update, status, detail = "") {
-  if (!SETTINGS) return;
+// DEBUG_MODE is read from env at call time. We pass `env` into every
+// log function so we don't need a global. When DEBUG_MODE is falsy,
+// we skip the KV read+write entirely and just console.log.
+// ============================================================
+function debugModeEnabled(env) {
+  return env?.DEBUG_MODE === "true" || env?.DEBUG_MODE === true;
+}
+
+// ============================================================
+// LOGGING — v0.5.9: Conditional on env.DEBUG_MODE
+// ============================================================
+
+/**
+ * Log an update to the debug log.
+ * v0.5.9: Only writes to KV if env.DEBUG_MODE === "true".
+ * Always writes to console.log regardless.
+ */
+export async function logUpdate(SETTINGS, update, status, detail = "", env = null) {
+  // Always console.log for Cloudflare dashboard logs
+  const preview = update?.callback_query?.data || update?.message?.text || update?.channel_post?.text || update?.message?.caption || update?.channel_post?.caption || "";
+  console.log(`[logUpdate] ${status} | ${detail} | preview: ${String(preview).slice(0, 60)}`);
+
+  // v0.5.9: Skip KV write unless DEBUG_MODE is on
+  if (!SETTINGS || !debugModeEnabled(env)) return;
+
   try {
     const entry = {
       time: new Date().toISOString(),
@@ -20,7 +50,7 @@ export async function logUpdate(SETTINGS, update, status, detail = "") {
       fromId: update.callback_query?.from?.id || update.message?.from?.id || update.channel_post?.from?.id || null,
       chatId: update.callback_query?.message?.chat?.id || update.message?.chat?.id || update.channel_post?.chat?.id || null,
       chatType: update.callback_query?.message?.chat?.type || update.message?.chat?.type || update.channel_post?.chat?.type || null,
-      textPreview: (update.callback_query?.data || update.message?.text || update.channel_post?.text || update.message?.caption || update.channel_post?.caption || "").slice(0, 120),
+      textPreview: String(preview).slice(0, 120),
       status, detail,
     };
     const raw = await SETTINGS.get(KEY_DEBUG_UPDATES);
@@ -32,8 +62,18 @@ export async function logUpdate(SETTINGS, update, status, detail = "") {
   }
 }
 
-export async function logError(SETTINGS, error, context = "") {
-  if (!SETTINGS) return;
+/**
+ * Log an error to the debug log.
+ * v0.5.9: Only writes to KV if env.DEBUG_MODE === "true".
+ * Errors are ALWAYS console.error'd regardless (so they show in CF dashboard).
+ */
+export async function logError(SETTINGS, error, context = "", env = null) {
+  // Errors always go to console.error (visible in Cloudflare dashboard)
+  console.error(`[logError] ${context}:`, error?.message || error, error?.stack?.split("\n").slice(0, 4).join(" | "));
+
+  // v0.5.9: Skip KV write unless DEBUG_MODE is on
+  if (!SETTINGS || !debugModeEnabled(env)) return;
+
   try {
     const entry = {
       time: new Date().toISOString(),
@@ -50,8 +90,17 @@ export async function logError(SETTINGS, error, context = "") {
   }
 }
 
-export async function logRawRequest(SETTINGS, info) {
-  if (!SETTINGS) return;
+/**
+ * Log a raw webhook request to the debug log.
+ * v0.5.9: Only writes to KV if env.DEBUG_MODE === "true".
+ */
+export async function logRawRequest(SETTINGS, info, env = null) {
+  // Light console.log always
+  console.log(`[rawReq] ${info.method} ${info.path} | ${info.updateType} | ${info.status}`);
+
+  // v0.5.9: Skip KV write unless DEBUG_MODE is on
+  if (!SETTINGS || !debugModeEnabled(env)) return;
+
   try {
     const entry = {
       time: new Date().toISOString(),

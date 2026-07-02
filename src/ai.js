@@ -1,44 +1,26 @@
 /**
  * src/ai.js
- * Unified AI client with MULTI-MODEL fallback (v0.2.2)
+ * Unified AI client with MULTI-MODEL fallback — v0.5.9
  *
- * Architecture:
- *   - Gemini is tried if key exists
- *   - MULTIPLE OpenRouter free models are tried in PARALLEL
- *   - Promise.any returns the FIRST successful response
- *   - If all fail, returns combined error
- *
- * Why multiple models?
- *   OpenRouter free models are often rate-limited (429) when many users
- *   hit them at once. By racing 6+ models, if even ONE is available, we
- *   get a successful response.
+ * v0.5.9 changes (TASK 3):
+ *   - Added AbortController to aiComplete(): when the first provider succeeds,
+ *     all other in-flight requests are ABORTED. This prevents wasting tokens
+ *     and CPU on the 9 other models that are still running.
+ *   - Hard rule: ONLY use COMPACT_REWRITE_PROMPT / COMPACT_SUMMARIZE_PROMPT
+ *     for API calls (under 800 tokens). Never pass buildEditorPrompt() output.
+ *   - aiSummarize accepts targetCharLimit to fit Telegram limits.
+ *   - Static import of profiles (was dynamic — failed in CF Workers bundler).
+ *   - Always include BOTH providers as fallback (preferred first).
  */
 
 // v0.5.7: STATIC import (dynamic import was failing in Cloudflare Workers bundler)
 import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 
-const REQUEST_TIMEOUT_MS = 15_000; // 15s per model — fast fail so Promise.any picks a winner quickly
+const REQUEST_TIMEOUT_MS = 15_000;
 
 // ============================================================
-// DEFAULT FREE MODELS on OpenRouter (v0.2.7 — ranked by speed+quality)
+// DEFAULT FREE MODELS on OpenRouter
 // ============================================================
-// Ranked based on real performance data from user's Test AI results.
-// Faster + higher quality models are tried FIRST (Promise.any races them
-// all, but the fastest winner is preferred).
-//
-// Rank | Model                          | Speed    | Quality | Notes
-//-----+--------------------------------+----------+---------+-------
-//  1  | nvidia/nemotron-3-nano-30b     | 737ms    | good    | FASTEST
-//  2  | nvidia/nemotron-3-super-120b   | 1168ms   | good    | balanced
-//  3  | google/gemma-4-31b-it          | 1433ms   | good    | solid
-//  4  | openai/gpt-oss-20b             | 1837ms   | good    | OpenAI
-//  5  | google/gemma-4-26b-a4b-it      | 1860ms   | good    | solid
-//  6  | nvidia/nemotron-3-ultra-550b   | 1929ms   | best    | smartest
-//  7  | openrouter/free                | 2578ms   | varies  | auto-router
-//  8  | poolside/laguna-m.1            | 10418ms  | good    | slow but works
-//  -- | qwen3-next-80b                 | 429      | --      | rate-limited (keep as fallback)
-//  -- | dolphin-mistral-24b            | 429      | --      | rate-limited (keep as fallback)
-//  -- | llama-3.2-3b                   | 429      | --      | rate-limited (keep as fallback)
 const DEFAULT_OPENROUTER_MODELS = [
   "nvidia/nemotron-3-nano-30b-a3b:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
@@ -56,22 +38,62 @@ const DEFAULT_OPENROUTER_MODELS = [
 
 // ============================================================
 // SHARED: fetch with AbortController-based timeout
+// v0.5.9: Now accepts an EXTERNAL signal (for cancellation when another
+// provider wins) and merges it with an internal timeout signal.
 // ============================================================
-function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS) {
+
+/**
+ * Merge two AbortSignals into one. Aborts when EITHER signal aborts.
+ * (Native signal merging is available in newer runtimes, but we polyfill
+ * for older Cloudflare Workers compatibility.)
+ */
+function mergeSignals(externalSignal, timeoutMs) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  return fetch(url, { ...options, signal: ctrl.signal })
+
+  // If external signal already aborted, abort immediately
+  if (externalSignal?.aborted) {
+    ctrl.abort();
+    return { signal: ctrl.signal, cleanup: () => {} };
+  }
+
+  // Listen to external signal
+  const onExternalAbort = () => ctrl.abort();
+  if (externalSignal) {
+    externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+
+  // Internal timeout
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  const cleanup = () => {
+    clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener("abort", onExternalAbort);
+  };
+
+  return { signal: ctrl.signal, cleanup };
+}
+
+/**
+ * Fetch with timeout. Accepts optional external signal for cancellation.
+ */
+function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS, externalSignal = null) {
+  const { signal, cleanup } = mergeSignals(externalSignal, timeoutMs);
+  return fetch(url, { ...options, signal })
     .catch((e) => {
-      if (e.name === "AbortError") throw new Error(`TIMEOUT ${timeoutMs / 1000}s`);
+      if (e.name === "AbortError") {
+        // Distinguish timeout-abort from external-cancel-abort
+        if (externalSignal?.aborted) throw new Error("CANCELLED");
+        throw new Error(`TIMEOUT ${timeoutMs / 1000}s`);
+      }
       throw new Error(`NETWORK: ${e.message}`);
     })
-    .finally(() => clearTimeout(t));
+    .finally(cleanup);
 }
 
 // ============================================================
-// GEMINI complete
+// GEMINI complete — v0.5.9: accepts externalSignal for cancellation
 // ============================================================
-async function geminiComplete(apiKey, model, { system, user, jsonMode = false }) {
+async function geminiComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -90,7 +112,7 @@ async function geminiComplete(apiKey, model, { system, user, jsonMode = false })
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }, REQUEST_TIMEOUT_MS, externalSignal);
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
@@ -104,9 +126,9 @@ async function geminiComplete(apiKey, model, { system, user, jsonMode = false })
 }
 
 // ============================================================
-// OPENROUTER complete (single model)
+// OPENROUTER complete — v0.5.9: accepts externalSignal for cancellation
 // ============================================================
-async function openRouterComplete(apiKey, model, { system, user, jsonMode = false }) {
+async function openRouterComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("OPENROUTER_API_KEY missing");
 
   const url = "https://openrouter.ai/api/v1/chat/completions";
@@ -130,7 +152,7 @@ async function openRouterComplete(apiKey, model, { system, user, jsonMode = fals
       "X-Title": "AI Admin",
     },
     body: JSON.stringify(body),
-  });
+  }, REQUEST_TIMEOUT_MS, externalSignal);
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
@@ -140,7 +162,6 @@ async function openRouterComplete(apiKey, model, { system, user, jsonMode = fals
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content ?? "";
   if (!text || !text.trim()) {
-    // Some models return 200 OK but with empty content (content filter, etc.)
     throw new Error("EMPTY_RESPONSE (200 OK but no content — model may have refused)");
   }
   return text.trim();
@@ -150,7 +171,6 @@ async function openRouterComplete(apiKey, model, { system, user, jsonMode = fals
 // Get the list of OpenRouter models to try
 // ============================================================
 function getOpenRouterModels(env) {
-  // If user specified a comma-separated list of fallback models, use that
   if (env.OPENROUTER_FALLBACK_MODELS) {
     const models = env.OPENROUTER_FALLBACK_MODELS.split(",")
       .map((m) => m.trim())
@@ -158,31 +178,24 @@ function getOpenRouterModels(env) {
     if (models.length > 0) return models;
   }
 
-  // Otherwise, use OPENROUTER_MODEL as primary + all defaults
   const primary = env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODELS[0];
   return [primary, ...DEFAULT_OPENROUTER_MODELS.filter((m) => m !== primary)];
 }
 
 // ============================================================
-// UNIFIED complete() — races Gemini + ALL OpenRouter models in PARALLEL
+// UNIFIED complete() — v0.5.9: AbortController cancels losers
 // ============================================================
-// v0.5.6: CRITICAL FIX — Always include the OTHER provider as a fallback
-// even when the user has explicitly chosen one provider.
-//
-// Why? If ai_provider="gemini" and Gemini is rate-limited (429), the old code
-// had NO fallback — it would return "all providers failed" and the bot would
-// fall back to "format only" mode. Users were confused why their bot wasn't
-// using OpenRouter when Gemini was down.
-//
-// Now: preferred provider is added FIRST (priority), then the other provider
-// is ALWAYS added as a fallback if its API key exists. Promise.any races them
-// all in parallel, so the fastest successful response wins.
+// CRITICAL FIX (TASK 3): Previously, when Promise.any resolved with the
+// first successful response, the other 9 fetch requests kept running in
+// the background — wasting tokens, CPU, and bandwidth. Now we create a
+// shared AbortController. The moment ANY provider succeeds, we call
+// controller.abort() to cancel all others. Losers get a CANCELLED error
+// which we silently ignore (it's intentional, not a real failure).
 // ============================================================
 export async function aiComplete(env, settings, params) {
   const providers = [];
   const preferred = settings?.ai_provider || env.DEFAULT_AI_PROVIDER || "openrouter";
 
-  // v0.5.6: Build providers in PREFERRED order, but ALWAYS add the other as fallback
   const geminiProviders = [];
   const openRouterProviders = [];
 
@@ -199,7 +212,6 @@ export async function aiComplete(env, settings, params) {
       geminiProviders.push({
         name: "gemini",
         model: model,
-        complete: () => geminiComplete(env.GEMINI_API_KEY, model, params),
       });
     }
   }
@@ -211,18 +223,16 @@ export async function aiComplete(env, settings, params) {
       openRouterProviders.push({
         name: "openrouter",
         model: model,
-        complete: () => openRouterComplete(env.OPENROUTER_API_KEY, model, params),
       });
     }
   }
 
-  // v0.5.6: Order providers — preferred FIRST, then fallback
+  // Order providers — preferred FIRST, then fallback
   if (preferred === "gemini") {
     providers.push(...geminiProviders, ...openRouterProviders);
   } else if (preferred === "openrouter") {
     providers.push(...openRouterProviders, ...geminiProviders);
   } else {
-    // "auto" or unknown — race all in parallel (order doesn't matter for Promise.any)
     providers.push(...geminiProviders, ...openRouterProviders);
   }
 
@@ -236,76 +246,66 @@ export async function aiComplete(env, settings, params) {
     return { ok: false, error: errMsg };
   }
 
-  console.log(`[AI] v0.5.7 racing ${providers.length} providers (preferred=${preferred}):`);
+  console.log(`[AI] v0.5.9 racing ${providers.length} providers (preferred=${preferred}):`);
   providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
 
-  // Race ALL providers in parallel using Promise.any
+  // v0.5.9: Shared AbortController — the moment ANY provider wins,
+  // abort ALL others to save tokens/CPU/bandwidth.
+  const winnerController = new AbortController();
+
   try {
     const result = await Promise.any(
       providers.map(async (p) => {
         const start = Date.now();
-        const text = await p.complete();
+        let text;
+        try {
+          if (p.name === "gemini") {
+            text = await geminiComplete(env.GEMINI_API_KEY, p.model, params, winnerController.signal);
+          } else {
+            text = await openRouterComplete(env.OPENROUTER_API_KEY, p.model, params, winnerController.signal);
+          }
+        } catch (e) {
+          // v0.5.9: Silently ignore CANCELLED errors (intentional abort when another provider won)
+          if (e.message === "CANCELLED" || e.message.includes("CANCELLED")) {
+            throw new Error("CANCELLED (another provider won)");
+          }
+          throw e;
+        }
         const ms = Date.now() - start;
-        console.log(`[AI] ✓ ${p.name}/${p.model} OK in ${ms}ms (${text.length} chars)`);
+        console.log(`[AI] ✓ ${p.name}/${p.model} OK in ${ms}ms (${text.length} chars) — aborting others`);
+        // CRITICAL: Abort all other in-flight requests to save tokens
+        winnerController.abort();
         return { ok: true, text, provider: p.name, model: p.model, ms };
       })
     );
     console.log(`[AI] WINNER: ${result.provider}/${result.model}`);
     return result;
   } catch (aggErr) {
-    const errors = providers.map((p, i) => ({
-      provider: p.name,
-      model: p.model,
-      error: aggErr.errors?.[i]?.message || "unknown",
-    }));
-    console.error(`[AI] ALL ${providers.length} providers failed:`);
-    errors.forEach((e) => console.error(`[AI]   ✗ ${e.provider}/${e.model}: ${e.error}`));
+    // All providers failed (or were cancelled). Collect real errors only.
+    const errors = providers.map((p, i) => {
+      const errMsg = aggErr.errors?.[i]?.message || "unknown";
+      // Don't report CANCELLED as a real error
+      if (errMsg.includes("CANCELLED")) return { provider: p.name, model: p.model, error: "cancelled (another provider won)" };
+      return { provider: p.name, model: p.model, error: errMsg };
+    });
+    const realErrors = errors.filter((e) => !e.error.includes("cancelled"));
+    console.error(`[AI] ALL ${providers.length} providers failed (${realErrors.length} real errors, ${errors.length - realErrors.length} cancelled):`);
+    realErrors.forEach((e) => console.error(`[AI]   ✗ ${e.provider}/${e.model}: ${e.error}`));
 
     return {
       ok: false,
-      error: errors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | "),
-      details: errors,
+      error: realErrors.length > 0
+        ? realErrors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
+        : "All providers cancelled (should not happen)",
+      details: realErrors,
     };
   }
 }
 
 // ============================================================
-// CLASSIFY (unused — rule-based only — kept for future)
-// ============================================================
-export async function aiClassify(env, settings, text) {
-  const { CLASSIFY_PROMPT, buildClassifyUserMessage } = await import("./prompts.js");
-  const res = await aiComplete(env, settings, {
-    system: CLASSIFY_PROMPT,
-    user: buildClassifyUserMessage(text),
-    jsonMode: true,
-  });
-
-  if (!res.ok) return { ok: false, error: res.error };
-
-  let cleaned = res.text.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-
-  try {
-    const parsed = JSON.parse(cleaned);
-    return {
-      ok: true,
-      provider: res.provider,
-      decision: {
-        content_type: parsed.content_type || "other",
-        rewrite_mode: ["none", "light", "normal", "summary"].includes(parsed.rewrite_mode)
-          ? parsed.rewrite_mode
-          : "light",
-        language_mode: ["auto", "fa", "en"].includes(parsed.language_mode) ? parsed.language_mode : "auto",
-        needs_rewrite: Boolean(parsed.needs_rewrite),
-      },
-    };
-  } catch (e) {
-    return { ok: false, error: `JSON_PARSE_ERROR: ${e.message}`, raw: res.text };
-  }
-}
-
-// ============================================================
-// v0.5.5: ULTRA-COMPACT PROMPT — self-contained, no external rules needed
+// v0.5.5: ULTRA-COMPACT PROMPTS — self-contained, under 800 tokens
+// v0.5.9 HARD RULE: ONLY these prompts are sent to the API.
+// Never pass buildEditorPrompt() / buildFormatterPrompt() output.
 // ============================================================
 const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
 
@@ -336,13 +336,13 @@ function buildCompactPrompt(mode) {
 }
 
 // ============================================================
-// REWRITE
+// REWRITE — v0.5.9: ONLY use compact prompt (never buildEditorPrompt)
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
-  // v0.5.7: Use static import (was dynamic import — failed in CF Workers bundler)
-  // v0.5.5: Ultra-compact prompt — ~300 tokens instead of ~1700
+  // v0.5.9 HARD RULE: Only COMPACT_REWRITE_PROMPT (+ optional profile addendum)
   let fullSystemPrompt;
   if (settings.active_profile) {
+    // Profile addendum is small (~200 tokens), keeps total under 800
     const pp = buildProfileEditorPrompt(buildCompactPrompt("rewrite"), settings.active_profile);
     fullSystemPrompt = pp || buildCompactPrompt("rewrite");
   } else {
@@ -351,11 +351,8 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 
   const profile = settings.active_profile ? getProfile(settings.active_profile) : null;
   const effMode = profile ? profile.settings.rewrite_mode : mode;
-  const effIntensity = profile ? profile.settings.edit_intensity : editIntensity;
-  const effEmoji = profile ? profile.settings.emoji_level : emojiLevel;
   const effPersonality = profile ? profile.settings.personality_mode : personality;
 
-  // Build user message inline (no import needed)
   const personalityGuide = {
     friendly: "Write like a REAL HUMAN. Conversational. Use contractions. For Persian: محاوره‌ای.",
     professional: "Clean, neutral, business-like.",
@@ -385,10 +382,9 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 }
 
 // ============================================================
-// SUMMARIZE — v0.5.8.1: accepts targetCharLimit to fit Telegram limits
+// SUMMARIZE — v0.5.9: accepts targetCharLimit to fit Telegram limits
 // ============================================================
 export async function aiSummarize(env, settings, text, language, targetCharLimit = 3500) {
-  // v0.5.7: Use static import (was dynamic import — failed in CF Workers bundler)
   let fullSystemPrompt;
   if (settings.active_profile) {
     const pp = buildProfileEditorPrompt(buildCompactPrompt("summary"), settings.active_profile);
@@ -397,8 +393,7 @@ export async function aiSummarize(env, settings, text, language, targetCharLimit
     fullSystemPrompt = buildCompactPrompt("summary");
   }
 
-  // v0.5.8.1: Tell the AI the EXACT target character limit
-  // This ensures the output fits within Telegram's 4096 char limit
+  // Tell the AI the EXACT target character limit so output fits Telegram
   const userMsg = [
     `LANGUAGE_MODE: ${language}`,
     `TARGET: Fit the output within ${targetCharLimit} characters (including spaces).`,

@@ -156,24 +156,31 @@ export async function getChatMember(token, chatId, userId) {
 
 // ============================================================
 // v0.5.8: Check if the bot has permission to schedule messages in a channel
+// v0.5.9 (TASK 2): Added DETAILED LOGGING for debugging scheduling failures
 // ============================================================
 // Telegram's `schedule_date` parameter requires:
 //   1. Bot must be an administrator in the channel (status = "administrator" or "creator")
 //   2. Bot must have `can_post_messages = true` permission
 //
 // If either is missing, Telegram silently sends the message immediately
-// instead of scheduling it. This is the root cause of the scheduling bug
-// where posts appeared in the channel instantly despite schedule_date being set.
+// instead of scheduling it. This is the root cause of the scheduling bug.
 // ============================================================
 export async function checkSchedulingPermissions(token, channel, botId) {
   if (!botId) {
     const me = await getMe(token);
-    if (!me.ok) return { ok: false, error: `Cannot identify bot: ${me.description || "getMe failed"}` };
+    if (!me.ok) {
+      console.error(`[perms] getMe FAILED: ${me.description || "unknown"}`);
+      return { ok: false, error: `Cannot identify bot: ${me.description || "getMe failed"}` };
+    }
     botId = me.result.id;
+    console.log(`[perms] Bot ID resolved: ${botId} (@${me.result.username})`);
   }
+
+  console.log(`[perms] Checking permissions for bot ${botId} in ${channel}...`);
 
   const member = await getChatMember(token, channel, botId);
   if (!member.ok) {
+    console.error(`[perms] getChatMember FAILED:`, JSON.stringify(member).slice(0, 300));
     return {
       ok: false,
       error: `Cannot check bot permissions: ${member.description || "getChatMember failed"}`,
@@ -181,8 +188,14 @@ export async function checkSchedulingPermissions(token, channel, botId) {
     };
   }
 
+  // v0.5.9: Log the FULL getChatMember response for debugging
+  console.log(`[perms] getChatMember response:`, JSON.stringify(member.result).slice(0, 500));
+
   const status = member.result.status;
+  console.log(`[perms] Bot status: "${status}"`);
+
   if (status !== "administrator" && status !== "creator") {
+    console.error(`[perms] ✗ Bot is "${status}" (NOT admin/creator) — cannot schedule`);
     return {
       ok: false,
       error: `Bot is "${status}" (not admin). Bot must be promoted to admin with 'Post Messages' permission in the channel.`,
@@ -193,12 +206,18 @@ export async function checkSchedulingPermissions(token, channel, botId) {
 
   // For "creator", all permissions are implied
   if (status === "creator") {
+    console.log(`[perms] ✓ Bot is CREATOR — all permissions implied`);
     return { ok: true, status, canPostMessages: true };
   }
 
   // For "administrator", check can_post_messages
   const canPost = member.result.can_post_messages === true;
+  console.log(`[perms] can_post_messages: ${canPost}`);
+  console.log(`[perms] can_edit_messages: ${member.result.can_edit_messages}`);
+  console.log(`[perms] can_delete_messages: ${member.result.can_delete_messages}`);
+
   if (!canPost) {
+    console.error(`[perms] ✗ Bot is admin but can_post_messages is FALSE — scheduling will fail silently`);
     return {
       ok: false,
       error: `Bot is admin but does NOT have 'Post Messages' permission. Please edit the bot's admin permissions in the channel and enable 'Post Messages'.`,
@@ -218,6 +237,7 @@ export async function checkSchedulingPermissions(token, channel, botId) {
     };
   }
 
+  console.log(`[perms] ✓ Permissions OK — scheduling should work`);
   return { ok: true, status, canPostMessages: true };
 }
 
