@@ -911,30 +911,36 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
-  // v0.4.8: Only summarize when ABSOLUTELY necessary (near Telegram limits)
-  // v0.5.0: Even if rewrite_mode is "none", force summary if text truly won't fit
+  // v0.5.8.1: Better long-post handling
+  // Telegram limits: text messages = 4096 chars, captions = 1024 chars
+  // We summarize when text exceeds a threshold to prevent truncation
   const hasMedia = !!content.mediaFileId;
-  const MEDIA_CAPTION_LIMIT = 900;
-  const TEXT_MESSAGE_LIMIT = 3500;
-  const LONG_TEXT_THRESHOLD = hasMedia ? MEDIA_CAPTION_LIMIT : TEXT_MESSAGE_LIMIT;
+  const TELEGRAM_TEXT_LIMIT = 4000;
+  const TELEGRAM_CAPTION_LIMIT = 900;
+  const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
+
+  // v0.5.8.1: Lower threshold to trigger summary EARLIER (80% of limit)
+  const SUMMARY_TRIGGER = hasMedia ? 700 : 3000;
   let finalMode = effectiveRewriteMode;
-  if (cleanedText.length > LONG_TEXT_THRESHOLD) {
-    // Force summary regardless of rewrite_mode (even "none") to avoid publish errors
+  if (cleanedText.length > SUMMARY_TRIGGER) {
     finalMode = "summary";
-    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${LONG_TEXT_THRESHOLD}${hasMedia ? " [MEDIA]" : ""})`);
+    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${SUMMARY_TRIGGER}${hasMedia ? " [MEDIA]" : ""}, limit=${effectiveLimit})`);
   }
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% (UI only) should=${shouldRewrite}`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, trigger=${SUMMARY_TRIGGER})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
       if (finalMode === "summary") {
-        const res = await aiSummarize(env, settings, textForAI, effectiveLang);
+        // v0.5.8.1: Pass target character limit to AI so output fits within Telegram's limit
+        // Leave room for footer (50 chars) + HTML tags overhead (100 chars)
+        const targetCharLimit = effectiveLimit - 150;
+        const res = await aiSummarize(env, settings, textForAI, effectiveLang, targetCharLimit);
         if (res.ok && res.text) {
           finalText = res.text;
           wasRewritten = true;
           aiProvider = res.provider;
-          traceStep("ai_summarize", true, `provider=${res.provider}`);
+          traceStep("ai_summarize", true, `provider=${res.provider} ${res.text.length}chars (target=${targetCharLimit})`);
         } else {
           aiError = res.error;
           traceStep("ai_summarize", false, res.error || "unknown");
@@ -973,9 +979,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   traceStep("format_body", true, `${formattedBody.length} chars`);
 
   // Step 2: Calculate available space for body (leave room for footer)
-  const TELEGRAM_TEXT_LIMIT = 4000;
-  const TELEGRAM_CAPTION_LIMIT = 1000;
-  const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
+  // (effectiveLimit, hasMedia already declared above)
 
   // Footer format: \n\n<blockquote>FOOTER</blockquote>
   const footerHtml = settings.footer_text
@@ -985,10 +989,37 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
   const maxBodyLen = effectiveLimit - footerLen - 50; // 50 chars safety margin
 
   // Step 3: Truncate body if needed (BEFORE adding footer)
+  // v0.5.8.1: Better truncation — try to cut at paragraph or sentence boundary
   let safeBody = formattedBody;
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), truncating BEFORE footer`);
-    safeBody = formattedBody.slice(0, maxBodyLen - 30) + "\n\n<i>…(truncated)</i>";
+    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), truncating at paragraph boundary`);
+    let cutPoint = maxBodyLen - 30;
+    // Try to find a paragraph break (double newline)
+    const lastPara = formattedBody.lastIndexOf("\n\n", cutPoint);
+    if (lastPara > cutPoint - 500) cutPoint = lastPara;
+    else {
+      // Try sentence boundary (English + Persian)
+      const lastSentence = Math.max(
+        formattedBody.lastIndexOf(". ", cutPoint),
+        formattedBody.lastIndexOf("! ", cutPoint),
+        formattedBody.lastIndexOf("? ", cutPoint),
+        formattedBody.lastIndexOf("۔ ", cutPoint), // Persian full stop
+      );
+      if (lastSentence > cutPoint - 300) cutPoint = lastSentence + 1;
+    }
+    // Avoid cutting inside an HTML tag
+    const lastGT = formattedBody.lastIndexOf(">", cutPoint);
+    const lastLT = formattedBody.lastIndexOf("<", cutPoint);
+    if (lastLT > lastGT) cutPoint = lastLT - 1;
+    if (cutPoint < 100) cutPoint = maxBodyLen - 30; // fallback
+    safeBody = formattedBody.slice(0, cutPoint);
+    // Close unclosed HTML tags
+    for (const tag of ["blockquote", "a", "b", "i", "code", "pre"]) {
+      const open = tag === "a" ? (safeBody.match(/<a\s/g) || []).length : (safeBody.match(new RegExp(`<${tag}>`, "g")) || []).length;
+      const close = (safeBody.match(new RegExp(`</${tag}>`, "g")) || []).length;
+      if (open > close) safeBody += `</${tag}>`.repeat(open - close);
+    }
+    safeBody += "\n\n<i>…</i>";
     traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
   }
 
@@ -1016,29 +1047,26 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
     }
   }
 
-  // v0.5.8: NATIVE TELEGRAM SCHEDULING (schedule_date)
-  // User wants posts to appear in Telegram's native "Scheduled Messages" view
-  // so they can review/edit/delete them before publishing.
-  //
-  // Root cause of previous failures: Bot lacked 'Post Messages' permission in channel.
-  // Telegram silently sends immediately when this permission is missing.
-  // Fix: Check permissions BEFORE scheduling. If missing, show clear error.
-  //      If scheduling still fails after permission check, show error (DON'T send immediately).
+  // v0.5.8.1: HYBRID SCHEDULING
+  // Primary: native Telegram schedule_date (posts appear in scheduled view for review)
+  // Fallback: if native fails (Telegram silently sends immediately), KV cron queue sends at scheduled time
   let publishRes;
   let scheduledTime = null;
   let wasScheduled = false;
+  let scheduleError = null;
+  let usedFallback = false;
 
   if (settings.scheduling_enabled) {
     try {
-      // v0.5.8: Check bot permissions FIRST
+      // Step 1: Check bot permissions FIRST
       const botId = await getBotId(env);
       const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
       if (!permCheck.ok) {
-        // Permissions missing — DON'T schedule, DON'T send immediately
         console.error(`[pipeline] Scheduling blocked — permissions: ${permCheck.error}`);
-        publishRes = { ok: false, scheduled: false, scheduleError: permCheck.error };
+        scheduleError = permCheck.error;
+        publishRes = { ok: false, scheduled: false, scheduleError };
       } else {
-        // Permissions OK — proceed with scheduling
+        // Step 2: Calculate scheduled time
         let effectiveInterval = settings.schedule_interval_minutes ?? 30;
         if (settings.schedule_posts_per_day > 0) {
           effectiveInterval = Math.floor(1440 / settings.schedule_posts_per_day);
@@ -1050,50 +1078,63 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
         const minNext = lastScheduled ? lastScheduled + (effectiveInterval * 60 * 1000) : 0;
         scheduledTime = Math.max(baseTime, minNext);
 
-        // v0.5.8: Telegram requires schedule_date between 60s and 7 days from now
+        // Telegram: schedule_date must be 60s to 7 days from now
         const now = Date.now();
-        const MIN_SCHEDULE_MS = 90 * 1000; // 90s (60s + buffer)
-        const MAX_SCHEDULE_MS = 7 * 24 * 3600 * 1000; // 7 days
-
+        const MIN_SCHEDULE_MS = 90 * 1000;
+        const MAX_SCHEDULE_MS = 7 * 24 * 3600 * 1000;
         if (scheduledTime - now < MIN_SCHEDULE_MS) {
-          console.log(`[pipeline] Scheduled time too soon (${Math.floor((scheduledTime - now) / 1000)}s), bumping to 90s`);
+          console.log(`[pipeline] Scheduled time too soon, bumping to 90s`);
           scheduledTime = now + MIN_SCHEDULE_MS;
         }
         if (scheduledTime - now > MAX_SCHEDULE_MS) {
-          console.log(`[pipeline] Scheduled time too far (${Math.floor((scheduledTime - now) / (3600 * 1000))}h), capping to 7 days`);
+          console.log(`[pipeline] Scheduled time too far, capping to 7 days`);
           scheduledTime = now + MAX_SCHEDULE_MS;
         }
 
         const scheduleDateUnix = Math.floor(scheduledTime / 1000);
-
-        console.log(`[pipeline] Native scheduling: delay=${settings.schedule_delay_hours}h, interval=${effectiveInterval}m, scheduled=${new Date(scheduledTime).toISOString()}, ts=${scheduleDateUnix}`);
-
+        console.log(`[pipeline] Native scheduling: ${new Date(scheduledTime).toISOString()}`);
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
+        // Step 3: Try native Telegram scheduling
         publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
           text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
           extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
         });
 
-        // v0.5.8: VERIFY that Telegram actually scheduled the message
+        // Step 4: Verify Telegram actually scheduled it
         const verification = verifyScheduled(publishRes, scheduleDateUnix);
-        publishRes.scheduled = verification.scheduled;
-
-        if (!publishRes.ok || !verification.scheduled) {
-          // Scheduling failed — show error, DON'T send immediately
-          const scheduleError = verification.description || publishRes.description || "unknown scheduling failure";
-          console.error(`[pipeline] Scheduling FAILED: ${scheduleError}`);
-          console.error(`[pipeline] Telegram response:`, JSON.stringify(publishRes).slice(0, 500));
-          publishRes.scheduleError = scheduleError;
-          wasScheduled = false;
-        } else {
+        if (publishRes.ok && verification.scheduled) {
           wasScheduled = true;
-          console.log(`[pipeline] Scheduling VERIFIED — message will appear at ${new Date(scheduledTime).toISOString()}`);
+          console.log(`[pipeline] ✓ Native scheduling VERIFIED`);
+        } else {
+          // v0.5.8.1: Native scheduling failed — FALL BACK to KV cron queue
+          // (instead of just showing error, we queue the message for cron to send at scheduled time)
+          const nativeError = verification.description || publishRes.description || "unknown";
+          console.warn(`[pipeline] Native scheduling failed (${nativeError}), falling back to KV cron queue`);
+          usedFallback = true;
+
+          const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          await enqueueScheduled(SETTINGS, {
+            id: schedId,
+            scheduledTime,
+            chatId: targetChannel,
+            text: safeFormattedText,
+            mediaType: content.mediaType,
+            mediaFileId: content.mediaFileId,
+            parseMode,
+            adminId,
+            notifyChatId: feedbackChatId,
+            createdAt: Date.now(),
+          });
+          publishRes = { ok: true, scheduled: true };
+          wasScheduled = true;
+          traceStep("enqueue_fallback", true, `id=${schedId}`);
         }
       }
     } catch (e) {
       console.error(`[pipeline] Scheduling exception: ${e.message}`);
-      publishRes = { ok: false, scheduled: false, scheduleError: e.message };
+      scheduleError = e.message;
+      publishRes = { ok: false, scheduled: false, scheduleError };
     }
   } else {
     publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
@@ -1101,7 +1142,7 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
     });
   }
-  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (publishRes.scheduled ? "scheduled" : "ok") : publishRes.description);
+  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (wasScheduled ? "scheduled" : "ok") : (publishRes.scheduleError || publishRes.description));
 
   if (publishRes.ok) {
     await bumpStats(SETTINGS, adminId, "processed");
@@ -1117,23 +1158,36 @@ async function runPipelineInner(env, content, settings, rawText, feedbackChatId,
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no (format only)"}`;
 
     if (feedbackChatId && processingMsgId) {
-      // v0.5.8: Native Telegram scheduling — posts appear in channel's scheduled view
+      // v0.5.8.1: Show scheduling result with fallback info
       let schedMsg;
       let headerLine;
       if (wasScheduled) {
-        headerLine = `📅 <b>Scheduled!</b>`;
-        schedMsg = [
-          `\n📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
-          ``,
-          `<b>📋 To review/edit/delete:</b>`,
-          `1. Open the channel <code>${targetChannel}</code>`,
-          `2. Tap the channel name at the top`,
-          `3. Select <b>"Scheduled Messages"</b> (clock icon 🕐)`,
-          ``,
-          `<i>The post will auto-publish at the scheduled time.</i>`,
-        ].join("\n");
+        if (usedFallback) {
+          // v0.5.8.1: Native scheduling failed, fell back to KV cron queue
+          headerLine = `📅 <b>Scheduled!</b> (cron fallback)`;
+          schedMsg = [
+            `\n📅 <b>Will be sent at:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+            `⏰ <i>Cron will send within 1 minute of this time</i>`,
+            ``,
+            `<i>⚠️ Native Telegram scheduling failed (bot may lack permissions).</i>`,
+            `<i>Run <code>/checkperms</code> to enable native scheduling for review.</i>`,
+          ].join("\n");
+        } else {
+          // Native scheduling succeeded — posts appear in scheduled view
+          headerLine = `📅 <b>Scheduled!</b>`;
+          schedMsg = [
+            `\n📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+            ``,
+            `<b>📋 To review/edit/delete:</b>`,
+            `1. Open the channel <code>${targetChannel}</code>`,
+            `2. Tap the channel name at the top`,
+            `3. Select <b>"Scheduled Messages"</b> (clock icon 🕐)`,
+            ``,
+            `<i>The post will auto-publish at the scheduled time.</i>`,
+          ].join("\n");
+        }
       } else if (settings.scheduling_enabled && publishRes.scheduleError) {
-        // Scheduling was requested but FAILED — tell the user what went wrong
+        // Scheduling was requested but FAILED completely (no fallback either)
         headerLine = `⚠️ <b>Scheduling FAILED</b>`;
         schedMsg = [
           `\n❌ <b>Error:</b> <code>${(publishRes.scheduleError || "").slice(0, 250)}</code>`,

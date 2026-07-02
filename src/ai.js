@@ -385,9 +385,9 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 }
 
 // ============================================================
-// SUMMARIZE
+// SUMMARIZE — v0.5.8.1: accepts targetCharLimit to fit Telegram limits
 // ============================================================
-export async function aiSummarize(env, settings, text, language) {
+export async function aiSummarize(env, settings, text, language, targetCharLimit = 3500) {
   // v0.5.7: Use static import (was dynamic import — failed in CF Workers bundler)
   let fullSystemPrompt;
   if (settings.active_profile) {
@@ -397,15 +397,20 @@ export async function aiSummarize(env, settings, text, language) {
     fullSystemPrompt = buildCompactPrompt("summary");
   }
 
+  // v0.5.8.1: Tell the AI the EXACT target character limit
+  // This ensures the output fits within Telegram's 4096 char limit
   const userMsg = [
     `LANGUAGE_MODE: ${language}`,
+    `TARGET: Fit the output within ${targetCharLimit} characters (including spaces).`,
+    `This is a HARD LIMIT — the output MUST be under ${targetCharLimit} chars.`,
     ``,
-    `POST TO TRIM (too long for Telegram):`,
+    `POST TO TRIM (too long for Telegram — current length: ${text.length} chars):`,
     `----`,
     text,
     `----`,
     ``,
-    `Return ONLY the trimmed text. Keep 80-90% of original. Preserve ALL links.`,
+    `Return ONLY the trimmed text. Keep ALL links and code blocks. Remove redundancy and fluff.`,
+    `The output MUST be under ${targetCharLimit} characters.`,
   ].join("\n");
 
   const res = await aiComplete(env, settings, {

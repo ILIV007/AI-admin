@@ -1,6 +1,6 @@
 # ============================================================
 # AI Admin — Cloudflare Worker configuration
-# Version: v0.5.8
+# Version: v0.5.8.1
 # ============================================================
 
 name = "ai-admin"
@@ -13,8 +13,11 @@ compatibility_flags = ["nodejs_compat"]
 binding = "SETTINGS"
 id = "c8adbda37ee642d194adabf79f458f0d"
 
-# v0.5.8: No cron trigger needed — using Telegram's native schedule_date
-# (v0.5.7 used cron, but user wants posts in Telegram's scheduled view for review)
+# v0.5.8.1: Cron trigger for scheduling FALLBACK
+# Primary: native Telegram schedule_date (posts appear in scheduled view for review)
+# Fallback: if native fails (Telegram silently sends immediately), KV cron queue sends at scheduled time
+[triggers]
+crons = ["* * * * *"]
 
 # ============================================================
 # Environment Variables (non-secret)
