@@ -22,6 +22,7 @@ import {
   publishToChannel,
   verifyScheduled,
   checkSchedulingPermissions,
+  resolveChatId,
   sendMessage,
   editMessageText,
   editMessageCaption,
@@ -285,8 +286,16 @@ export async function runMediaGroupPipeline(env, items, update) {
 
           await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-          console.log(`[mg-sched] Step 3: Calling sendMediaGroup with schedule_date...`);
-          const schedRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, {
+          // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL for scheduling)
+          // Telegram silently ignores schedule_date when chat_id is a @username
+          console.log(`[mg-sched] Step 2.5: Resolving channel ${targetChannel} to numeric ID...`);
+          const resolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+          console.log(`[mg-sched] Step 2.5: Resolved → ${resolvedChannel}`);
+
+          // v0.5.10 TASK 1: Do NOT send disable_web_page_preview with schedule_date
+          // (causes Telegram to silently ignore schedule_date and send immediately)
+          console.log(`[mg-sched] Step 3: Calling sendMediaGroup with schedule_date (NO disable_web_page_preview)...`);
+          const schedRes = await sendMediaGroup(env.BOT_TOKEN, resolvedChannel, mediaItems, {
             parse_mode: parseMode,
             schedule_date: scheduleDateUnix,
           });
@@ -683,10 +692,18 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-        console.log(`[sched] Step 3: Calling publishToChannel with schedule_date...`);
-        publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+        // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL for scheduling)
+        // Telegram silently ignores schedule_date when chat_id is a @username
+        console.log(`[sched] Step 2.5: Resolving channel ${targetChannel} to numeric ID...`);
+        const resolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+        console.log(`[sched] Step 2.5: Resolved → ${resolvedChannel}`);
+
+        // v0.5.10 TASK 1: Do NOT send disable_web_page_preview with schedule_date
+        // (causes Telegram to silently ignore schedule_date and send immediately)
+        console.log(`[sched] Step 3: Calling publishToChannel with schedule_date (NO disable_web_page_preview)...`);
+        publishRes = await publishToChannel(env.BOT_TOKEN, resolvedChannel, {
           text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-          extra: { parse_mode: parseMode, disable_web_page_preview: false, schedule_date: scheduleDateUnix },
+          extra: { parse_mode: parseMode, schedule_date: scheduleDateUnix },
         });
 
         // v0.5.9 TASK 2: Log the FULL Telegram response

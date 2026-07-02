@@ -430,12 +430,22 @@ async function handleDebugSchedule(env, content, update) {
     log(`  schedule_date=${scheduleDateUnix} (${new Date(scheduledTime).toISOString()})`);
     log(`  diff=${Math.floor((scheduledTime-now)/1000)}s`);
 
+    // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL!)
+    log(`Step 3.5: Resolving channel ${targetChannel} to numeric chat_id...`);
+    const { resolveChatId } = await import("./telegram.js");
+    const resolvedChannel = await resolveChatId(BOT_TOKEN, targetChannel);
+    log(`  Resolved → ${resolvedChannel} (type: ${typeof resolvedChannel})`);
+    if (String(resolvedChannel).startsWith("@")) {
+      log(`  ⚠️ WARNING: Resolution failed — still a @username. Scheduling will likely fail.`);
+    }
+
     // Step 4: Send test message with schedule_date
-    log(`Step 4: Sending test message with schedule_date...`);
+    // v0.5.10 TASK 1: Do NOT send disable_web_page_preview with schedule_date
+    log(`Step 4: Sending test message with schedule_date (NO disable_web_page_preview)...`);
     const testText = `🧪 <b>Scheduling Test</b>\n\nThis is a test message scheduled for ${new Date(scheduledTime).toISOString()}\n\nIf you see this in the channel at the scheduled time, scheduling works!`;
-    const sendRes = await publishToChannel(BOT_TOKEN, targetChannel, {
+    const sendRes = await publishToChannel(BOT_TOKEN, resolvedChannel, {
       text: testText,
-      extra: { parse_mode: "HTML", disable_web_page_preview: true, schedule_date: scheduleDateUnix },
+      extra: { parse_mode: "HTML", schedule_date: scheduleDateUnix },
     });
     log(`  Telegram response: ${JSON.stringify(sendRes).slice(0, 400)}`);
     log(`  ok=${sendRes.ok}`);
@@ -458,8 +468,10 @@ async function handleDebugSchedule(env, content, update) {
       conclusion = `✅ Scheduling WORKS! Check the channel's "Scheduled Messages" view — the test message should appear there.`;
     } else if (!permCheck.ok) {
       conclusion = `❌ Scheduling FAILED — bot lacks permissions. Fix with /checkperms instructions.`;
+    } else if (String(resolvedChannel).startsWith("@")) {
+      conclusion = `❌ Scheduling FAILED — chat_id is still a @username (could not resolve to numeric ID). Telegram silently ignores schedule_date for @usernames. Check if the bot is still an admin in the channel.`;
     } else if (verification.reason === "date_mismatch") {
-      conclusion = `❌ Scheduling FAILED — Telegram returned ok:true but sent immediately (date mismatch). This usually means the bot lacks 'Post Messages' permission despite being an admin.`;
+      conclusion = `❌ Scheduling FAILED — Telegram returned ok:true but sent immediately (date mismatch). Causes: (1) chat_id was @username instead of numeric, (2) disable_web_page_preview was sent with schedule_date, or (3) bot lacks 'Post Messages' permission. All three have been fixed in v0.5.10.`;
     } else {
       conclusion = `❌ Scheduling FAILED — see logs above.`;
     }

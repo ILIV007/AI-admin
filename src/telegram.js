@@ -155,6 +155,54 @@ export async function getChatMember(token, chatId, userId) {
 }
 
 // ============================================================
+// v0.5.10 TASK 1: resolveChatId — resolve @username to numeric chat_id
+// ============================================================
+// CRITICAL: Telegram silently ignores `schedule_date` when chat_id is a
+// @username (e.g., "@ILIVIR3"). The schedule_date parameter ONLY works
+// reliably with numeric chat IDs (e.g., -1001234567890). This function
+// resolves @username → numeric ID via getChat() and caches the result.
+//
+// This was the ROOT CAUSE of the scheduling bug where posts were sent
+// immediately despite schedule_date being set correctly.
+// ============================================================
+const _chatIdCache = new Map();
+
+/**
+ * Resolve a @username (or numeric string) to a numeric chat_id.
+ * If the input is already numeric, returns it as-is (no API call).
+ * Otherwise, calls getChat() and caches the result.
+ *
+ * @param {string} token - Bot token
+ * @param {string|number} chatIdOrUsername - "@ILIVIR3" or "-1001234567890"
+ * @returns {Promise<string|number>} Numeric chat_id (as string or number)
+ */
+export async function resolveChatId(token, chatIdOrUsername) {
+  // If already numeric (number or numeric string), return as-is
+  if (typeof chatIdOrUsername === "number" || /^-?\d+$/.test(String(chatIdOrUsername))) {
+    return chatIdOrUsername;
+  }
+
+  // Check cache (avoid repeated getChat calls — saves API quota)
+  if (_chatIdCache.has(chatIdOrUsername)) {
+    console.log(`[telegram] Cache hit: ${chatIdOrUsername} → ${_chatIdCache.get(chatIdOrUsername)}`);
+    return _chatIdCache.get(chatIdOrUsername);
+  }
+
+  // Resolve via getChat
+  console.log(`[telegram] Resolving ${chatIdOrUsername} via getChat()...`);
+  const res = await getChat(token, chatIdOrUsername);
+  if (res.ok && res.result?.id) {
+    const numericId = res.result.id;
+    _chatIdCache.set(chatIdOrUsername, numericId);
+    console.log(`[telegram] ✓ Resolved ${chatIdOrUsername} → ${numericId}`);
+    return numericId;
+  }
+
+  console.error(`[telegram] ✗ Failed to resolve ${chatIdOrUsername}: ${res.description}`);
+  return chatIdOrUsername; // Fallback to original (scheduling may fail)
+}
+
+// ============================================================
 // v0.5.8: Check if the bot has permission to schedule messages in a channel
 // v0.5.9 (TASK 2): Added DETAILED LOGGING for debugging scheduling failures
 // ============================================================
