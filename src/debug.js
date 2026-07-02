@@ -1,6 +1,6 @@
 /**
  * src/debug.js
- * Debug dashboard + logging utilities for AI Admin — v0.5.9
+ * Debug dashboard + logging utilities for AI Admin — v0.5.11
  *
  * v0.5.9 (TASK 4): Conditional KV writes.
  *   - logUpdate / logError / logRawRequest now only write to KV if
@@ -8,6 +8,7 @@
  *   - This drastically reduces KV writes on the free tier (1,000/day limit).
  *   - When DEBUG_MODE is on, logs overwrite a single key with the latest 30
  *     entries (no append → still 1 write per event, but bounded).
+ * v0.5.11: Debug dashboard updated to show version + scheduling info.
  */
 
 const DEBUG_MAX_ENTRIES = 30;
@@ -451,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.2.1</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.11 — Native Scheduling Fix</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -462,6 +463,19 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
+  <div class="section"><h2>📅 Scheduling Info (v0.5.11)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
+    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 2 messages</div>
+    <div><strong>v0.5.11 Fixes:</strong></div>
+    <ul style="margin-left:20px; margin-top:4px;">
+      <li>✅ <code>disable_web_page_preview</code> no longer forced to <code>false</code> (was causing scheduling conflict)</li>
+      <li>✅ <code>schedule_date</code> cast to <code>Number()</code> to ensure integer</li>
+      <li>✅ <code>@username</code> resolved to numeric <code>chat_id</code> via <code>resolveChatId()</code></li>
+      <li>✅ <code>/debug_schedule</code> now runs 2 tests (HTML + plain text) to isolate issues</li>
+    </ul>
+    <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #1f6feb;">
+      <strong>Tip:</strong> If scheduling fails, run <code>/debug_schedule</code> in bot PV to see detailed logs.
+    </div>
+  </div></div>
   <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>
   <div class="section"><h2>📜 Recent Updates</h2><div id="updates-table"><div class="empty">Loading...</div></div></div>
   <div class="section"><h2>❌ Recent Errors</h2><div id="errors-table"><div class="empty">Loading...</div></div></div>

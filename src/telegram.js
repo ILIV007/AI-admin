@@ -36,14 +36,19 @@ async function tgCall(token, method, payload = {}) {
 }
 
 export async function sendMessage(token, chatId, text, extra = {}) {
+  // v0.5.11 CRITICAL FIX: Do NOT use `?? false` for disable_web_page_preview!
+  // If we default to false, tgCall will send `disable_web_page_preview: false` to Telegram,
+  // which CONFLICTS with schedule_date and causes Telegram to silently send immediately.
+  // By leaving it as `undefined` when not specified, tgCall's cleanPayload will strip it.
   return tgCall(token, "sendMessage", {
     chat_id: chatId,
     text,
     parse_mode: extra.parse_mode ?? "HTML",
-    disable_web_page_preview: extra.disable_web_page_preview ?? false,
+    disable_web_page_preview: extra.disable_web_page_preview, // undefined → stripped by tgCall
     reply_markup: extra.reply_markup,
     reply_to_message_id: extra.reply_to_message_id,
-    schedule_date: extra.schedule_date,
+    // v0.5.11: Force Integer — Telegram sometimes ignores schedule_date if it's a String/Float
+    schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
 
@@ -51,7 +56,7 @@ export async function sendPhoto(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendPhoto", {
     chat_id: chatId, photo: fileId, caption,
     parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
-    schedule_date: extra.schedule_date,
+    schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
 
@@ -59,7 +64,7 @@ export async function sendVideo(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendVideo", {
     chat_id: chatId, video: fileId, caption,
     parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
-    schedule_date: extra.schedule_date,
+    schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
 
@@ -67,7 +72,7 @@ export async function sendDocument(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendDocument", {
     chat_id: chatId, document: fileId, caption,
     parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
-    schedule_date: extra.schedule_date,
+    schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
 
@@ -75,7 +80,7 @@ export async function sendAnimation(token, chatId, fileId, caption, extra = {}) 
   return tgCall(token, "sendAnimation", {
     chat_id: chatId, animation: fileId, caption,
     parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
-    schedule_date: extra.schedule_date,
+    schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
 
@@ -92,7 +97,7 @@ export async function sendMediaGroup(token, chatId, mediaItems, extra = {}) {
     chat_id: chatId, media,
     reply_markup: extra.reply_markup,
     disable_notification: extra.disable_notification,
-    schedule_date: extra.schedule_date,
+    schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
 

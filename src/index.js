@@ -421,14 +421,9 @@ async function handleDebugSchedule(env, content, update) {
       }
     }
 
-    // Step 3: Calculate schedule_date (90s in future)
-    log(`Step 3: Calculating schedule_date (90s in future)...`);
-    const now = Date.now();
-    const scheduledTime = now + 90 * 1000;
-    const scheduleDateUnix = Math.floor(scheduledTime / 1000);
-    log(`  now=${Math.floor(now/1000)} (${new Date(now).toISOString()})`);
-    log(`  schedule_date=${scheduleDateUnix} (${new Date(scheduledTime).toISOString()})`);
-    log(`  diff=${Math.floor((scheduledTime-now)/1000)}s`);
+    // Step 3: Show current time (for reference)
+    log(`Step 3: Current time: ${Math.floor(Date.now()/1000)} (${new Date().toISOString()})`);
+    log(`  (Each test will schedule 90s in the future)`);
 
     // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL!)
     log(`Step 3.5: Resolving channel ${targetChannel} to numeric chat_id...`);
@@ -439,41 +434,59 @@ async function handleDebugSchedule(env, content, update) {
       log(`  ⚠️ WARNING: Resolution failed — still a @username. Scheduling will likely fail.`);
     }
 
-    // Step 4: Send test message with schedule_date
-    // v0.5.10 TASK 1: Do NOT send disable_web_page_preview with schedule_date
-    log(`Step 4: Sending test message with schedule_date (NO disable_web_page_preview)...`);
-    const testText = `🧪 <b>Scheduling Test</b>\n\nThis is a test message scheduled for ${new Date(scheduledTime).toISOString()}\n\nIf you see this in the channel at the scheduled time, scheduling works!`;
-    const sendRes = await publishToChannel(BOT_TOKEN, resolvedChannel, {
-      text: testText,
-      extra: { parse_mode: "HTML", schedule_date: scheduleDateUnix },
+    // Step 4: Send TWO test messages to isolate the issue
+    // v0.5.11: Test A = with parse_mode HTML, Test B = plain text (no parse_mode)
+    // If Test B works but Test A fails, parse_mode is the culprit.
+    // If both fail, the bug is elsewhere (permissions, chat_id, etc.)
+    log(`Step 4: Sending TWO test messages...`);
+
+    // Test A: WITH parse_mode HTML
+    log(`  Test A (HTML): Sending with parse_mode=HTML...`);
+    const scheduledTimeA = Date.now() + 90 * 1000;
+    const scheduleDateUnixA = Math.floor(scheduledTimeA / 1000);
+    const sendResA = await publishToChannel(BOT_TOKEN, resolvedChannel, {
+      text: `🧪 <b>Test A (HTML)</b>\nScheduled for ${new Date(scheduledTimeA).toISOString()}`,
+      extra: { parse_mode: "HTML", schedule_date: scheduleDateUnixA },
     });
-    log(`  Telegram response: ${JSON.stringify(sendRes).slice(0, 400)}`);
-    log(`  ok=${sendRes.ok}`);
-    if (!sendRes.ok) {
-      log(`  description=${sendRes.description}`);
-    }
+    log(`  Test A response: ${JSON.stringify(sendResA).slice(0, 300)}`);
+    log(`  Test A: ok=${sendResA.ok}, result.date=${sendResA.result?.date}`);
 
-    // Step 5: Verify
-    log(`Step 5: Verifying scheduling...`);
-    const verification = verifyScheduled(sendRes, scheduleDateUnix);
-    log(`  scheduled=${verification.scheduled}`);
-    log(`  reason=${verification.reason}`);
-    log(`  actualDate=${verification.actualDate}`);
-    log(`  expectedDate=${verification.expectedDate || scheduleDateUnix}`);
-    log(`  diffSeconds=${verification.diffSeconds || 0}`);
+    // Wait 2 seconds between tests to avoid rate limiting
+    await new Promise((r) => setTimeout(r, 2000));
 
-    // Step 6: Conclusion
+    // Test B: WITHOUT parse_mode (plain text)
+    log(`  Test B (Plain): Sending WITHOUT parse_mode...`);
+    const scheduledTimeB = Date.now() + 90 * 1000;
+    const scheduleDateUnixB = Math.floor(scheduledTimeB / 1000);
+    const sendResB = await publishToChannel(BOT_TOKEN, resolvedChannel, {
+      text: `🧪 Test B (Plain Text)\nScheduled for ${new Date(scheduledTimeB).toISOString()}`,
+      // NO parse_mode — plain text only
+      extra: { schedule_date: scheduleDateUnixB },
+    });
+    log(`  Test B response: ${JSON.stringify(sendResB).slice(0, 300)}`);
+    log(`  Test B: ok=${sendResB.ok}, result.date=${sendResB.result?.date}`);
+
+    // Step 5: Verify BOTH tests
+    log(`Step 5: Verifying both tests...`);
+    const verA = verifyScheduled(sendResA, scheduleDateUnixA);
+    const verB = verifyScheduled(sendResB, scheduleDateUnixB);
+    log(`  Test A: scheduled=${verA.scheduled}, reason=${verA.reason}, diffSeconds=${verA.diffSeconds || 0}`);
+    log(`  Test B: scheduled=${verB.scheduled}, reason=${verB.reason}, diffSeconds=${verB.diffSeconds || 0}`);
+
+    // Step 6: Conclusion based on which test succeeded
     let conclusion;
-    if (verification.scheduled) {
-      conclusion = `✅ Scheduling WORKS! Check the channel's "Scheduled Messages" view — the test message should appear there.`;
+    if (verA.scheduled && verB.scheduled) {
+      conclusion = `✅ BOTH tests SUCCEEDED! Scheduling works correctly. Check the channel's "Scheduled Messages" view.`;
+    } else if (!verA.scheduled && verB.scheduled) {
+      conclusion = `⚠️ Test A (HTML) FAILED but Test B (Plain) SUCCEEDED. parse_mode=HTML is conflicting with schedule_date. Use plain text for scheduled messages, or investigate further.`;
+    } else if (verA.scheduled && !verB.scheduled) {
+      conclusion = `⚠️ Test A (HTML) SUCCEEDED but Test B (Plain) FAILED. Unexpected — see logs.`;
     } else if (!permCheck.ok) {
-      conclusion = `❌ Scheduling FAILED — bot lacks permissions. Fix with /checkperms instructions.`;
+      conclusion = `❌ BOTH tests FAILED — bot lacks permissions. Fix with /checkperms instructions.`;
     } else if (String(resolvedChannel).startsWith("@")) {
-      conclusion = `❌ Scheduling FAILED — chat_id is still a @username (could not resolve to numeric ID). Telegram silently ignores schedule_date for @usernames. Check if the bot is still an admin in the channel.`;
-    } else if (verification.reason === "date_mismatch") {
-      conclusion = `❌ Scheduling FAILED — Telegram returned ok:true but sent immediately (date mismatch). Causes: (1) chat_id was @username instead of numeric, (2) disable_web_page_preview was sent with schedule_date, or (3) bot lacks 'Post Messages' permission. All three have been fixed in v0.5.10.`;
+      conclusion = `❌ BOTH tests FAILED — chat_id is still a @username. resolveChatId() failed.`;
     } else {
-      conclusion = `❌ Scheduling FAILED — see logs above.`;
+      conclusion = `❌ BOTH tests FAILED (date_mismatch). Telegram is STILL sending immediately despite: (1) numeric chat_id, (2) no disable_web_page_preview, (3) permissions OK. This may be a Telegram-side issue or the bot needs to be re-added as admin.`;
     }
     log(conclusion);
 
@@ -481,7 +494,7 @@ async function handleDebugSchedule(env, content, update) {
     const logText = logs.map((l, i) => `${i + 1}. ${l}`).join("\n");
     await sendMessage(BOT_TOKEN, chatId,
       [
-        `🧪 <b>Scheduling Debug Results</b>`,
+        `🧪 <b>Scheduling Debug Results (v0.5.11)</b>`,
         ``,
         `<blockquote>${logText}</blockquote>`,
         ``,
@@ -489,7 +502,8 @@ async function handleDebugSchedule(env, content, update) {
       ].join("\n"),
       { disable_web_page_preview: true });
 
-    await logUpdate(SETTINGS, update, "ok", `/debug_schedule: ${verification.scheduled ? "OK" : "FAIL"}`, env);
+    const anySuccess = verA.scheduled || verB.scheduled;
+    await logUpdate(SETTINGS, update, "ok", `/debug_schedule: ${anySuccess ? "OK" : "FAIL"}`, env);
   } catch (e) {
     console.error("[debug_schedule] exception:", e.message);
     await sendMessage(BOT_TOKEN, chatId,
