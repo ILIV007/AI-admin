@@ -10,6 +10,9 @@ Telegram channel content processing bot — built on Cloudflare Workers, 100% fr
 
 <div dir="rtl">
 
+ربات ادمین هوشمند تلگرام برای پردازش، تمیزکاری و انتشار پست در کانال.  
+ساخته‌شده برای **Cloudflare Workers** — کاملاً رایگان.
+
 ## ✨ امکانات
 
 - 🤖 پردازش خودکار پست‌های ورودی (متن، عکس، ویدیو، فایل، انیمیشن)
