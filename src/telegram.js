@@ -14,6 +14,12 @@ async function tgCall(token, method, payload = {}) {
     }
   }
 
+  // v0.5.12 TASK 5: DEBUG — Log payload for scheduling calls
+  // This helps diagnose exactly what we're sending to Telegram when scheduling
+  if (cleanPayload.schedule_date) {
+    console.log(`[tgCall] ${method} SCHEDULING payload:`, JSON.stringify(cleanPayload, null, 2));
+  }
+
   const url = `${TG_API(token)}/${method}`;
   let res;
   try {
@@ -36,18 +42,18 @@ async function tgCall(token, method, payload = {}) {
 }
 
 export async function sendMessage(token, chatId, text, extra = {}) {
-  // v0.5.11 CRITICAL FIX: Do NOT use `?? false` for disable_web_page_preview!
-  // If we default to false, tgCall will send `disable_web_page_preview: false` to Telegram,
-  // which CONFLICTS with schedule_date and causes Telegram to silently send immediately.
-  // By leaving it as `undefined` when not specified, tgCall's cleanPayload will strip it.
+  // v0.5.12 CRITICAL FIX: Do NOT default parse_mode to "HTML"!
+  // Telegram has a quirk: when parse_mode is present alongside schedule_date,
+  // Telegram sometimes ignores schedule_date and sends immediately.
+  // By leaving parse_mode as undefined when not specified, tgCall strips it.
+  // Callers that want HTML must explicitly pass parse_mode: "HTML".
   return tgCall(token, "sendMessage", {
     chat_id: chatId,
     text,
-    parse_mode: extra.parse_mode ?? "HTML",
-    disable_web_page_preview: extra.disable_web_page_preview, // undefined → stripped by tgCall
+    parse_mode: extra.parse_mode, // undefined → stripped by tgCall (v0.5.12)
+    disable_web_page_preview: extra.disable_web_page_preview, // undefined → stripped
     reply_markup: extra.reply_markup,
     reply_to_message_id: extra.reply_to_message_id,
-    // v0.5.11: Force Integer — Telegram sometimes ignores schedule_date if it's a String/Float
     schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
@@ -55,7 +61,8 @@ export async function sendMessage(token, chatId, text, extra = {}) {
 export async function sendPhoto(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendPhoto", {
     chat_id: chatId, photo: fileId, caption,
-    parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
+    parse_mode: extra.parse_mode, // v0.5.12: no default — stripped if undefined
+    reply_markup: extra.reply_markup,
     schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
@@ -63,7 +70,8 @@ export async function sendPhoto(token, chatId, fileId, caption, extra = {}) {
 export async function sendVideo(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendVideo", {
     chat_id: chatId, video: fileId, caption,
-    parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
+    parse_mode: extra.parse_mode, // v0.5.12: no default
+    reply_markup: extra.reply_markup,
     schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
@@ -71,7 +79,8 @@ export async function sendVideo(token, chatId, fileId, caption, extra = {}) {
 export async function sendDocument(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendDocument", {
     chat_id: chatId, document: fileId, caption,
-    parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
+    parse_mode: extra.parse_mode, // v0.5.12: no default
+    reply_markup: extra.reply_markup,
     schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
@@ -79,7 +88,8 @@ export async function sendDocument(token, chatId, fileId, caption, extra = {}) {
 export async function sendAnimation(token, chatId, fileId, caption, extra = {}) {
   return tgCall(token, "sendAnimation", {
     chat_id: chatId, animation: fileId, caption,
-    parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
+    parse_mode: extra.parse_mode, // v0.5.12: no default
+    reply_markup: extra.reply_markup,
     schedule_date: extra.schedule_date !== undefined ? Number(extra.schedule_date) : undefined,
   });
 }
@@ -89,7 +99,7 @@ export async function sendMediaGroup(token, chatId, mediaItems, extra = {}) {
     const m = { type: item.type, media: item.fileId };
     if (i === 0 && item.caption) {
       m.caption = item.caption;
-      m.parse_mode = extra.parse_mode ?? "HTML";
+      m.parse_mode = extra.parse_mode; // v0.5.12: no default — stripped if undefined
     }
     return m;
   });
@@ -104,7 +114,8 @@ export async function sendMediaGroup(token, chatId, mediaItems, extra = {}) {
 export async function editMessageText(token, chatId, messageId, text, extra = {}) {
   return tgCall(token, "editMessageText", {
     chat_id: chatId, message_id: messageId, text,
-    parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
+    parse_mode: extra.parse_mode, // v0.5.12: no default
+    reply_markup: extra.reply_markup,
   });
 }
 
@@ -117,7 +128,8 @@ export async function editMessageReplyMarkup(token, chatId, messageId, replyMark
 export async function editMessageCaption(token, chatId, messageId, caption, extra = {}) {
   return tgCall(token, "editMessageCaption", {
     chat_id: chatId, message_id: messageId, caption,
-    parse_mode: extra.parse_mode ?? "HTML", reply_markup: extra.reply_markup,
+    parse_mode: extra.parse_mode, // v0.5.12: no default
+    reply_markup: extra.reply_markup,
   });
 }
 
@@ -205,6 +217,20 @@ export async function resolveChatId(token, chatIdOrUsername) {
 
   console.error(`[telegram] ✗ Failed to resolve ${chatIdOrUsername}: ${res.description}`);
   return chatIdOrUsername; // Fallback to original (scheduling may fail)
+}
+
+/**
+ * v0.5.12 TASK 4: Invalidate the chat ID cache for a specific username.
+ * Call this before scheduling to ensure a fresh resolution (in case the
+ * channel was migrated or the cached ID is stale).
+ *
+ * @param {string} chatIdOrUsername - The @username to invalidate
+ */
+export function invalidateChatIdCache(chatIdOrUsername) {
+  if (_chatIdCache.has(chatIdOrUsername)) {
+    _chatIdCache.delete(chatIdOrUsername);
+    console.log(`[telegram] Cache invalidated for ${chatIdOrUsername}`);
+  }
 }
 
 // ============================================================

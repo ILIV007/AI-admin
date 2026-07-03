@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.11 — Native Scheduling Fix</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.12 — Scheduling Triple Fix</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -463,17 +463,19 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
-  <div class="section"><h2>📅 Scheduling Info (v0.5.11)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
-    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 2 messages</div>
-    <div><strong>v0.5.11 Fixes:</strong></div>
+  <div class="section"><h2>📅 Scheduling Info (v0.5.12)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
+    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 4 messages</div>
+    <div><strong>v0.5.12 Fixes (TRIPLE FIX):</strong></div>
     <ul style="margin-left:20px; margin-top:4px;">
-      <li>✅ <code>disable_web_page_preview</code> no longer forced to <code>false</code> (was causing scheduling conflict)</li>
-      <li>✅ <code>schedule_date</code> cast to <code>Number()</code> to ensure integer</li>
-      <li>✅ <code>@username</code> resolved to numeric <code>chat_id</code> via <code>resolveChatId()</code></li>
-      <li>✅ <code>/debug_schedule</code> now runs 2 tests (HTML + plain text) to isolate issues</li>
+      <li>✅ Removed <code>parse_mode ?? "HTML"</code> default — was ALWAYS sending parse_mode with schedule_date</li>
+      <li>✅ Removed <code>disable_web_page_preview ?? false</code> default — was conflicting with schedule_date</li>
+      <li>✅ Cast <code>schedule_date</code> to <code>Number()</code> — prevents String/Float issues</li>
+      <li>✅ Added <code>invalidateChatIdCache()</code> — fresh resolution before scheduling</li>
+      <li>✅ <code>/debug_schedule</code> now runs 4 tests: HTML, Plain, Minimal, Raw API</li>
+      <li>✅ <code>tgCall</code> logs payload for all scheduling calls (for debugging)</li>
     </ul>
     <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #1f6feb;">
-      <strong>Tip:</strong> If scheduling fails, run <code>/debug_schedule</code> in bot PV to see detailed logs.
+      <strong>Key insight:</strong> If Test D (Raw API) also fails, it's a <strong>Telegram-side issue</strong> — not a code bug. The bot may need to be removed and re-added as admin.
     </div>
   </div></div>
   <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>

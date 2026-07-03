@@ -264,14 +264,16 @@ async function handlePrivateMessage(env, content, update) {
 
   if (!env.ADMIN_ID) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `⚠️ <b>Configuration Error</b>\n\n<code>ADMIN_ID</code> is not set.\n\nYour Telegram ID: <code>${content.fromId}</code>`);
+      `⚠️ <b>Configuration Error</b>\n\n<code>ADMIN_ID</code> is not set.\n\nYour Telegram ID: <code>${content.fromId}</code>`,
+      { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "error", "ADMIN_ID not set", env);
     return;
   }
 
   if (!isAuthorized(env, content.fromId)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `⛔ <b>Unauthorized</b>\n\nYour ID: <code>${content.fromId}</code>\nConfigured ADMIN_ID: <code>${env.ADMIN_ID}</code>`);
+      `⛔ <b>Unauthorized</b>\n\nYour ID: <code>${content.fromId}</code>\nConfigured ADMIN_ID: <code>${env.ADMIN_ID}</code>`,
+      { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "unauthorized", `from=${content.fromId} expected=${env.ADMIN_ID}`, env);
     return;
   }
@@ -298,7 +300,8 @@ async function handlePrivateMessage(env, content, update) {
 
   if (/^\/help\b/i.test(text)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with a dummy message\n/help — This message`);
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with a dummy message\n/help — This message`,
+      { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "ok", "/help", env);
     return;
   }
@@ -326,7 +329,7 @@ async function handleCheckPerms(env, content, update) {
   const SETTINGS = env.SETTINGS;
   const targetChannel = env.TARGET_CHANNEL;
   if (!targetChannel) {
-    await sendMessage(env.BOT_TOKEN, content.chatId, `❌ <code>TARGET_CHANNEL</code> is not configured.`);
+    await sendMessage(env.BOT_TOKEN, content.chatId, `❌ <code>TARGET_CHANNEL</code> is not configured.`, { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "ok", "/checkperms: no channel", env);
     return;
   }
@@ -373,7 +376,7 @@ async function handleCheckPerms(env, content, update) {
     ].join("\n");
   }
 
-  await sendMessage(env.BOT_TOKEN, content.chatId, message, { disable_web_page_preview: true });
+  await sendMessage(env.BOT_TOKEN, content.chatId, message, { parse_mode: "HTML", disable_web_page_preview: true });
   await logUpdate(SETTINGS, update, "ok", `/checkperms: ${permCheck.ok ? "OK" : "FAIL"}`, env);
 }
 
@@ -391,7 +394,7 @@ async function handleDebugSchedule(env, content, update) {
   const chatId = content.chatId;
 
   if (!targetChannel) {
-    await sendMessage(BOT_TOKEN, chatId, `❌ <code>TARGET_CHANNEL</code> is not configured.`);
+    await sendMessage(BOT_TOKEN, chatId, `❌ <code>TARGET_CHANNEL</code> is not configured.`, { parse_mode: "HTML" });
     return;
   }
 
@@ -426,22 +429,22 @@ async function handleDebugSchedule(env, content, update) {
     log(`  (Each test will schedule 90s in the future)`);
 
     // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL!)
+    // v0.5.12 TASK 4: Invalidate cache first to ensure fresh resolution
     log(`Step 3.5: Resolving channel ${targetChannel} to numeric chat_id...`);
-    const { resolveChatId } = await import("./telegram.js");
+    const { resolveChatId, invalidateChatIdCache } = await import("./telegram.js");
+    invalidateChatIdCache(targetChannel); // v0.5.12: fresh resolution
     const resolvedChannel = await resolveChatId(BOT_TOKEN, targetChannel);
     log(`  Resolved → ${resolvedChannel} (type: ${typeof resolvedChannel})`);
     if (String(resolvedChannel).startsWith("@")) {
       log(`  ⚠️ WARNING: Resolution failed — still a @username. Scheduling will likely fail.`);
     }
 
-    // Step 4: Send TWO test messages to isolate the issue
-    // v0.5.11: Test A = with parse_mode HTML, Test B = plain text (no parse_mode)
-    // If Test B works but Test A fails, parse_mode is the culprit.
-    // If both fail, the bug is elsewhere (permissions, chat_id, etc.)
-    log(`Step 4: Sending TWO test messages...`);
+    // Step 4: Send FOUR test messages to isolate the issue
+    // v0.5.12: Test A = HTML, B = plain text, C = minimal, D = raw API bypass
+    log(`Step 4: Sending FOUR test messages...`);
 
-    // Test A: WITH parse_mode HTML
-    log(`  Test A (HTML): Sending with parse_mode=HTML...`);
+    // Test A: WITH parse_mode HTML (via wrapper)
+    log(`  Test A (HTML wrapper): Sending with parse_mode=HTML...`);
     const scheduledTimeA = Date.now() + 90 * 1000;
     const scheduleDateUnixA = Math.floor(scheduledTimeA / 1000);
     const sendResA = await publishToChannel(BOT_TOKEN, resolvedChannel, {
@@ -451,42 +454,83 @@ async function handleDebugSchedule(env, content, update) {
     log(`  Test A response: ${JSON.stringify(sendResA).slice(0, 300)}`);
     log(`  Test A: ok=${sendResA.ok}, result.date=${sendResA.result?.date}`);
 
-    // Wait 2 seconds between tests to avoid rate limiting
     await new Promise((r) => setTimeout(r, 2000));
 
-    // Test B: WITHOUT parse_mode (plain text)
-    log(`  Test B (Plain): Sending WITHOUT parse_mode...`);
+    // Test B: WITHOUT parse_mode (via wrapper, plain text)
+    log(`  Test B (Plain wrapper): Sending WITHOUT parse_mode...`);
     const scheduledTimeB = Date.now() + 90 * 1000;
     const scheduleDateUnixB = Math.floor(scheduledTimeB / 1000);
     const sendResB = await publishToChannel(BOT_TOKEN, resolvedChannel, {
       text: `🧪 Test B (Plain Text)\nScheduled for ${new Date(scheduledTimeB).toISOString()}`,
-      // NO parse_mode — plain text only
       extra: { schedule_date: scheduleDateUnixB },
     });
     log(`  Test B response: ${JSON.stringify(sendResB).slice(0, 300)}`);
     log(`  Test B: ok=${sendResB.ok}, result.date=${sendResB.result?.date}`);
 
-    // Step 5: Verify BOTH tests
-    log(`Step 5: Verifying both tests...`);
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Test C: Minimal payload (only chat_id, text, schedule_date — nothing else)
+    log(`  Test C (Minimal wrapper): Sending with bare minimum...`);
+    const scheduledTimeC = Date.now() + 90 * 1000;
+    const scheduleDateUnixC = Math.floor(scheduledTimeC / 1000);
+    const sendResC = await publishToChannel(BOT_TOKEN, resolvedChannel, {
+      text: `🧪 Test C (Minimal)\nScheduled for ${new Date(scheduledTimeC).toISOString()}`,
+      extra: { schedule_date: scheduleDateUnixC },
+    });
+    log(`  Test C response: ${JSON.stringify(sendResC).slice(0, 300)}`);
+    log(`  Test C: ok=${sendResC.ok}, result.date=${sendResC.result?.date}`);
+
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Test D: RAW API call — bypass ALL wrappers, direct fetch to Telegram
+    // This is the most minimal test possible. If this fails, it's 100% Telegram-side.
+    log(`  Test D (Raw API): Direct fetch, bypassing all wrappers...`);
+    const scheduledTimeD = Date.now() + 90 * 1000;
+    const scheduleDateUnixD = Math.floor(scheduledTimeD / 1000);
+    const rawPayload = {
+      chat_id: resolvedChannel,
+      text: `🧪 Test D (Raw API)\nScheduled for ${new Date(scheduledTimeD).toISOString()}`,
+      schedule_date: scheduleDateUnixD,
+    };
+    log(`  Test D raw payload: ${JSON.stringify(rawPayload)}`);
+    const rawRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rawPayload),
+    });
+    const rawData = await rawRes.json();
+    log(`  Test D response: ${JSON.stringify(rawData).slice(0, 300)}`);
+    log(`  Test D: ok=${rawData.ok}, result.date=${rawData.result?.date}`);
+
+    // Step 5: Verify ALL tests
+    log(`Step 5: Verifying all 4 tests...`);
     const verA = verifyScheduled(sendResA, scheduleDateUnixA);
     const verB = verifyScheduled(sendResB, scheduleDateUnixB);
+    const verC = verifyScheduled(sendResC, scheduleDateUnixC);
+    const verD = verifyScheduled(rawData, scheduleDateUnixD);
     log(`  Test A: scheduled=${verA.scheduled}, reason=${verA.reason}, diffSeconds=${verA.diffSeconds || 0}`);
     log(`  Test B: scheduled=${verB.scheduled}, reason=${verB.reason}, diffSeconds=${verB.diffSeconds || 0}`);
+    log(`  Test C: scheduled=${verC.scheduled}, reason=${verC.reason}, diffSeconds=${verC.diffSeconds || 0}`);
+    log(`  Test D: scheduled=${verD.scheduled}, reason=${verD.reason}, diffSeconds=${verD.diffSeconds || 0}`);
 
     // Step 6: Conclusion based on which test succeeded
     let conclusion;
-    if (verA.scheduled && verB.scheduled) {
-      conclusion = `✅ BOTH tests SUCCEEDED! Scheduling works correctly. Check the channel's "Scheduled Messages" view.`;
-    } else if (!verA.scheduled && verB.scheduled) {
-      conclusion = `⚠️ Test A (HTML) FAILED but Test B (Plain) SUCCEEDED. parse_mode=HTML is conflicting with schedule_date. Use plain text for scheduled messages, or investigate further.`;
-    } else if (verA.scheduled && !verB.scheduled) {
-      conclusion = `⚠️ Test A (HTML) SUCCEEDED but Test B (Plain) FAILED. Unexpected — see logs.`;
-    } else if (!permCheck.ok) {
-      conclusion = `❌ BOTH tests FAILED — bot lacks permissions. Fix with /checkperms instructions.`;
-    } else if (String(resolvedChannel).startsWith("@")) {
-      conclusion = `❌ BOTH tests FAILED — chat_id is still a @username. resolveChatId() failed.`;
+    if (verD.scheduled) {
+      // Raw API works — scheduling IS possible
+      if (verA.scheduled && verB.scheduled && verC.scheduled) {
+        conclusion = `✅ ALL 4 tests SUCCEEDED! Scheduling works correctly in all modes.`;
+      } else if (!verA.scheduled) {
+        conclusion = `⚠️ Raw API works but Test A (HTML) failed. parse_mode=HTML is conflicting with schedule_date in the wrapper.`;
+      } else if (!verB.scheduled || !verC.scheduled) {
+        conclusion = `⚠️ Raw API works but wrapper tests failed. Something in the wrapper is conflicting.`;
+      } else {
+        conclusion = `✅ Raw API + some wrapper tests succeeded. Scheduling works.`;
+      }
+    } else if (!verD.scheduled) {
+      // Raw API ALSO failed — this is a Telegram-side issue
+      conclusion = `❌ ALL tests FAILED (including Raw API Test D). This is NOT a code bug — it's a Telegram-side issue. The bot may need to be: (1) removed and re-added as admin, (2) given 'Post Messages' permission explicitly, or (3) the channel may need to be a supergroup instead of a broadcast channel. Also check: is the bot's admin permission 'Add New Admins' OFF and 'Post Messages' ON?`;
     } else {
-      conclusion = `❌ BOTH tests FAILED (date_mismatch). Telegram is STILL sending immediately despite: (1) numeric chat_id, (2) no disable_web_page_preview, (3) permissions OK. This may be a Telegram-side issue or the bot needs to be re-added as admin.`;
+      conclusion = `❌ Scheduling FAILED — see logs above.`;
     }
     log(conclusion);
 
@@ -494,21 +538,21 @@ async function handleDebugSchedule(env, content, update) {
     const logText = logs.map((l, i) => `${i + 1}. ${l}`).join("\n");
     await sendMessage(BOT_TOKEN, chatId,
       [
-        `🧪 <b>Scheduling Debug Results (v0.5.11)</b>`,
+        `🧪 <b>Scheduling Debug Results (v0.5.12)</b>`,
         ``,
         `<blockquote>${logText}</blockquote>`,
         ``,
         `<b>Conclusion:</b> ${conclusion}`,
       ].join("\n"),
-      { disable_web_page_preview: true });
+      { parse_mode: "HTML", disable_web_page_preview: true });
 
-    const anySuccess = verA.scheduled || verB.scheduled;
+    const anySuccess = verA.scheduled || verB.scheduled || verC.scheduled || verD.scheduled;
     await logUpdate(SETTINGS, update, "ok", `/debug_schedule: ${anySuccess ? "OK" : "FAIL"}`, env);
   } catch (e) {
     console.error("[debug_schedule] exception:", e.message);
     await sendMessage(BOT_TOKEN, chatId,
       `❌ <b>Debug schedule failed:</b> <code>${e.message}</code>`,
-      { disable_web_page_preview: true });
+      { parse_mode: "HTML", disable_web_page_preview: true });
     await logUpdate(SETTINGS, update, "error", `/debug_schedule exception: ${e.message}`, env);
   }
 }

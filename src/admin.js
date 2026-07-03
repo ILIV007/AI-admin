@@ -368,6 +368,7 @@ async function statsMenuText(SETTINGS, settings) {
 export async function handleStart(env, SETTINGS, msg) {
   const settings = await getSettings(SETTINGS, msg.from.id);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, mainMenuText(settings), {
+    parse_mode: "HTML",
     reply_markup: mainMenuKeyboard(settings),
   });
 }
@@ -381,6 +382,7 @@ export async function handleFooterCommand(env, SETTINGS, msg, args) {
   if (!args || !args.trim()) {
     const settings = await getSettings(SETTINGS, msg.from.id);
     await sendMessage(env.BOT_TOKEN, msg.chat.id, footerMenuText(settings), {
+      parse_mode: "HTML",
       reply_markup: backOnlyKeyboard(),
     });
     return;
@@ -388,18 +390,21 @@ export async function handleFooterCommand(env, SETTINGS, msg, args) {
   const newFooter = args.trim();
   if (newFooter.length === 0) {
     await sendMessage(env.BOT_TOKEN, msg.chat.id, "❌ Footer cannot be empty.", {
+      parse_mode: "HTML",
       reply_markup: backOnlyKeyboard(),
     });
     return;
   }
   if (newFooter.length > FOOTER_MAX_LEN) {
     await sendMessage(env.BOT_TOKEN, msg.chat.id, `❌ Footer too long (${newFooter.length} chars, max ${FOOTER_MAX_LEN}).`, {
+      parse_mode: "HTML",
       reply_markup: backOnlyKeyboard(),
     });
     return;
   }
   await updateSetting(SETTINGS, msg.from.id, "footer_text", newFooter);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, `✅ Footer updated to:\n<code>${escapeHtml(newFooter)}</code>`, {
+    parse_mode: "HTML",
     reply_markup: backOnlyKeyboard(),
   });
 }
@@ -583,10 +588,11 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   // Update the menu message in place
   if (newText && newKb) {
     const editRes = await editMessageText(env.BOT_TOKEN, chatId, messageId, newText, {
+      parse_mode: "HTML",
       reply_markup: newKb,
     });
     if (!editRes.ok) {
-      await sendMessage(env.BOT_TOKEN, chatId, newText, { reply_markup: newKb });
+      await sendMessage(env.BOT_TOKEN, chatId, newText, { parse_mode: "HTML", reply_markup: newKb });
     }
   }
 

@@ -169,7 +169,7 @@ export async function runMediaGroupPipeline(env, items, update) {
   if (feedbackChatId) {
     const procRes = await sendMessage(env.BOT_TOKEN, feedbackChatId,
       `⏳ <b>Processing album</b> (${items.length} photos)`,
-      { disable_web_page_preview: true }).catch(() => ({ ok: false }));
+      { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => ({ ok: false }));
     if (procRes.ok) processingMsgId = procRes.result?.message_id;
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
   }
@@ -334,7 +334,7 @@ export async function runMediaGroupPipeline(env, items, update) {
                 ``,
                 `<i>The album will auto-publish at the scheduled time.</i>`,
               ].join("\n"),
-              { disable_web_page_preview: true }).catch(() => {});
+              { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
           } else {
             await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
               [
@@ -348,7 +348,7 @@ export async function runMediaGroupPipeline(env, items, update) {
                 ``,
                 `<i>Your album was NOT published. Fix the issue and resend.</i>`,
               ].join("\n"),
-              { disable_web_page_preview: true }).catch(() => {});
+              { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
           }
         }
       } catch (e) {
@@ -358,7 +358,7 @@ export async function runMediaGroupPipeline(env, items, update) {
         if (feedbackChatId && processingMsgId) {
           await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
             `⚠️ <b>Scheduling exception</b>\n❌ <code>${e.message.slice(0, 200)}</code>`,
-            { disable_web_page_preview: true }).catch(() => {});
+            { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
         }
       }
     } else {
@@ -389,7 +389,7 @@ export async function runMediaGroupPipeline(env, items, update) {
       : `✅ AI: ${wasRewritten ? `yes (${aiProvider})` : "no"}`;
     await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
       `✅ <b>Album published</b> (${items.length} photos) → <code>${targetChannel || "(none)"}</code>\n${statusLine} · ${totalMs}ms`,
-      { disable_web_page_preview: true }).catch(() => {});
+      { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
   }
 
   if (update) await logUpdate(SETTINGS, update, publishOk ? "ok" : "error", `media-group: ${items.length} items, AI: ${wasRewritten ? "yes" : "no"}`, env);
@@ -426,7 +426,7 @@ export async function runPipeline(env, content, feedbackChatId = null, update = 
     traceStep("getSettings", false, e.message);
     await logError(SETTINGS, e, "getSettings", env);
     if (feedbackChatId) {
-      await sendMessage(env.BOT_TOKEN, feedbackChatId, `❌ <b>KV Error:</b> <code>${e.message}</code>`);
+      await sendMessage(env.BOT_TOKEN, feedbackChatId, `❌ <b>KV Error:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
     }
     if (update) await logUpdate(SETTINGS, update, "error", `getSettings: ${e.message}`, env);
     return;
@@ -449,7 +449,7 @@ export async function runPipeline(env, content, feedbackChatId = null, update = 
         `<blockquote>✍️ AI rewrite...</blockquote>`,
         `<blockquote>📝 Publishing...</blockquote>`,
       ].join("\n"),
-      { disable_web_page_preview: true }
+      { parse_mode: "HTML", disable_web_page_preview: true }
     ).catch(() => ({ ok: false }));
     if (procRes.ok) processingMsgId = procRes.result?.message_id;
     await sendChatAction(env.BOT_TOKEN, feedbackChatId, "typing").catch(() => {});
@@ -483,7 +483,7 @@ export async function runPipeline(env, content, feedbackChatId = null, update = 
           ``,
           `<i>Try a faster model or set rewrite to "none".</i>`,
         ].join("\n"),
-        { disable_web_page_preview: true }).catch(() => {});
+        { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
   }
 
@@ -628,7 +628,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const targetChannel = env.TARGET_CHANNEL;
   if (!targetChannel) {
     traceStep("publish", false, "TARGET_CHANNEL not set");
-    if (feedbackChatId) await sendMessage(env.BOT_TOKEN, feedbackChatId, "❌ <code>TARGET_CHANNEL</code> not configured.");
+    if (feedbackChatId) await sendMessage(env.BOT_TOKEN, feedbackChatId, "❌ <code>TARGET_CHANNEL</code> not configured.", { parse_mode: "HTML" });
     return { ok: false, detail: "TARGET_CHANNEL not set" };
   }
 
@@ -791,7 +791,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
           `${statusLine}`,
           `<b>Time:</b> ${totalMs}ms</blockquote>`,
         ].join("\n"),
-        { disable_web_page_preview: true }).catch(() => {});
+        { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
     return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };
   } else {
@@ -811,7 +811,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
             ? `<i>Run <code>/checkperms</code> to verify bot has "Post Messages" permission.</i>`
             : `<i>Check bot configuration and try again.</i>`,
         ].join("\n"),
-        { disable_web_page_preview: true }).catch(() => {});
+        { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
     return { ok: false, detail: `publish: ${errorMsg}` };
   }
@@ -888,7 +888,7 @@ export async function runChannelEditPipeline(env, content, update) {
     console.log(`[channel-edit] OK in ${Date.now() - startTime}ms`);
     await sendMessage(env.BOT_TOKEN, adminId,
       `✏️ <b>Edited channel post</b> #${content.messageId}\nType: ${decision.content_type}/${effectiveRewriteMode} · AI: ${wasRewritten ? "yes" : "no"}`,
-      { disable_web_page_preview: true }).catch(() => {});
+      { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     if (update) await logUpdate(SETTINGS, update, "ok", `channel-edit: ${decision.content_type}/${effectiveRewriteMode}`, env);
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
@@ -896,7 +896,7 @@ export async function runChannelEditPipeline(env, content, update) {
     console.error("[channel-edit] failed:", editRes.description);
     await sendMessage(env.BOT_TOKEN, adminId,
       `❌ <b>Channel edit failed:</b> <code>${editRes.description || "unknown"}</code>`,
-      { disable_web_page_preview: true }).catch(() => {});
+      { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     if (update) await logUpdate(SETTINGS, update, "error", `channel-edit: ${editRes.description}`, env);
   }
 }

@@ -1,13 +1,13 @@
 #!/bin/bash
 # Generates a single markdown file with ALL project code + structure + explanations
 
-OUTPUT="/home/z/my-project/download/ai-admin-v0.4.5-full-code.md"
+OUTPUT="/home/z/my-project/download/ai-admin-v0.4.6-full-code.md"
 BASE="/home/z/my-project/download/ai-admin"
 
 cat > "$OUTPUT" << 'HEADER'
 # AI Admin — Complete Project Source Code
 
-**Version:** 0.4.5
+**Version:** 0.4.6
 **Date:** 2025-06-29
 
 This file contains the COMPLETE source code of the AI Admin Telegram bot, including all JavaScript files, configuration, and documentation.
