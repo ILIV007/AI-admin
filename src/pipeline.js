@@ -221,22 +221,57 @@ export async function runMediaGroupPipeline(env, items, update) {
     footer: null, engineName: "html", intensity: settings.edit_intensity ?? 60, emojiLevel: settings.emoji_level ?? 20,
   });
 
-  // v0.5.9 TASK 6: Use safe truncateHtml for media group captions
-  // v0.5.17: Same fix as runPipelineInner — skip footer if maxBodyLen too small
-  const MG_LIMIT = 900;
+  // v0.5.23: For media posts, captions are limited to 1024 chars by Telegram.
+  // If the caption is too long, we CANNOT split it into multiple messages
+  // (the photo is attached to the first message). So we MUST use AI summary.
+  const MG_LIMIT = 1024; // v0.5.23: Actual Telegram caption limit (was 900)
   const footerHtml = settings.footer_text ? `\n\n<blockquote>${settings.footer_text}</blockquote>` : "";
-  let maxBodyLen = MG_LIMIT - footerHtml.length - 30;
+  let maxBodyLen = MG_LIMIT - footerHtml.length - 10; // v0.5.23: Minimal margin
   let effectiveFooterHtml = footerHtml;
   if (maxBodyLen < 200) {
-    console.warn(`[mg-pipeline] v0.5.17 ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
+    console.warn(`[mg-pipeline] v0.5.23 ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
     effectiveFooterHtml = "";
-    maxBodyLen = MG_LIMIT - 30;
+    maxBodyLen = MG_LIMIT - 10;
   }
+
   let safeBody = formattedBody;
+
+  // v0.5.23: If caption too long, use AI summary (NOT truncation with …)
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[mg-pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
-    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
+    console.warn(`[mg-pipeline] v0.5.23 caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
+    try {
+      const targetCharLimit = maxBodyLen - 50;
+      const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+      if (summaryRes.ok && summaryRes.text) {
+        let summaryText = summaryRes.text;
+        // Restore prompts in summary
+        // (prompts weren't protected in media group pipeline, so just use as-is)
+
+        const { text: summaryFormatted } = formatPost(summaryText, {
+          footer: null, engineName: "html", intensity: 40, emojiLevel: 10,
+        });
+
+        if (summaryFormatted.length > 0 && summaryFormatted.length < formattedBody.length) {
+          safeBody = summaryFormatted;
+          wasRewritten = true;
+          aiProvider = summaryRes.provider;
+          console.log(`[mg-pipeline] v0.5.23 AI summary OK: ${formattedBody.length}→${safeBody.length} chars (${summaryRes.provider})`);
+        } else {
+          // AI summary failed or made it longer — last resort: truncate WITHOUT …
+          console.warn(`[mg-pipeline] v0.5.23 AI summary didn't help, truncating without …`);
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+        }
+      } else {
+        // AI failed — truncate WITHOUT …
+        console.warn(`[mg-pipeline] v0.5.23 AI summary failed, truncating without …`);
+        safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+      }
+    } catch (e) {
+      console.error(`[mg-pipeline] v0.5.23 AI summary exception: ${e.message}`);
+      safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+    }
   }
+
   const formattedText = safeBody + effectiveFooterHtml;
 
   const mediaItems = items.map((it, i) => ({
@@ -669,78 +704,94 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     maxBodyLen = effectiveLimit - 10;
   }
 
-  // Step 3: v0.5.22 — SPLIT instead of truncate!
-  // If text exceeds Telegram's limit, split it into multiple parts instead of
-  // cutting it with "…". Each part is sent as a separate message.
+  // Step 3: v0.5.23 — Handle long posts differently based on media presence:
+  //   - Text posts (no media): SPLIT into multiple parts (already implemented in v0.5.22)
+  //   - Media posts (photo/video): Use AI SUMMARY (can't split photo+caption)
   let safeBody = formattedBody;
-  let extraParts = []; // v0.5.22: Additional parts to send after the main post
+  let extraParts = []; // Additional parts to send after the main post (text posts only)
 
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[pipeline] v0.5.22 body too long (${formattedBody.length} > ${maxBodyLen}), splitting into parts...`);
+    if (hasMedia) {
+      // v0.5.23: Media posts — use AI summary (NOT split, NOT … truncation)
+      console.warn(`[pipeline] v0.5.23 caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
+      try {
+        const targetCharLimit = maxBodyLen - 50;
+        const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+        if (summaryRes.ok && summaryRes.text) {
+          let summaryText = summaryRes.text;
+          // Restore prompts in summary
+          if (protectedPrompts.length > 0) {
+            summaryText = restorePrompts(summaryText, protectedPrompts);
+          }
+          const { text: summaryFormatted } = formatPost(summaryText, {
+            footer: null, engineName: "html", intensity: 40, emojiLevel: 10,
+          });
+          if (summaryFormatted.length > 0 && summaryFormatted.length < formattedBody.length) {
+            safeBody = summaryFormatted;
+            wasRewritten = true;
+            aiProvider = summaryRes.provider;
+            console.log(`[pipeline] v0.5.23 AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
+          } else {
+            // Summary didn't help — truncate WITHOUT …
+            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+          }
+        } else {
+          // AI failed — truncate WITHOUT …
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+        }
+      } catch (e) {
+        console.error(`[pipeline] v0.5.23 AI summary exception: ${e.message}`);
+        safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+      }
+    } else {
+      // v0.5.22: Text posts — SPLIT into multiple parts
+      console.warn(`[pipeline] v0.5.22 body too long (${formattedBody.length} > ${maxBodyLen}), splitting into parts...`);
 
-    // Split at paragraph boundaries first, then sentence boundaries
-    let remaining = formattedBody;
-    let currentPart = "";
-    const partLimit = maxBodyLen - 20; // Leave room for "(ادامه...)" marker
+      let remaining = formattedBody;
+      let currentPart = "";
+      const partLimit = maxBodyLen - 20;
 
-    while (remaining.length > 0) {
-      if ((currentPart + remaining).length <= partLimit) {
-        currentPart += remaining;
-        remaining = "";
-        break;
+      while (remaining.length > 0) {
+        if ((currentPart + remaining).length <= partLimit) {
+          currentPart += remaining;
+          remaining = "";
+          break;
+        }
+
+        let splitPoint = partLimit - currentPart.length;
+        if (splitPoint <= 0) splitPoint = partLimit;
+
+        let bestSplit = remaining.lastIndexOf("\n\n", splitPoint);
+        if (bestSplit < partLimit * 0.5) bestSplit = remaining.lastIndexOf("\n", splitPoint);
+        if (bestSplit < partLimit * 0.5) {
+          bestSplit = Math.max(
+            remaining.lastIndexOf(". ", splitPoint),
+            remaining.lastIndexOf("! ", splitPoint),
+            remaining.lastIndexOf("? ", splitPoint),
+            remaining.lastIndexOf("۔ ", splitPoint),
+          );
+        }
+        if (bestSplit < partLimit * 0.3) bestSplit = remaining.lastIndexOf(" ", splitPoint);
+        if (bestSplit < 10) bestSplit = splitPoint;
+
+        currentPart += remaining.slice(0, bestSplit);
+        extraParts.push(currentPart);
+        remaining = remaining.slice(bestSplit).trim();
+        currentPart = "";
       }
 
-      // Find the best split point in remaining
-      let splitPoint = partLimit - currentPart.length;
-      if (splitPoint <= 0) splitPoint = partLimit;
+      if (currentPart.length > 0) extraParts.push(currentPart);
 
-      // Try paragraph boundary
-      let bestSplit = remaining.lastIndexOf("\n\n", splitPoint);
-      if (bestSplit < partLimit * 0.5) {
-        // Try single newline
-        bestSplit = remaining.lastIndexOf("\n", splitPoint);
-      }
-      if (bestSplit < partLimit * 0.5) {
-        // Try sentence boundary
-        bestSplit = Math.max(
-          remaining.lastIndexOf(". ", splitPoint),
-          remaining.lastIndexOf("! ", splitPoint),
-          remaining.lastIndexOf("? ", splitPoint),
-          remaining.lastIndexOf("۔ ", splitPoint),
-        );
-      }
-      if (bestSplit < partLimit * 0.3) {
-        // Try space (don't cut mid-word)
-        bestSplit = remaining.lastIndexOf(" ", splitPoint);
-      }
-      if (bestSplit < 10) {
-        // Last resort: hard cut
-        bestSplit = splitPoint;
-      }
-
-      currentPart += remaining.slice(0, bestSplit);
-      extraParts.push(currentPart);
-
-      remaining = remaining.slice(bestSplit).trim();
-      currentPart = "";
-    }
-
-    // The last currentPart (or the only part if no split was needed)
-    if (currentPart.length > 0) {
-      extraParts.push(currentPart);
-    }
-
-    // First part is the main post, rest go in extraParts
-    if (extraParts.length > 0) {
-      safeBody = extraParts.shift(); // First part
-      // Add "(ادامه...)" to the main post if there are more parts
       if (extraParts.length > 0) {
-        safeBody += "\n\n<i>(ادامه...)</i>";
+        safeBody = extraParts.shift();
+        if (extraParts.length > 0) {
+          safeBody += "\n\n<i>(ادامه...)</i>";
+        }
       }
-    }
 
-    console.log(`[pipeline] v0.5.22 split into ${extraParts.length + 1} parts (main: ${safeBody.length} chars, ${extraParts.length} extra)`);
-    traceStep("split_post", true, `${formattedBody.length} chars → ${extraParts.length + 1} parts`);
+      console.log(`[pipeline] v0.5.22 split into ${extraParts.length + 1} parts`);
+      traceStep("split_post", true, `${formattedBody.length} chars → ${extraParts.length + 1} parts`);
+    }
   }
 
   // Step 4: Append footer (may be empty if maxBodyLen was too small)
@@ -921,7 +972,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
           // Truncate if still too long
           let summarySafe = summaryFormatted;
           if (summaryFormatted.length > effectiveLimit - 50) {
-            summarySafe = truncateHtml(summaryFormatted, effectiveLimit - 50, "\n\n<i>…</i>");
+            summarySafe = truncateHtml(summaryFormatted, effectiveLimit - 50, ""); // v0.5.23: No … marker
           }
 
           console.log(`[pipeline] v0.5.21 Summary generated: ${summarySafe.length} chars (was ${safeFormattedText.length})`);
