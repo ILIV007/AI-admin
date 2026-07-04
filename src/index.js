@@ -49,7 +49,7 @@ import { aiRewrite } from "./ai.js";
 import { formatPost } from "./formatter.js";
 import { cleanContent, protectPrompts, restorePrompts } from "./cleaner.js";
 
-const VERSION = "0.5.15";
+const VERSION = "0.5.16";
 
 // ============================================================
 // MAIN EXPORT
@@ -235,6 +235,133 @@ function handleDebugRoute(request, url, env) {
   }
   if (request.method === "POST" && url.pathname === "/debug/api/clear") {
     return clearDebugLogs(SETTINGS).then(() => json({ ok: true }), (e) => json({ ok: false, error: e.message }, 500));
+  }
+
+  // v0.5.16: New debug API endpoints for testing from dashboard
+  if (request.method === "POST" && url.pathname === "/debug/api/test/cron") {
+    return (async () => {
+      try {
+        console.log(`[debug API] Manually triggering cron queue`);
+        await processScheduledQueue(env);
+        return json({ ok: true, message: "Cron queue processed. Check logs for details." });
+      } catch (e) {
+        return json({ ok: false, error: e.message }, 500);
+      }
+    })();
+  }
+
+  if (request.method === "POST" && url.pathname === "/debug/api/test/ai_rewrite") {
+    return (async () => {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const testText = body.text || "This is a test post about Cloudflare Workers. It should be rewritten nicely.";
+        const settings = await getSettings(SETTINGS, env.ADMIN_ID);
+        console.log(`[debug API] Testing AI rewrite with: "${testText.slice(0, 60)}..."`);
+        const result = await aiRewrite(env, settings, testText, "light", "auto", "friendly", 60, 20);
+        return json({
+          ok: result.ok,
+          input: testText,
+          output: result.text || null,
+          provider: result.provider || null,
+          model: result.model || null,
+          error: result.error || null,
+        });
+      } catch (e) {
+        return json({ ok: false, error: e.message }, 500);
+      }
+    })();
+  }
+
+  if (request.method === "POST" && url.pathname === "/debug/api/test/format") {
+    return (async () => {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const testText = body.text || `This is a test post about AI tools.
+
+Prompt:
+Keep the face 100% identical to the reference. Photorealistic mirror selfie. Cinematic lighting. 8k. Ultra detailed. --ar 16:9 --v 6.0
+
+This is another paragraph that is long enough to be quoted. It has multiple sentences.`;
+        console.log(`[debug API] Testing formatter`);
+        const { text: formatted, parseMode } = formatPost(testText, {
+          engineName: "html",
+          intensity: 60,
+          emojiLevel: 20,
+        });
+        return json({
+          ok: true,
+          input: testText,
+          output: formatted,
+          parseMode,
+          inputLength: testText.length,
+          outputLength: formatted.length,
+        });
+      } catch (e) {
+        return json({ ok: false, error: e.message }, 500);
+      }
+    })();
+  }
+
+  if (request.method === "POST" && url.pathname === "/debug/api/test/clean") {
+    return (async () => {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const testText = body.text || `This is a normal post.
+
+Keep the face 100% identical to the reference. Photorealistic mirror selfie. Cinematic lighting. 8k. Ultra detailed. --ar 3:2 --v 6.0. ` + "A".repeat(200);
+        console.log(`[debug API] Testing prompt protection`);
+        const { text: protectedText, prompts } = protectPrompts(testText);
+        const restored = restorePrompts(protectedText, prompts);
+        return json({
+          ok: true,
+          input: testText,
+          protectedText,
+          promptsDetected: prompts.length,
+          prompts: prompts.map((p) => ({ length: p.length, preview: p.slice(0, 100) })),
+          restoreMatchesOriginal: restored === testText,
+        });
+      } catch (e) {
+        return json({ ok: false, error: e.message }, 500);
+      }
+    })();
+  }
+
+  if (request.method === "POST" && url.pathname === "/debug/api/test/scheduling") {
+    return (async () => {
+      try {
+        const targetChannel = env.TARGET_CHANNEL;
+        if (!targetChannel) return json({ ok: false, error: "TARGET_CHANNEL not set" });
+
+        const botId = await getBotId(env);
+        const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
+
+        // Try native scheduling with a test message
+        const scheduledTime = Date.now() + 90 * 1000;
+        const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+
+        const { resolveChatId } = await import("./telegram.js");
+        const resolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+
+        const sendRes = await publishToChannel(env.BOT_TOKEN, resolvedChannel, {
+          text: `🧪 Debug API scheduling test for ${new Date(scheduledTime).toISOString()}`,
+          extra: { schedule_date: scheduleDateUnix },
+        });
+
+        const verification = verifyScheduled(sendRes, scheduleDateUnix);
+
+        return json({
+          ok: true,
+          permissions: permCheck,
+          resolvedChannel,
+          scheduleDateUnix,
+          telegramResponse: sendRes,
+          verification,
+          nativeScheduled: verification.scheduled,
+        });
+      } catch (e) {
+        return json({ ok: false, error: e.message }, 500);
+      }
+    })();
   }
 
   return new Response("Not Found", { status: 404 });

@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.15 — Test Commands + Cron Toggle + Collapsible Quotes</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.16 — Fixed 'no output' bug + Dashboard test endpoints</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -463,6 +463,13 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
+  <div class="section"><h2>🔧 Pipeline Tests (v0.5.16)</h2><div class="actions">
+    <button class="btn" onclick="runPipelineTest('cron')">⏰ Test Cron Queue</button>
+    <button class="btn" onclick="runPipelineTest('ai_rewrite')">✍️ Test AI Rewrite</button>
+    <button class="btn" onclick="runPipelineTest('format')">📝 Test Formatter</button>
+    <button class="btn" onclick="runPipelineTest('clean')">🧹 Test Prompt Protection</button>
+    <button class="btn" onclick="runPipelineTest('scheduling')">📅 Test Scheduling</button>
+  </div><div id="pipeline-result" class="result"></div></div>
   <div class="section"><h2>💬 Bot Commands (run in PV)</h2><div style="font-size:0.9em; line-height:2;">
     <div><code>/start</code> — Admin panel (scheduling, AI, footer settings)</div>
     <div><code>/checkperms</code> — Check bot permissions in channel</div>
@@ -571,6 +578,21 @@ async function clearLogs() {
   try { const res = await fetch(BASE + "/debug/api/clear" + QS, { method: "POST" }); const data = await res.json(); r.innerHTML = JSON.stringify(data, null, 2); }
   catch (e) { r.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>'; }
   setTimeout(loadStatus, 500);
+}
+// v0.5.16: Pipeline test functions — run from dashboard
+async function runPipelineTest(type) {
+  const r = document.getElementById("pipeline-result");
+  r.classList.add("show");
+  r.innerHTML = '<span class="spinner"></span> Running ' + type + '...';
+  try {
+    const res = await fetch(BASE + "/debug/api/test/" + type + QS, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "This is a test post about Cloudflare Workers. It should be rewritten nicely." })
+    });
+    const data = await res.json();
+    r.innerHTML = JSON.stringify(data, null, 2);
+  } catch (e) { r.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>'; }
 }
 loadStatus();
 setInterval(loadStatus, 15000);

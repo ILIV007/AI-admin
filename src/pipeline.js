@@ -541,8 +541,19 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     console.log(`[pipeline] v0.5.14 protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
   }
 
+  // v0.5.16: CRITICAL FIX — If protectedText is mostly placeholders (>80%),
+  // the AI has nothing to work with and will return empty/garbage output.
+  // In this case, SKIP AI rewrite entirely and use the original cleanedText.
+  const placeholderCount = (protectedText.match(/__PROMPT_BLOCK_\d+__/g) || []).length;
+  const nonPlaceholderText = protectedText.replace(/__PROMPT_BLOCK_\d+__/g, "").trim();
+  const isMostlyPlaceholders = nonPlaceholderText.length < cleanedText.length * 0.20 && placeholderCount > 0;
+
+  if (isMostlyPlaceholders) {
+    console.log(`[pipeline] v0.5.16 ⚠️ Text is mostly prompt placeholders (${placeholderCount} blocks, only ${nonPlaceholderText.length} chars of non-prompt text). Skipping AI rewrite.`);
+  }
+
   const textForAI = replyContext + protectedText;
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${protectedPrompts.length > 0 ? ` (${protectedPrompts.length} prompts protected)` : ""}`);
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${protectedPrompts.length > 0 ? ` (${protectedPrompts.length} prompts protected${isMostlyPlaceholders ? ", SKIP AI" : ""})` : ""}`);
 
   // AI rewrite
   let finalText = cleanedText;
@@ -568,7 +579,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     finalMode = "summary";
     console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${SUMMARY_TRIGGER}${hasMedia ? " [MEDIA]" : ""}, limit=${effectiveLimit})`);
   }
-  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
+  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0 && !isMostlyPlaceholders;
   console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, trigger=${SUMMARY_TRIGGER})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
@@ -652,8 +663,20 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   }
 
   // Step 4: Append footer
-  const safeFormattedText = safeBody + footerHtml;
+  let safeFormattedText = safeBody + footerHtml;
   traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
+
+  // v0.5.16: CRITICAL SAFETY CHECK — Never send empty output
+  // If formatting produced empty/near-empty text, fall back to cleanedText
+  if (!safeFormattedText.trim() || safeFormattedText.trim().length < 10) {
+    console.error(`[pipeline] ⚠️ formatted text is empty (${safeFormattedText.length} chars)! Falling back to cleanedText.`);
+    const fallbackFormatted = formatPost(cleanedText, {
+      footer: settings.footer_text, engineName: "html", intensity: 40, emojiLevel: 10,
+    });
+    safeBody = fallbackFormatted.text || cleanedText.slice(0, effectiveLimit - footerLen - 50);
+    safeFormattedText = safeBody + footerHtml;
+    traceStep("format_fallback", true, `fallback to cleanedText: ${safeFormattedText.length} chars`);
+  }
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;
