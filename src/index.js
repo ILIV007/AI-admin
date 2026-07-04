@@ -300,7 +300,7 @@ async function handlePrivateMessage(env, content, update) {
 
   if (/^\/help\b/i.test(text)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with a dummy message\n/help — This message`,
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with 5 messages (channel + private chat)\n/help — This message`,
       { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "ok", "/help", env);
     return;
@@ -502,33 +502,53 @@ async function handleDebugSchedule(env, content, update) {
     log(`  Test D response: ${JSON.stringify(rawData).slice(0, 300)}`);
     log(`  Test D: ok=${rawData.ok}, result.date=${rawData.result?.date}`);
 
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Test E: Schedule in PRIVATE CHAT (always works — no admin permission needed)
+    // v0.5.13: If this works but channel scheduling fails, it confirms Telegram-side issue
+    log(`  Test E (Private Chat): Scheduling in bot's private chat (always works)...`);
+    const scheduledTimeE = Date.now() + 90 * 1000;
+    const scheduleDateUnixE = Math.floor(scheduledTimeE / 1000);
+    const sendResE = await sendMessage(BOT_TOKEN, chatId, // chatId = admin's private chat
+      `🧪 <b>Test E (Private Chat)</b>\nScheduled for ${new Date(scheduledTimeE).toISOString()}`,
+      { parse_mode: "HTML", schedule_date: scheduleDateUnixE }
+    );
+    log(`  Test E response: ${JSON.stringify(sendResE).slice(0, 300)}`);
+    log(`  Test E: ok=${sendResE.ok}, result.date=${sendResE.result?.date}`);
+
     // Step 5: Verify ALL tests
-    log(`Step 5: Verifying all 4 tests...`);
+    log(`Step 5: Verifying all 5 tests...`);
     const verA = verifyScheduled(sendResA, scheduleDateUnixA);
     const verB = verifyScheduled(sendResB, scheduleDateUnixB);
     const verC = verifyScheduled(sendResC, scheduleDateUnixC);
     const verD = verifyScheduled(rawData, scheduleDateUnixD);
+    const verE = verifyScheduled(sendResE, scheduleDateUnixE);
     log(`  Test A: scheduled=${verA.scheduled}, reason=${verA.reason}, diffSeconds=${verA.diffSeconds || 0}`);
     log(`  Test B: scheduled=${verB.scheduled}, reason=${verB.reason}, diffSeconds=${verB.diffSeconds || 0}`);
     log(`  Test C: scheduled=${verC.scheduled}, reason=${verC.reason}, diffSeconds=${verC.diffSeconds || 0}`);
     log(`  Test D: scheduled=${verD.scheduled}, reason=${verD.reason}, diffSeconds=${verD.diffSeconds || 0}`);
+    log(`  Test E: scheduled=${verE.scheduled}, reason=${verE.reason}, diffSeconds=${verE.diffSeconds || 0}`);
 
     // Step 6: Conclusion based on which test succeeded
+    // v0.5.13: Added Test E (private chat) to distinguish Telegram-side issues
     let conclusion;
-    if (verD.scheduled) {
-      // Raw API works — scheduling IS possible
+    if (verE.scheduled && !verD.scheduled) {
+      // v0.5.13: Private chat works but channel doesn't — 100% Telegram-side issue
+      conclusion = `⚠️ Private chat scheduling (Test E) WORKS but channel scheduling (Test D) FAILS. This is a Telegram-side issue — NOT a code bug. The bot needs to be: (1) removed from the channel, (2) re-added as admin with 'Post Messages' permission ON, (3) 'Add New Admins' permission should be OFF.`;
+    } else if (!verE.scheduled) {
+      // Even private chat scheduling failed — Telegram API issue
+      conclusion = `❌ Even private chat scheduling (Test E) FAILED. This is a Telegram API issue. Try: (1) check bot token is valid, (2) recreate the bot via @BotFather, (3) check Telegram status.`;
+    } else if (verD.scheduled) {
+      // Channel scheduling works!
       if (verA.scheduled && verB.scheduled && verC.scheduled) {
-        conclusion = `✅ ALL 4 tests SUCCEEDED! Scheduling works correctly in all modes.`;
+        conclusion = `✅ ALL 5 tests SUCCEEDED! Scheduling works correctly in all modes (channel + private chat).`;
       } else if (!verA.scheduled) {
-        conclusion = `⚠️ Raw API works but Test A (HTML) failed. parse_mode=HTML is conflicting with schedule_date in the wrapper.`;
+        conclusion = `⚠️ Channel scheduling works (Test D) but Test A (HTML) failed. parse_mode=HTML is conflicting with schedule_date in the wrapper.`;
       } else if (!verB.scheduled || !verC.scheduled) {
-        conclusion = `⚠️ Raw API works but wrapper tests failed. Something in the wrapper is conflicting.`;
+        conclusion = `⚠️ Channel scheduling works (Test D) but wrapper tests failed. Something in the wrapper is conflicting.`;
       } else {
-        conclusion = `✅ Raw API + some wrapper tests succeeded. Scheduling works.`;
+        conclusion = `✅ Scheduling works! All channel tests + private chat succeeded.`;
       }
-    } else if (!verD.scheduled) {
-      // Raw API ALSO failed — this is a Telegram-side issue
-      conclusion = `❌ ALL tests FAILED (including Raw API Test D). This is NOT a code bug — it's a Telegram-side issue. The bot may need to be: (1) removed and re-added as admin, (2) given 'Post Messages' permission explicitly, or (3) the channel may need to be a supergroup instead of a broadcast channel. Also check: is the bot's admin permission 'Add New Admins' OFF and 'Post Messages' ON?`;
     } else {
       conclusion = `❌ Scheduling FAILED — see logs above.`;
     }
@@ -546,7 +566,7 @@ async function handleDebugSchedule(env, content, update) {
       ].join("\n"),
       { parse_mode: "HTML", disable_web_page_preview: true });
 
-    const anySuccess = verA.scheduled || verB.scheduled || verC.scheduled || verD.scheduled;
+    const anySuccess = verA.scheduled || verB.scheduled || verC.scheduled || verD.scheduled || verE.scheduled;
     await logUpdate(SETTINGS, update, "ok", `/debug_schedule: ${anySuccess ? "OK" : "FAIL"}`, env);
   } catch (e) {
     console.error("[debug_schedule] exception:", e.message);

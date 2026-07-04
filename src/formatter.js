@@ -86,9 +86,16 @@ const htmlEngine = {
     });
 
     // 3. Prompt blocks (System: ..., Prompt: ..., User: ... followed by multi-line content)
+    // v0.5.13: Improved regex — catches more formats:
+    //   - "### Prompt:" (markdown heading)
+    //   - "**Prompt:**" (bold)
+    //   - "Prompt:" (with colon)
+    //   - "Prompt" (without colon)
+    //   - "Query:", "Question:", "Task:" (additional keywords)
+    //   - Persian colon ":" support
     const promptBlocks = [];
-    work = work.replace(/(?:^|\n)(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE):\s*\n([\s\S]*?)(?=\n\n|\n#|$)/gi, (_, label, content) => {
-      if (content.trim().length > 30) { // Only treat as prompt if content is substantial
+    work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, label, content) => {
+      if (content.trim().length > 20) { // v0.5.13: Lower threshold (was 30) to catch shorter prompts
         promptBlocks.push({ label: label.trim(), content: content.trim() });
         return ` §P${promptBlocks.length - 1}§ `;
       }
@@ -200,7 +207,13 @@ const htmlEngine = {
     work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
-      return `<b>${this.escape(p.label)}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
+      if (!p) return ''; // v0.5.13: Safety check
+      // v0.5.13: Use blockquote for short prompts (<200 chars), pre for long ones
+      if (p.content.length < 200) {
+        return `<b>${this.escape(p.label)}:</b>\n<blockquote>${this.escape(p.content)}</blockquote>`;
+      } else {
+        return `<b>${this.escape(p.label)}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
+      }
     });
 
     // === PHASE 5: POLISH ===

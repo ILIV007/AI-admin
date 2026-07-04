@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.12 — Scheduling Triple Fix</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.13 — Long Post Fix + Prompt Detection + Test E</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -463,19 +463,24 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
-  <div class="section"><h2>📅 Scheduling Info (v0.5.12)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
-    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 4 messages</div>
-    <div><strong>v0.5.12 Fixes (TRIPLE FIX):</strong></div>
+  <div class="section"><h2>📅 Scheduling Info (v0.5.13)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
+    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 5 messages</div>
+    <div><strong>v0.5.13 Fixes:</strong></div>
     <ul style="margin-left:20px; margin-top:4px;">
-      <li>✅ Removed <code>parse_mode ?? "HTML"</code> default — was ALWAYS sending parse_mode with schedule_date</li>
-      <li>✅ Removed <code>disable_web_page_preview ?? false</code> default — was conflicting with schedule_date</li>
-      <li>✅ Cast <code>schedule_date</code> to <code>Number()</code> — prevents String/Float issues</li>
-      <li>✅ Added <code>invalidateChatIdCache()</code> — fresh resolution before scheduling</li>
-      <li>✅ <code>/debug_schedule</code> now runs 4 tests: HTML, Plain, Minimal, Raw API</li>
-      <li>✅ <code>tgCall</code> logs payload for all scheduling calls (for debugging)</li>
+      <li>✅ <code>SUMMARY_TRIGGER</code> increased from 3000 → 3800 (was summarizing posts too aggressively)</li>
+      <li>✅ Prompt detection regex improved — catches <code>### Prompt:</code>, <code>**Prompt:**</code>, <code>Query:</code>, Persian keywords</li>
+      <li>✅ Short prompts (&lt;200 chars) use <code>&lt;blockquote&gt;</code>, long ones use <code>&lt;pre&gt;&lt;code&gt;</code></li>
+      <li>✅ Added Test E (private chat scheduling) — distinguishes Telegram-side issues from code bugs</li>
+    </ul>
+    <div><strong>v0.5.12 Fixes (still active):</strong></div>
+    <ul style="margin-left:20px; margin-top:4px;">
+      <li>✅ Removed <code>parse_mode ?? "HTML"</code> default</li>
+      <li>✅ Removed <code>disable_web_page_preview ?? false</code> default</li>
+      <li>✅ Cast <code>schedule_date</code> to <code>Number()</code></li>
+      <li>✅ <code>invalidateChatIdCache()</code> for fresh resolution</li>
     </ul>
     <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #1f6feb;">
-      <strong>Key insight:</strong> If Test D (Raw API) also fails, it's a <strong>Telegram-side issue</strong> — not a code bug. The bot may need to be removed and re-added as admin.
+      <strong>Key insight:</strong> If Test E (private chat) works but Test D (channel) fails, it's a <strong>Telegram-side issue</strong>. Remove and re-add the bot as admin.
     </div>
   </div></div>
   <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>

@@ -550,8 +550,9 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const TELEGRAM_CAPTION_LIMIT = 900;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
-  // Lower threshold to trigger summary EARLIER (80% of limit)
-  const SUMMARY_TRIGGER = hasMedia ? 700 : 3000;
+  // v0.5.13: Only summarize if REALLY too long (92% of Telegram's 4096 limit)
+  // Was 3000 — too aggressive, was summarizing posts that fit fine
+  const SUMMARY_TRIGGER = hasMedia ? 700 : 3800;
   let finalMode = effectiveRewriteMode;
   if (cleanedText.length > SUMMARY_TRIGGER) {
     finalMode = "summary";
