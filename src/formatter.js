@@ -207,12 +207,14 @@ const htmlEngine = {
     work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
-      if (!p) return ''; // v0.5.13: Safety check
-      // v0.5.13: Use blockquote for short prompts (<200 chars), pre for long ones
+      if (!p) return ''; // Safety check
+      // v0.5.14: Use EXPANDABLE blockquote for long prompts (collapsible in Telegram)
+      // Short prompts (<200 chars) use regular blockquote
       if (p.content.length < 200) {
         return `<b>${this.escape(p.label)}:</b>\n<blockquote>${this.escape(p.content)}</blockquote>`;
       } else {
-        return `<b>${this.escape(p.label)}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
+        // v0.5.14: expandable="true" makes the quote collapsible — perfect for long AI prompts!
+        return `<b>${this.escape(p.label)}:</b>\n<blockquote expandable="true">${this.escape(p.content)}</blockquote>`;
       }
     });
 

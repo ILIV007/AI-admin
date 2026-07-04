@@ -68,6 +68,82 @@ function isUsernamePartOfUrl(text, matchIndex) {
 }
 
 // ============================================================
+// v0.5.14: PROMPT PROTECTION — protect AI image generation prompts
+// ============================================================
+// Users paste long English AI prompts (Midjourney, Stable Diffusion, etc.)
+// that contain keywords like "photorealistic", "octane render", "--ar", "8k".
+// The AI rewrite step would destroy these by summarizing/translating them.
+//
+// We detect these blocks BEFORE cleaning, replace them with placeholders,
+// and restore them AFTER the AI rewrite step (in pipeline.js).
+// ============================================================
+
+const PROMPT_KEYWORDS = [
+  "photorealistic", "octane render", "masterpiece", "8k", "4k", "ultra detailed",
+  "keep the face", "identical to the reference", "no changes to identity",
+  "--ar", "--v", "--niji", "--seed", "--chaos", "--stylize",
+  "stable diffusion", "midjourney", "dall-e", "sdxl", "controlnet",
+  "negative prompt", "steps:", "cfg scale", "sampler", "denoising",
+  "render", "cinematic lighting", "volumetric lighting", "ray tracing",
+  "unreal engine", "blender", "zbrush", "substance painter",
+  "highly detailed", "intricate details", "sharp focus", "depth of field",
+  "bokeh", "film grain", "color grading", "hdr", "uhd",
+];
+
+/**
+ * Detect and protect AI image generation prompts in the text.
+ * Returns { text: textWithPlaceholders, prompts: [array of prompt strings] }
+ *
+ * Detection criteria:
+ * - Block of text > 200 chars
+ * - Contains at least 2 prompt keywords
+ * - OR contains Midjourney parameter syntax (--ar, --v, etc.)
+ */
+export function protectPrompts(text) {
+  if (!text) return { text, prompts: [] };
+
+  const prompts = [];
+
+  // Split into paragraphs and check each one
+  const paragraphs = text.split(/\n\n+/);
+  const protectedParagraphs = paragraphs.map((para) => {
+    // Check if this paragraph looks like an AI prompt
+    const paraLower = para.toLowerCase();
+    let keywordCount = 0;
+    for (const kw of PROMPT_KEYWORDS) {
+      if (paraLower.includes(kw)) keywordCount++;
+    }
+
+    // Also check for Midjourney parameter syntax
+    const hasMJParams = /--\w+\s+\S+/.test(para);
+
+    // Heuristic: >200 chars AND (2+ keywords OR MJ params)
+    if (para.length > 200 && (keywordCount >= 2 || hasMJParams)) {
+      const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
+      prompts.push(para);
+      console.log(`[cleaner] v0.5.14 protected AI prompt block (${para.length} chars, ${keywordCount} keywords)`);
+      return placeholder;
+    }
+
+    return para;
+  });
+
+  return {
+    text: protectedParagraphs.join("\n\n"),
+    prompts,
+  };
+}
+
+/**
+ * Restore protected AI prompt blocks back into the text.
+ * Called AFTER the AI rewrite step.
+ */
+export function restorePrompts(text, prompts) {
+  if (!text || !prompts || prompts.length === 0) return text;
+  return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => prompts[Number(i)] || "");
+}
+
+// ============================================================
 // MAIN CLEAN FUNCTION
 // ============================================================
 

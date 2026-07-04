@@ -253,6 +253,65 @@ export async function deleteMediaGroup(SETTINGS, groupId) {
   }
 }
 
-// NOTE: v0.5.9 — Cron-based scheduling queue functions REMOVED per user request.
-// Only native Telegram schedule_date is used now. If native fails, the bot
-// shows an error to the user (no KV-based fallback).
+// ============================================================
+// v0.5.14: CRON-BASED SCHEDULING QUEUE (SILENT FALLBACK)
+// ============================================================
+// Telegram silently drops schedule_date for some channels/bots, returning
+// ok:true but sending immediately. Since we can't rely on native scheduling,
+// we re-add the KV Cron Queue as a SILENT FALLBACK.
+//
+// When native scheduling fails (verifyScheduled returns false), we silently
+// enqueue the message here. The cron trigger (every 1 minute) picks up due
+// messages and sends them via regular sendMessage.
+//
+// The user sees "📅 Scheduled!" — they don't know it's via cron.
+// ============================================================
+const SCHED_QUEUE_PREFIX = "sched:queue:";
+
+export async function enqueueScheduled(SETTINGS, item) {
+  if (!SETTINGS || !item || !item.scheduledTime || !item.id) return;
+  try {
+    const key = `${SCHED_QUEUE_PREFIX}${item.scheduledTime}:${item.id}`;
+    await SETTINGS.put(key, JSON.stringify(item), { expirationTtl: 7 * 24 * 3600 });
+    console.log(`[kv] v0.5.14 silent cron fallback: enqueued ${key} → ${new Date(item.scheduledTime).toISOString()}`);
+  } catch (e) {
+    console.error("[kv] enqueueScheduled failed:", e.message);
+  }
+}
+
+export async function listDueScheduled(SETTINGS) {
+  if (!SETTINGS) return [];
+  try {
+    const now = Date.now();
+    const list = await SETTINGS.list({ prefix: SCHED_QUEUE_PREFIX, limit: 100 });
+    const due = [];
+    for (const key of list.keys) {
+      const parts = key.name.split(":");
+      const ts = parseInt(parts[2], 10);
+      if (ts <= now) {
+        const raw = await SETTINGS.get(key.name);
+        if (raw) {
+          try {
+            const item = JSON.parse(raw);
+            item._kvKey = key.name;
+            due.push(item);
+          } catch {}
+        }
+      }
+    }
+    due.sort((a, b) => a.scheduledTime - b.scheduledTime);
+    return due;
+  } catch (e) {
+    console.error("[kv] listDueScheduled failed:", e.message);
+    return [];
+  }
+}
+
+export async function deleteScheduledItem(SETTINGS, kvKey) {
+  if (!SETTINGS || !kvKey) return;
+  try {
+    await SETTINGS.delete(kvKey);
+  } catch (e) {
+    console.error("[kv] deleteScheduledItem failed:", e.message);
+  }
+}

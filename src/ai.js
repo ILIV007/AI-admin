@@ -316,6 +316,7 @@ RULES:
 - PRESERVE functional emojis (📚🛠️⚡💡🔒🌐📦). Remove decorative (🔥😍😱🎉🤣).
 - PRESERVE number emojis (1️⃣2️⃣3️⃣).
 - Preserve the author's emotional tone. Don't flatten excitement or urgency.
+- v0.5.14: PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
 - Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`code blocks\`\`\`).
 - Do NOT add footer. Do NOT add explanations. Do NOT add HTML tags.
 - Write each URL on its OWN line.`;
@@ -326,6 +327,7 @@ RULES:
 - Keep input language. NEVER translate.
 - PRESERVE EVERY URL, link, and download link. Do NOT remove ANY.
 - PRESERVE code blocks and commands.
+- v0.5.14: PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
 - Remove only: redundancy, fluff, repetition, filler words.
 - Output should be 80-90% of original length (NOT 30-50%!).
 - Keep original structure and flow.

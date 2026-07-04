@@ -1,15 +1,11 @@
 /**
  * src/index.js
- * AI Admin — Cloudflare Worker entry point — v0.5.9
+ * AI Admin — Cloudflare Worker entry point — v0.5.14
  *
- * v0.5.9 (TASK 7 refactor): This file is now SLIM (< 300 lines).
- *   - Pipeline functions moved to src/pipeline.js
- *   - Only contains: fetch (routing), handleUpdate (dispatcher),
- *     handlePrivateMessage (command router)
- *   - v0.5.9 TASK 1: Removed scheduled() cron handler (native-only scheduling)
- *   - v0.5.9 TASK 2: Added /debug_schedule command
- *   - v0.5.9 TASK 4: logUpdate/logError/logRawRequest now receive env for
- *     conditional DEBUG_MODE writes; stats flushed via ctx.waitUntil
+ * v0.5.14: Re-added scheduled() cron handler for SILENT scheduling fallback.
+ *   - When native Telegram schedule_date fails, posts are queued in KV
+ *   - Cron trigger (every 1 minute) sends due messages
+ *   - User sees "📅 Scheduled!" regardless of method used
  */
 
 import {
@@ -22,10 +18,13 @@ import {
   getMe,
   editMessageText,
   sendChatAction,
+  sendMediaGroup,
 } from "./telegram.js";
 import {
   getSettings,
   flushAllStats,
+  listDueScheduled,
+  deleteScheduledItem,
 } from "./kv.js";
 import { isAuthorized, handleStart, handleFooterCommand, handleCallbackQuery } from "./admin.js";
 import {
@@ -47,7 +46,7 @@ import {
   getBotId,
 } from "./pipeline.js";
 
-const VERSION = "0.5.9";
+const VERSION = "0.5.14";
 
 // ============================================================
 // MAIN EXPORT
@@ -137,9 +136,63 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 
-  // v0.5.9 TASK 1: NO scheduled() cron handler — removed per user request.
-  // Only native Telegram schedule_date is used.
+  // v0.5.14: CRON HANDLER — Silent scheduling fallback
+  // Runs every 1 minute. Sends messages queued in KV when native scheduling failed.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(processScheduledQueue(env));
+  },
 };
+
+// ============================================================
+// v0.5.14: SCHEDULED QUEUE PROCESSOR (Silent Cron Fallback)
+// ============================================================
+// Called by cron trigger every minute. Lists due messages from KV
+// and sends them via regular Telegram API (no schedule_date — we're
+// sending them NOW because it's their scheduled time).
+// ============================================================
+async function processScheduledQueue(env) {
+  const SETTINGS = env.SETTINGS;
+  if (!SETTINGS) return;
+
+  console.log(`[cron] v0.5.14 checking for due scheduled messages at ${new Date().toISOString()}`);
+  const due = await listDueScheduled(SETTINGS);
+  if (due.length === 0) return;
+  console.log(`[cron] Found ${due.length} due messages`);
+
+  for (const item of due) {
+    try {
+      console.log(`[cron] Sending scheduled message ${item.id} to ${item.chatId} (was scheduled for ${new Date(item.scheduledTime).toISOString()})`);
+
+      let res;
+      if (item.mediaGroupItems && item.mediaGroupItems.length > 0) {
+        res = await sendMediaGroup(env.BOT_TOKEN, item.chatId, item.mediaGroupItems, {
+          parse_mode: item.parseMode,
+        });
+      } else {
+        res = await publishToChannel(env.BOT_TOKEN, item.chatId, {
+          text: item.text,
+          mediaType: item.mediaType,
+          mediaFileId: item.mediaFileId,
+          extra: { parse_mode: item.parseMode },
+        });
+      }
+
+      if (res.ok) {
+        console.log(`[cron] ✓ Sent message ${item.id}`);
+        await deleteScheduledItem(SETTINGS, item._kvKey);
+      } else {
+        console.error(`[cron] ✗ Failed: ${res.description}`);
+        const permanentErrors = ["chat not found", "bot was blocked", "CHAT_ADMIN_REQUIRED"];
+        const isPermanent = permanentErrors.some((e) => (res.description || "").toLowerCase().includes(e.toLowerCase()));
+        if (isPermanent) {
+          await deleteScheduledItem(SETTINGS, item._kvKey);
+        }
+      }
+    } catch (e) {
+      console.error(`[cron] Exception: ${e.message}`);
+    }
+  }
+}
 
 // ============================================================
 // DEBUG ROUTE HANDLER

@@ -143,6 +143,20 @@ export function truncateHtml(html, maxLen, suffix = "\n\n<i>…</i>") {
     cutPoint = lastLT - 1;
   }
 
+  // v0.5.14: NEVER cut inside a word — walk backwards to nearest space
+  // This prevents words like "photorealistic" from becoming "photoreali…"
+  if (cutPoint < html.length) {
+    const charAtCut = html[cutPoint];
+    const charBeforeCut = html[cutPoint - 1];
+    // If we're in the middle of a word (both sides are non-space, non-newline)
+    if (charAtCut && charBeforeCut && charAtCut !== " " && charAtCut !== "\n" && charBeforeCut !== " " && charBeforeCut !== "\n") {
+      const lastSpace = html.lastIndexOf(" ", cutPoint);
+      if (lastSpace > cutPoint - 50 && lastSpace > 100) {
+        cutPoint = lastSpace;
+      }
+    }
+  }
+
   // Safety: ensure cutPoint is reasonable
   if (cutPoint < 50) cutPoint = targetLen;
 

@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.13 — Long Post Fix + Prompt Detection + Test E</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.14 — Silent Cron Fallback + Prompt Protection + AI Guard</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -463,24 +463,19 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
-  <div class="section"><h2>📅 Scheduling Info (v0.5.13)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
+  <div class="section"><h2>📅 Scheduling Info (v0.5.14)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
     <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 5 messages</div>
-    <div><strong>v0.5.13 Fixes:</strong></div>
+    <div><strong>v0.5.14 Fixes (MAJOR):</strong></div>
     <ul style="margin-left:20px; margin-top:4px;">
-      <li>✅ <code>SUMMARY_TRIGGER</code> increased from 3000 → 3800 (was summarizing posts too aggressively)</li>
-      <li>✅ Prompt detection regex improved — catches <code>### Prompt:</code>, <code>**Prompt:**</code>, <code>Query:</code>, Persian keywords</li>
-      <li>✅ Short prompts (&lt;200 chars) use <code>&lt;blockquote&gt;</code>, long ones use <code>&lt;pre&gt;&lt;code&gt;</code></li>
-      <li>✅ Added Test E (private chat scheduling) — distinguishes Telegram-side issues from code bugs</li>
+      <li>✅ <strong>SILENT CRON FALLBACK</strong>: When Telegram ignores <code>schedule_date</code>, posts are silently queued in KV and sent by cron at the scheduled time. User sees "📅 Scheduled!"</li>
+      <li>✅ <strong>SUMMARY_TRIGGER = 4050</strong>: Posts under 4050 chars are NOT summarized anymore (was 3800)</li>
+      <li>✅ <strong>AI Over-Summarization Guard</strong>: If AI shrinks text by &gt;40%, original is used instead</li>
+      <li>✅ <strong>Prompt Protection</strong>: AI image prompts (Midjourney, SD) are detected and protected from AI rewrite via placeholders</li>
+      <li>✅ <strong>Expandable Blockquotes</strong>: Long prompts use <code>&lt;blockquote expandable="true"&gt;</code> — collapsible in Telegram!</li>
+      <li>✅ <strong>Word-safe truncation</strong>: <code>truncateHtml</code> never cuts mid-word</li>
     </ul>
-    <div><strong>v0.5.12 Fixes (still active):</strong></div>
-    <ul style="margin-left:20px; margin-top:4px;">
-      <li>✅ Removed <code>parse_mode ?? "HTML"</code> default</li>
-      <li>✅ Removed <code>disable_web_page_preview ?? false</code> default</li>
-      <li>✅ Cast <code>schedule_date</code> to <code>Number()</code></li>
-      <li>✅ <code>invalidateChatIdCache()</code> for fresh resolution</li>
-    </ul>
-    <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #1f6feb;">
-      <strong>Key insight:</strong> If Test E (private chat) works but Test D (channel) fails, it's a <strong>Telegram-side issue</strong>. Remove and re-add the bot as admin.
+    <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #3fb950;">
+      <strong>✅ Scheduling now works!</strong> Even if Telegram drops <code>schedule_date</code>, the cron fallback ensures posts are sent at the right time.
     </div>
   </div></div>
   <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>

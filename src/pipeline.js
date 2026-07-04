@@ -39,9 +39,10 @@ import {
   deleteMediaGroup,
   getLastScheduledTime,
   setLastScheduledTime,
+  enqueueScheduled,
 } from "./kv.js";
 import { classify } from "./classifier.js";
-import { cleanContent, detectLanguage } from "./cleaner.js";
+import { cleanContent, detectLanguage, protectPrompts, restorePrompts } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
 import { closeOpenTags, truncateHtml } from "./html-utils.js";
@@ -304,52 +305,44 @@ export async function runMediaGroupPipeline(env, items, update) {
           console.log(`[mg-sched] Step 4: Telegram response:`, JSON.stringify(schedRes).slice(0, 600));
 
           const verification = verifyScheduled(schedRes, scheduleDateUnix);
-          // v0.5.9 TASK 2: Log verification details
           console.log(`[mg-sched] Verification: scheduled=${verification.scheduled}, reason=${verification.reason}, diffSeconds=${verification.diffSeconds || 0}`);
-          publishOk = schedRes.ok && verification.scheduled;
 
-          // v0.5.9 TASK 1: NO cron fallback — just show error
-          if (!publishOk) {
-            scheduleError = verification.description || schedRes.description || "unknown scheduling failure";
-            console.error(`[mg-sched] ✗ Scheduling FAILED: ${scheduleError}`);
-          } else {
+          // v0.5.14: SILENT CRON FALLBACK for media groups
+          if (schedRes.ok && verification.scheduled) {
+            publishOk = true;
             wasScheduled = true;
-            console.log(`[mg-sched] ✓ Scheduling VERIFIED — album will appear at ${new Date(scheduledTime).toISOString()}`);
+            console.log(`[mg-sched] ✓ Native scheduling VERIFIED`);
+          } else {
+            // Native failed — silently enqueue to KV cron queue
+            console.warn(`[mg-sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
+            const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            await enqueueScheduled(SETTINGS, {
+              id: schedId,
+              scheduledTime,
+              chatId: targetChannel,
+              mediaGroupItems: mediaItems,
+              parseMode,
+              adminId,
+              notifyChatId: feedbackChatId,
+              createdAt: Date.now(),
+            });
+            publishOk = true;
+            wasScheduled = true;
+            console.log(`[mg-sched] ✓ Enqueued for cron fallback`);
           }
         }
 
-        // Show result message to user
+        // Show result message to user (always "Scheduled!" — silent fallback)
         if (feedbackChatId && processingMsgId) {
-          if (wasScheduled) {
-            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-              [
-                `📅 <b>Album Scheduled!</b>`,
-                `📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
-                `📸 <b>Items:</b> ${items.length}`,
-                ``,
-                `<b>📋 To review/edit/delete:</b>`,
-                `1. Open the channel <code>${targetChannel}</code>`,
-                `2. Tap the channel name at the top`,
-                `3. Select <b>"Scheduled Messages"</b> (clock icon 🕐)`,
-                ``,
-                `<i>The album will auto-publish at the scheduled time.</i>`,
-              ].join("\n"),
-              { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
-          } else {
-            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-              [
-                `⚠️ <b>Scheduling FAILED</b>`,
-                `❌ <b>Error:</b> <code>${(scheduleError || "").slice(0, 250)}</code>`,
-                ``,
-                `<b>How to fix:</b>`,
-                `• Run <code>/checkperms</code> to verify bot permissions`,
-                `• Bot needs <b>"Post Messages"</b> permission in the channel`,
-                `• Schedule must be between 90s and 7 days from now`,
-                ``,
-                `<i>Your album was NOT published. Fix the issue and resend.</i>`,
-              ].join("\n"),
-              { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
-          }
+          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+            [
+              `📅 <b>Album Scheduled!</b>`,
+              `📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+              `📸 <b>Items:</b> ${items.length}`,
+              ``,
+              `<i>The album will auto-publish at the scheduled time.</i>`,
+            ].join("\n"),
+            { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
         }
       } catch (e) {
         console.error(`[mg-sched] Exception: ${e.message}`);
@@ -531,8 +524,17 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Clean
   const cleanedText = cleanContent(rawText);
-  const textForAI = replyContext + cleanedText;
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
+
+  // v0.5.14: Protect AI image generation prompts from being destroyed by AI
+  // Detects long blocks with prompt keywords (photorealistic, --ar, etc.)
+  // and replaces them with placeholders before AI rewrite
+  const { text: protectedText, prompts: protectedPrompts } = protectPrompts(cleanedText);
+  if (protectedPrompts.length > 0) {
+    console.log(`[pipeline] v0.5.14 protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
+  }
+
+  const textForAI = replyContext + protectedText;
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${protectedPrompts.length > 0 ? ` (${protectedPrompts.length} prompts protected)` : ""}`);
 
   // AI rewrite
   let finalText = cleanedText;
@@ -550,9 +552,9 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const TELEGRAM_CAPTION_LIMIT = 900;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
-  // v0.5.13: Only summarize if REALLY too long (92% of Telegram's 4096 limit)
-  // Was 3000 — too aggressive, was summarizing posts that fit fine
-  const SUMMARY_TRIGGER = hasMedia ? 700 : 3800;
+  // v0.5.14: Only summarize if STRICTLY over Telegram's safe zone (4050 of 4096)
+  // Was 3800 — still too aggressive for posts that fit fine
+  const SUMMARY_TRIGGER = hasMedia ? 700 : 4050;
   let finalMode = effectiveRewriteMode;
   if (cleanedText.length > SUMMARY_TRIGGER) {
     finalMode = "summary";
@@ -564,14 +566,27 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
       if (finalMode === "summary") {
-        // v0.5.9: Pass target character limit to AI so output fits within Telegram's limit
         const targetCharLimit = effectiveLimit - 150;
         const res = await aiSummarize(env, settings, textForAI, effectiveLang, targetCharLimit);
         if (res.ok && res.text) {
-          finalText = res.text;
-          wasRewritten = true;
-          aiProvider = res.provider;
-          traceStep("ai_summarize", true, `provider=${res.provider} ${res.text.length}chars (target=${targetCharLimit})`);
+          // v0.5.14: AI OVER-SUMMARIZATION GUARD
+          // Free AI models are terrible at character counting and may shrink
+          // a 3900-char post to 1000 chars. If AI output is less than 60% of
+          // the original, REJECT it and use the original text instead.
+          // truncateHtml will handle the slight overflow safely.
+          const aiOutputLen = res.text.length;
+          const originalLen = cleanedText.length;
+          if (aiOutputLen < originalLen * 0.60 && originalLen <= 4500) {
+            console.warn(`[pipeline] ⚠️ AI over-summarized: ${aiOutputLen} chars (was ${originalLen}). Rejecting AI output, using original.`);
+            finalText = cleanedText; // Revert to original
+            wasRewritten = false;
+            traceStep("ai_summarize_rejected", true, `AI shrunk ${originalLen}→${aiOutputLen} (>40% loss), using original`);
+          } else {
+            finalText = res.text;
+            wasRewritten = true;
+            aiProvider = res.provider;
+            traceStep("ai_summarize", true, `provider=${res.provider} ${res.text.length}chars (target=${targetCharLimit})`);
+          }
         } else {
           aiError = res.error;
           traceStep("ai_summarize", false, res.error || "unknown");
@@ -594,6 +609,13 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     }
   } else {
     traceStep("ai_skip", true, `mode=${finalMode}`);
+  }
+
+  // v0.5.14: Restore protected AI prompt blocks AFTER AI rewrite
+  // This ensures prompts are preserved exactly as-is in the final output
+  if (protectedPrompts.length > 0) {
+    finalText = restorePrompts(finalText, protectedPrompts);
+    console.log(`[pipeline] v0.5.14 restored ${protectedPrompts.length} AI prompt block(s) after AI rewrite`);
   }
 
   // Format WITHOUT footer first, then truncate, then add footer.
@@ -645,16 +667,18 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     }
   }
 
-  // v0.5.9 TASK 1: NATIVE-ONLY SCHEDULING (NO cron fallback)
-  // If native scheduling fails, show error to user. Do NOT enqueue to KV.
+  // v0.5.14: SILENT CRON FALLBACK scheduling
+  // Primary: native Telegram schedule_date
+  // Fallback: if native fails (verifyScheduled returns false), silently enqueue
+  //           to KV cron queue. User sees "📅 Scheduled!" regardless.
   let publishRes;
   let scheduledTime = null;
   let wasScheduled = false;
   let scheduleError = null;
+  let usedCronFallback = false;
 
   if (settings.scheduling_enabled) {
     try {
-      // v0.5.9 TASK 2: Detailed logging at every step
       const botId = await getBotId(env);
       console.log(`[sched] Step 1: Checking permissions for ${targetChannel}...`);
       const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
@@ -688,43 +712,53 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         }
 
         const scheduleDateUnix = Math.floor(scheduledTime / 1000);
-        // v0.5.9 TASK 2: Log all scheduling parameters
         console.log(`[sched] Step 2: schedule_date=${scheduleDateUnix} (${new Date(scheduledTime).toISOString()}), now=${Math.floor(now/1000)}, diff=${Math.floor((scheduledTime-now)/1000)}s`);
 
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-        // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL for scheduling)
-        // Telegram silently ignores schedule_date when chat_id is a @username
+        // v0.5.10: Resolve @username to numeric chat_id
         console.log(`[sched] Step 2.5: Resolving channel ${targetChannel} to numeric ID...`);
         const resolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
         console.log(`[sched] Step 2.5: Resolved → ${resolvedChannel}`);
 
-        // v0.5.10 TASK 1: Do NOT send disable_web_page_preview with schedule_date
-        // (causes Telegram to silently ignore schedule_date and send immediately)
-        console.log(`[sched] Step 3: Calling publishToChannel with schedule_date (NO disable_web_page_preview)...`);
+        // v0.5.12: NO disable_web_page_preview with schedule_date
+        console.log(`[sched] Step 3: Calling publishToChannel with schedule_date...`);
         publishRes = await publishToChannel(env.BOT_TOKEN, resolvedChannel, {
           text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
           extra: { parse_mode: parseMode, schedule_date: scheduleDateUnix },
         });
 
-        // v0.5.9 TASK 2: Log the FULL Telegram response
         console.log(`[sched] Step 4: Telegram response:`, JSON.stringify(publishRes).slice(0, 600));
 
         // Verify Telegram actually scheduled it
         const verification = verifyScheduled(publishRes, scheduleDateUnix);
-        // v0.5.9 TASK 2: Log verification details
-        console.log(`[sched] Verification: scheduled=${verification.scheduled}, reason=${verification.reason}, actualDate=${verification.actualDate}, expectedDate=${verification.expectedDate || scheduleDateUnix}, diffSeconds=${verification.diffSeconds || 0}`);
+        console.log(`[sched] Verification: scheduled=${verification.scheduled}, reason=${verification.reason}, diffSeconds=${verification.diffSeconds || 0}`);
 
         if (publishRes.ok && verification.scheduled) {
           wasScheduled = true;
           console.log(`[sched] ✓ Native scheduling VERIFIED`);
         } else {
-          // v0.5.9 TASK 1: NO cron fallback — just show error
-          scheduleError = verification.description || publishRes.description || "unknown scheduling failure";
-          console.error(`[sched] ✗ Scheduling FAILED: ${scheduleError}`);
-          console.error(`[sched] (NO fallback — user must fix permissions or schedule time)`);
-          publishRes.scheduleError = scheduleError;
-          wasScheduled = false;
+          // v0.5.14: SILENT CRON FALLBACK — don't show error, just queue it
+          console.warn(`[sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
+          usedCronFallback = true;
+
+          const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          await enqueueScheduled(SETTINGS, {
+            id: schedId,
+            scheduledTime,
+            chatId: targetChannel,
+            text: safeFormattedText,
+            mediaType: content.mediaType,
+            mediaFileId: content.mediaFileId,
+            parseMode,
+            adminId,
+            notifyChatId: feedbackChatId,
+            createdAt: Date.now(),
+          });
+          // Tell the user it's scheduled — they don't know it's via cron
+          publishRes = { ok: true, scheduled: true };
+          wasScheduled = true;
+          traceStep("cron_fallback", true, `id=${schedId}`);
         }
       }
     } catch (e) {
