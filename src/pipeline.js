@@ -1,6 +1,6 @@
 /**
  * src/pipeline.js
- * Content processing pipelines — v0.5.9 (TASK 7 refactor)
+ * Content processing pipelines — v0.6.0
  *
  * Moved from src/index.js to keep index.js focused on routing/dispatch.
  *
@@ -10,12 +10,6 @@
  *   - runMediaGroupPipeline (album processing)
  *   - runChannelEditPipeline (edit existing channel posts)
  *   - handleMediaGroupUpdate (buffer + leader election)
- *
- * v0.5.9 changes:
- *   - TASK 1: Removed ALL cron-based scheduling fallback. Native only.
- *   - TASK 5: Media group wait increased to 4000ms + safety re-check.
- *   - TASK 6: Uses closeOpenTags() / truncateHtml() from html-utils.js.
- *   - TASK 2: Detailed scheduling logs.
  */
 
 import {
@@ -45,7 +39,7 @@ import { classify } from "./classifier.js";
 import { cleanContent, detectLanguage, protectPrompts, restorePrompts } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
-import { closeOpenTags, truncateHtml } from "./html-utils.js";
+import { truncateHtml } from "./html-utils.js";
 import { logUpdate, logError } from "./debug.js";
 
 // ============================================================
@@ -229,7 +223,7 @@ export async function runMediaGroupPipeline(env, items, update) {
   let maxBodyLen = MG_LIMIT - footerHtml.length - 10; // v0.5.23: Minimal margin
   let effectiveFooterHtml = footerHtml;
   if (maxBodyLen < 200) {
-    console.warn(`[mg-pipeline] v0.5.23 ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
+    console.warn(`[mg-pipeline] ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
     effectiveFooterHtml = "";
     maxBodyLen = MG_LIMIT - 10;
   }
@@ -238,7 +232,7 @@ export async function runMediaGroupPipeline(env, items, update) {
 
   // v0.5.23: If caption too long, use AI summary (NOT truncation with …)
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[mg-pipeline] v0.5.23 caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
+    console.warn(`[mg-pipeline] caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
     try {
       const targetCharLimit = maxBodyLen - 50;
       const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
@@ -255,19 +249,19 @@ export async function runMediaGroupPipeline(env, items, update) {
           safeBody = summaryFormatted;
           wasRewritten = true;
           aiProvider = summaryRes.provider;
-          console.log(`[mg-pipeline] v0.5.23 AI summary OK: ${formattedBody.length}→${safeBody.length} chars (${summaryRes.provider})`);
+          console.log(`[mg-pipeline] AI summary OK: ${formattedBody.length}→${safeBody.length} chars (${summaryRes.provider})`);
         } else {
           // AI summary failed or made it longer — last resort: truncate WITHOUT …
-          console.warn(`[mg-pipeline] v0.5.23 AI summary didn't help, truncating without …`);
+          console.warn(`[mg-pipeline] AI summary didn't help, truncating without …`);
           safeBody = truncateHtml(formattedBody, maxBodyLen, "");
         }
       } else {
         // AI failed — truncate WITHOUT …
-        console.warn(`[mg-pipeline] v0.5.23 AI summary failed, truncating without …`);
+        console.warn(`[mg-pipeline] AI summary failed, truncating without …`);
         safeBody = truncateHtml(formattedBody, maxBodyLen, "");
       }
     } catch (e) {
-      console.error(`[mg-pipeline] v0.5.23 AI summary exception: ${e.message}`);
+      console.error(`[mg-pipeline] AI summary exception: ${e.message}`);
       safeBody = truncateHtml(formattedBody, maxBodyLen, "");
     }
   }
@@ -576,7 +570,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   // and replaces them with placeholders before AI rewrite
   const { text: protectedText, prompts: protectedPrompts } = protectPrompts(cleanedText);
   if (protectedPrompts.length > 0) {
-    console.log(`[pipeline] v0.5.14 protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
+    console.log(`[pipeline] protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
   }
 
   // v0.5.16: CRITICAL FIX — If protectedText is mostly placeholders (>80%),
@@ -589,7 +583,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const isMostlyPlaceholders = nonPlaceholderText.length < 50 && placeholderCount > 0;
 
   if (isMostlyPlaceholders) {
-    console.log(`[pipeline] v0.5.16 ⚠️ Text is mostly prompt placeholders (${placeholderCount} blocks, only ${nonPlaceholderText.length} chars of non-prompt text). Skipping AI rewrite.`);
+    console.log(`[pipeline] ⚠️ Text is mostly prompt placeholders (${placeholderCount} blocks, only ${nonPlaceholderText.length} chars of non-prompt text). Skipping AI rewrite.`);
   }
 
   const textForAI = replyContext + protectedText;
@@ -674,7 +668,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   // This ensures prompts are preserved exactly as-is in the final output
   if (protectedPrompts.length > 0) {
     finalText = restorePrompts(finalText, protectedPrompts);
-    console.log(`[pipeline] v0.5.14 restored ${protectedPrompts.length} AI prompt block(s) after AI rewrite`);
+    console.log(`[pipeline] restored ${protectedPrompts.length} AI prompt block(s) after AI rewrite`);
   }
 
   // Format WITHOUT footer first, then truncate, then add footer.
@@ -698,7 +692,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   let effectiveFooterHtml = footerHtml;
   let effectiveFooterLen = footerLen;
   if (maxBodyLen < 200) {
-    console.warn(`[pipeline] v0.5.17 ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
+    console.warn(`[pipeline] ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
     effectiveFooterHtml = "";
     effectiveFooterLen = 0;
     maxBodyLen = effectiveLimit - 10;
@@ -714,7 +708,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   if (formattedBody.length > maxBodyLen) {
     if (hasMedia) {
       // v0.5.23: Media posts — use AI summary
-      console.warn(`[pipeline] v0.5.23 caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
+      console.warn(`[pipeline] caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
       try {
         const targetCharLimit = maxBodyLen - 50;
         const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
@@ -730,7 +724,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
             safeBody = summaryFormatted;
             wasRewritten = true;
             aiProvider = summaryRes.provider;
-            console.log(`[pipeline] v0.5.23 AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
+            console.log(`[pipeline] AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
           } else {
             safeBody = truncateHtml(formattedBody, maxBodyLen, "");
           }
@@ -738,12 +732,12 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
           safeBody = truncateHtml(formattedBody, maxBodyLen, "");
         }
       } catch (e) {
-        console.error(`[pipeline] v0.5.23 AI summary exception: ${e.message}`);
+        console.error(`[pipeline] AI summary exception: ${e.message}`);
         safeBody = truncateHtml(formattedBody, maxBodyLen, "");
       }
     } else {
       // v0.5.24: Text posts — try balanced split first
-      console.warn(`[pipeline] v0.5.24 body too long (${formattedBody.length} > ${maxBodyLen})`);
+      console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen})`);
 
       // Try to split into 2 balanced parts
       const halfPoint = Math.floor(formattedBody.length / 2);
@@ -766,7 +760,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
       // v0.5.24: If part2 is too small (<200 chars), use AI summary instead of split
       if (part2.length < 200 || part1.length > maxBodyLen) {
-        console.warn(`[pipeline] v0.5.24 split would be unbalanced (p1=${part1.length}, p2=${part2.length}). Using AI summary...`);
+        console.warn(`[pipeline] split would be unbalanced (p1=${part1.length}, p2=${part2.length}). Using AI summary...`);
         try {
           const targetCharLimit = maxBodyLen - 50;
           const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
@@ -782,7 +776,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
               safeBody = summaryFormatted;
               wasRewritten = true;
               aiProvider = summaryRes.provider;
-              console.log(`[pipeline] v0.5.24 AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
+              console.log(`[pipeline] AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
             } else {
               safeBody = truncateHtml(formattedBody, maxBodyLen, "");
             }
@@ -790,14 +784,14 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
             safeBody = truncateHtml(formattedBody, maxBodyLen, "");
           }
         } catch (e) {
-          console.error(`[pipeline] v0.5.24 AI summary exception: ${e.message}`);
+          console.error(`[pipeline] AI summary exception: ${e.message}`);
           safeBody = truncateHtml(formattedBody, maxBodyLen, "");
         }
       } else {
         // Split is balanced — use it
         safeBody = part1;
         extraParts.push(part2);
-        console.log(`[pipeline] v0.5.24 balanced split: p1=${part1.length}, p2=${part2.length}`);
+        console.log(`[pipeline] balanced split: p1=${part1.length}, p2=${part2.length}`);
         traceStep("split_post", true, `${formattedBody.length} chars → 2 parts (balanced)`);
       }
     }
@@ -831,7 +825,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   if (feedbackChatId) {
     // v0.5.24: If approve mode is ON, send preview with approve/reject buttons
     if (settings.approve_enabled && !settings.scheduling_enabled) {
-      console.log(`[pipeline] v0.5.24 approve mode ON — sending preview with buttons`);
+      console.log(`[pipeline] approve mode ON — sending preview with buttons`);
 
       // Send preview to user
       const previewRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
@@ -1056,7 +1050,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     const isTooLongError = errDesc.includes("too long") || errDesc.includes("message is too long") || errDesc.includes("caption is too long") || errDesc.includes("400");
 
     if (isTooLongError && !wasRewritten) {
-      console.warn(`[pipeline] v0.5.21 ⚠️ Publish failed (too long: ${safeFormattedText.length} chars). Retrying with AI summary...`);
+      console.warn(`[pipeline] ⚠️ Publish failed (too long: ${safeFormattedText.length} chars). Retrying with AI summary...`);
       traceStep("retry_summary_start", false, `text too long: ${safeFormattedText.length} chars`);
 
       try {
@@ -1079,7 +1073,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
             summarySafe = truncateHtml(summaryFormatted, effectiveLimit - 50, ""); // v0.5.23: No … marker
           }
 
-          console.log(`[pipeline] v0.5.21 Summary generated: ${summarySafe.length} chars (was ${safeFormattedText.length})`);
+          console.log(`[pipeline] Summary generated: ${summarySafe.length} chars (was ${safeFormattedText.length})`);
           publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
             text: summarySafe, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
             extra: { parse_mode: summaryParseMode, disable_web_page_preview: false },
@@ -1094,7 +1088,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
           }
         }
       } catch (summaryErr) {
-        console.error(`[pipeline] v0.5.21 Summary retry failed: ${summaryErr.message}`);
+        console.error(`[pipeline] Summary retry failed: ${summaryErr.message}`);
         traceStep("retry_summary_error", false, summaryErr.message);
       }
     }
@@ -1160,7 +1154,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     // v0.5.24: Send extra parts (if the post was split)
     // Part 2 replies to Part 1 for continuity
     if (extraParts.length > 0 && !settings.scheduling_enabled) {
-      console.log(`[pipeline] v0.5.24 sending ${extraParts.length} extra part(s)...`);
+      console.log(`[pipeline] sending ${extraParts.length} extra part(s)...`);
       // Get the message_id of the first post for reply
       const firstMsgId = publishRes?.result?.message_id;
       for (let i = 0; i < extraParts.length; i++) {
@@ -1169,7 +1163,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         const partFooter = isLast ? effectiveFooterHtml : "";
         const partTextWithFooter = partText + partFooter;
 
-        console.log(`[pipeline] v0.5.24 sending part ${i + 2}/${extraParts.length + 1} (${partTextWithFooter.length} chars, reply_to=${firstMsgId})`);
+        console.log(`[pipeline] sending part ${i + 2}/${extraParts.length + 1} (${partTextWithFooter.length} chars, reply_to=${firstMsgId})`);
         const partRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
           text: partTextWithFooter, mediaType: null, mediaFileId: null,
           extra: {
@@ -1180,7 +1174,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         }).catch((e) => ({ ok: false, description: e.message }));
 
         if (!partRes.ok) {
-          console.error(`[pipeline] v0.5.24 part ${i + 2} failed: ${partRes.description}`);
+          console.error(`[pipeline] part ${i + 2} failed: ${partRes.description}`);
         }
         if (!isLast) await new Promise((r) => setTimeout(r, 500));
       }

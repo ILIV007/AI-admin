@@ -1,6 +1,6 @@
 /**
- * src/formatter.js — v0.4.9
- * 
+ * src/formatter.js — v0.6.0
+ *
  * FIXES:
  *   - <a href> tags no longer escaped (protected before escape)
  *   - Plain URLs → <a href> with shortened label (not blockquote)

@@ -12,6 +12,7 @@
  */
 
 const LINK_REGEX = /https?:\/\/[^\s<>"']+/gi;
+const GITHUB_REGEX = /github\.com|gist\.github|raw\.githubusercontent/i;
 // Note: t.me/ links are preserved as URLs (protected by URL safeguard).
 // Promo @usernames are removed separately by the @-handling regex below.
 // We do NOT blanket-remove t.me/ links because some are legitimate resources.
@@ -68,7 +69,7 @@ function isUsernamePartOfUrl(text, matchIndex) {
 }
 
 // ============================================================
-// v0.5.14: PROMPT PROTECTION — protect AI image generation prompts
+// PROMPT PROTECTION — protect AI image generation prompts
 // ============================================================
 // Users paste long English AI prompts (Midjourney, Stable Diffusion, etc.)
 // that contain keywords like "photorealistic", "octane render", "--ar", "8k".
@@ -93,9 +94,9 @@ const PROMPT_KEYWORDS = [
 ];
 
 /**
- * v0.5.17: COMPLETELY REWRITTEN prompt detection.
+ * Prompt detection algorithm.
  *
- * Problem in v0.5.15: When a post has Persian text + English prompt + Persian text
+ * Problem: When a post has Persian text + English prompt + Persian text
  * all in one paragraph (separated by single \n), the entire paragraph was protected.
  * This caused isMostlyPlaceholders=true → AI skipped → Persian text not cleaned.
  *
@@ -170,7 +171,7 @@ export function protectPrompts(text) {
       if (shouldProtect) {
         const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
         prompts.push(blockText);
-        console.log(`[cleaner] v0.5.17 protected English prompt block ${prompts.length - 1}: ${blockText.length} chars, ${keywordCount} keywords, MJ=${hasMJParams}`);
+        console.log(`[cleaner] protected English prompt block ${prompts.length - 1}: ${blockText.length} chars, ${keywordCount} keywords, MJ=${hasMJParams}`);
         result.push(placeholder);
         i = j; // Skip past the block
         continue;
@@ -191,17 +192,15 @@ export function protectPrompts(text) {
  * Restore protected AI prompt blocks back into the text.
  * Called AFTER the AI rewrite step.
  *
- * v0.5.18: Restored prompts are wrapped with "🎨 AI Prompt:" label
- * so the formatter can detect them and wrap in collapsible blockquote.
+ * Restored prompts are wrapped with special markers so the formatter can
+ * detect them and wrap in a collapsible blockquote.
  */
 export function restorePrompts(text, prompts) {
   if (!text || !prompts || prompts.length === 0) return text;
   return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => {
     const prompt = prompts[Number(i)];
     if (!prompt) return "";
-    // v0.5.20: No label — just the prompt text surrounded by special markers
-    // that the formatter can detect and wrap in collapsible blockquote.
-    // §PROMPT_START§ and §PROMPT_END§ are converted to §P0§ by the formatter.
+    // §PROMPT_START§ and §PROMPT_END§ are converted to §P0§ by the formatter
     return `\n§PROMPT_START§${prompt}§PROMPT_END§\n`;
   });
 }
@@ -325,5 +324,3 @@ export function contentStats(text) {
     hasCodeBlock: /```/.test(text),
   };
 }
-
-const GITHUB_REGEX = /github\.com|gist\.github|raw\.githubusercontent/i;

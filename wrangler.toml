@@ -1,6 +1,6 @@
 # ============================================================
 # AI Admin — Cloudflare Worker configuration
-# Version: v0.5.24
+# Version: v0.6.0
 # ============================================================
 
 name = "ai-admin"
@@ -13,7 +13,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "SETTINGS"
 id = "c8adbda37ee642d194adabf79f458f0d"
 
-# v0.5.14: Cron trigger for SILENT scheduling fallback
+# Cron trigger for SILENT scheduling fallback
 # Primary: native Telegram schedule_date
 # Fallback: if native fails (Telegram silently sends immediately),
 #           KV cron queue sends the message at the scheduled time.
@@ -29,23 +29,23 @@ ADMIN_ID = "126679582"
 TARGET_CHANNEL = "@ILIVIR3"
 FOOTER_TEXT = "🌀 @ILIVIR3"
 
-# v0.5.9 TASK 4: DEBUG_MODE — when "true", debug logs are written to KV.
+# DEBUG_MODE — when "true", debug logs are written to KV.
 # When "false" (default), logs only go to console.log (saves KV writes).
 DEBUG_MODE = "false"
 
 # AI Provider: "openrouter" (default — works even when Gemini quota is exceeded)
 DEFAULT_AI_PROVIDER = "openrouter"
 
-# Gemini model (free tier) — v0.5.19: Using gemini-3-flash-preview (newest)
+# Gemini model (free tier) — using gemini-3-flash-preview (newest)
 # Fallback chain: gemini-3-flash-preview → gemini-2.5-flash → gemini-3.1-flash-lite-preview → gemini-2.5-flash-lite → gemini-2.0-flash
 GEMINI_MODEL = "gemini-3-flash-preview"
 
-# OpenRouter primary model — v0.5.20: Using llama-3.3-70b (best quality)
+# OpenRouter primary model — using llama-3.3-70b (best quality)
 # Fallback chain: llama-3.3-70b → qwen3-next-80b → gemma-4-31b → gpt-oss-120b → hermes-3-405b → nemotron-ultra-550b
 OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # OpenRouter FALLBACK models (comma-separated, ALL tried in parallel via Promise.any)
-# v0.5.20: Top 6 from user's list, ranked by quality
+# Top 6 from user's list, ranked by quality
 OPENROUTER_FALLBACK_MODELS = "meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-next-80b-a3b-instruct:free,google/gemma-4-31b-it:free,openai/gpt-oss-120b:free,nousresearch/hermes-3-llama-3.1-405b:free,nvidia/nemotron-3-ultra-550b-a55b:free"
 
 # ============================================================

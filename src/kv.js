@@ -1,12 +1,13 @@
 /**
  * src/kv.js
- * Cloudflare KV helpers — v0.5.9
+ * Cloudflare KV helpers — v0.6.0
  *
- * v0.5.9 changes:
- *   - REMOVED cron-based scheduling queue (enqueueScheduled, listDueScheduled,
- *     deleteScheduledItem, SCHED_QUEUE_PREFIX) — user wants native-only scheduling
- *   - ADDED in-memory stats batching to reduce KV writes (TASK 4)
- *   - Kept getLastScheduledTime / setLastScheduledTime (still needed for interval tracking)
+ * Includes:
+ *   - Settings storage (per-admin)
+ *   - In-memory stats batching (reduces KV writes)
+ *   - Media group buffering (per-item keys, no race condition)
+ *   - Cron-based scheduling queue (silent fallback when native fails)
+ *   - Last scheduled timestamp tracking (for interval calculation)
  */
 
 const KEY_ADMIN = (id) => `admin:${id}`;
@@ -83,7 +84,7 @@ export async function updateSetting(SETTINGS, adminId, key, value) {
 }
 
 // ============================================================
-// v0.5.9 TASK 4: BATCHED STATS — reduces KV writes drastically
+// BATCHED STATS — reduces KV writes drastically
 // ============================================================
 // Problem: Free tier = 1,000 KV writes/day. Old code did Read+Write
 // on EVERY pipeline run (bumpStats + bumpGlobalStats = 4 writes per post).
@@ -258,11 +259,11 @@ export async function deleteMediaGroup(SETTINGS, groupId) {
 }
 
 // ============================================================
-// v0.5.14: CRON-BASED SCHEDULING QUEUE (SILENT FALLBACK)
+// CRON-BASED SCHEDULING QUEUE (SILENT FALLBACK)
 // ============================================================
 // Telegram silently drops schedule_date for some channels/bots, returning
 // ok:true but sending immediately. Since we can't rely on native scheduling,
-// we re-add the KV Cron Queue as a SILENT FALLBACK.
+// we use the KV Cron Queue as a SILENT FALLBACK.
 //
 // When native scheduling fails (verifyScheduled returns false), we silently
 // enqueue the message here. The cron trigger (every 1 minute) picks up due
@@ -277,7 +278,7 @@ export async function enqueueScheduled(SETTINGS, item) {
   try {
     const key = `${SCHED_QUEUE_PREFIX}${item.scheduledTime}:${item.id}`;
     await SETTINGS.put(key, JSON.stringify(item), { expirationTtl: 7 * 24 * 3600 });
-    console.log(`[kv] v0.5.14 silent cron fallback: enqueued ${key} → ${new Date(item.scheduledTime).toISOString()}`);
+    console.log(`[kv] silent cron fallback: enqueued ${key} → ${new Date(item.scheduledTime).toISOString()}`);
   } catch (e) {
     console.error("[kv] enqueueScheduled failed:", e.message);
   }

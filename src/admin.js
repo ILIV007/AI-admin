@@ -501,7 +501,6 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
     // Data format: "approve:publish:<chatId>:<messageId>"
     // The post data was stored in KV when the preview was sent
     const parts = data.split(":");
-    const targetChatId = parts[2];
     const previewMsgId = parts[3];
 
     // Retrieve stored post data from KV
@@ -539,10 +538,11 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
         }
       }
 
+      // Toast notification (preview message is left untouched)
       await answerCallbackQuery(env.BOT_TOKEN, cq.id, "✅ Published to channel!");
-      // Edit the preview message to show it's published
-      await editMessageText(env.BOT_TOKEN, targetChatId, Number(previewMsgId),
-        `✅ <b>Published to channel!</b>\n📍 <code>${postData.targetChannel}</code>`,
+      // Send result as a NEW separate message (do not edit the preview)
+      await sendMessage(env.BOT_TOKEN, chatId,
+        `✅ <b>Published!</b>\n📍 <code>${postData.targetChannel}</code>`,
         { parse_mode: "HTML" }).catch(() => {});
     } else {
       await answerCallbackQuery(env.BOT_TOKEN, cq.id, `❌ Failed: ${pubRes.description}`);
@@ -555,11 +555,12 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   // v0.5.24: Reject post callback
   else if (data.startsWith("approve:reject:")) {
     const parts = data.split(":");
-    const targetChatId = parts[2];
     const previewMsgId = parts[3];
+    // Toast notification (preview message is left untouched)
     await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post rejected");
-    await editMessageText(env.BOT_TOKEN, targetChatId, Number(previewMsgId),
-      `❌ <b>Post rejected</b>`, { parse_mode: "HTML" }).catch(() => {});
+    // Send result as a NEW separate message (do not edit the preview)
+    await sendMessage(env.BOT_TOKEN, chatId,
+      `❌ <b>Rejected</b>`, { parse_mode: "HTML" }).catch(() => {});
     // Clean up stored data
     await SETTINGS.delete(`approve:${previewMsgId}`);
     return;

@@ -1,25 +1,24 @@
 /**
  * src/ai.js
- * Unified AI client with MULTI-MODEL fallback — v0.5.9
+ * Unified AI client with MULTI-MODEL fallback — v0.6.0
  *
- * v0.5.9 changes (TASK 3):
- *   - Added AbortController to aiComplete(): when the first provider succeeds,
- *     all other in-flight requests are ABORTED. This prevents wasting tokens
- *     and CPU on the 9 other models that are still running.
- *   - Hard rule: ONLY use COMPACT_REWRITE_PROMPT / COMPACT_SUMMARIZE_PROMPT
- *     for API calls (under 800 tokens). Never pass buildEditorPrompt() output.
- *   - aiSummarize accepts targetCharLimit to fit Telegram limits.
- *   - Static import of profiles (was dynamic — failed in CF Workers bundler).
- *   - Always include BOTH providers as fallback (preferred first).
+ * Multi-model race with AbortController: when the first provider succeeds,
+ * all other in-flight requests are ABORTED. This prevents wasting tokens
+ * and CPU on the other models that are still running.
+ *
+ * Hard rule: ONLY use COMPACT_REWRITE_PROMPT / COMPACT_SUMMARIZE_PROMPT
+ * for API calls (under 800 tokens). Never pass buildEditorPrompt() output.
+ * aiSummarize accepts targetCharLimit to fit Telegram limits.
+ * Always include BOTH providers as fallback (preferred first).
  */
 
-// v0.5.7: STATIC import (dynamic import was failing in Cloudflare Workers bundler)
+// STATIC import (dynamic import was failing in Cloudflare Workers bundler)
 import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // ============================================================
-// DEFAULT FREE MODELS — v0.5.20 (latest ranked models)
+// DEFAULT FREE MODELS — top 6 per provider
 // ============================================================
 // User-provided list (2026-07) — top 6 selected and ranked by quality:
 //
@@ -58,8 +57,8 @@ const DEFAULT_OPENROUTER_MODELS = [
 
 // ============================================================
 // SHARED: fetch with AbortController-based timeout
-// v0.5.9: Now accepts an EXTERNAL signal (for cancellation when another
-// provider wins) and merges it with an internal timeout signal.
+// Accepts an EXTERNAL signal (for cancellation when another provider wins)
+// and merges it with an internal timeout signal.
 // ============================================================
 
 /**
@@ -111,7 +110,7 @@ function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS, external
 }
 
 // ============================================================
-// GEMINI complete — v0.5.9: accepts externalSignal for cancellation
+// GEMINI complete — accepts externalSignal for cancellation
 // ============================================================
 async function geminiComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
@@ -146,7 +145,7 @@ async function geminiComplete(apiKey, model, { system, user, jsonMode = false },
 }
 
 // ============================================================
-// OPENROUTER complete — v0.5.9: accepts externalSignal for cancellation
+// OPENROUTER complete — accepts externalSignal for cancellation
 // ============================================================
 async function openRouterComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("OPENROUTER_API_KEY missing");
@@ -203,11 +202,11 @@ function getOpenRouterModels(env) {
 }
 
 // ============================================================
-// UNIFIED complete() — v0.5.9: AbortController cancels losers
+// UNIFIED complete() — AbortController cancels losers
 // ============================================================
-// CRITICAL FIX (TASK 3): Previously, when Promise.any resolved with the
-// first successful response, the other 9 fetch requests kept running in
-// the background — wasting tokens, CPU, and bandwidth. Now we create a
+// CRITICAL FIX: Previously, when Promise.any resolved with the first
+// successful response, the other fetch requests kept running in the
+// background — wasting tokens, CPU, and bandwidth. Now we create a
 // shared AbortController. The moment ANY provider succeeds, we call
 // controller.abort() to cancel all others. Losers get a CANCELLED error
 // which we silently ignore (it's intentional, not a real failure).
@@ -222,7 +221,7 @@ export async function aiComplete(env, settings, params) {
   // v0.5.19: Use new model lists — preferred provider's TOP 2 models first,
   // then the OTHER provider's models as fallback.
 
-  // 1. Gemini models (using new GEMINI_MODELS list)
+  // 1. Gemini models
   if (env.GEMINI_API_KEY) {
     // If user set GEMINI_MODEL env, put it first, then the rest of the list
     const userModel = env.GEMINI_MODEL;
@@ -237,7 +236,7 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // 2. OpenRouter models (using new DEFAULT_OPENROUTER_MODELS list)
+  // 2. OpenRouter models
   if (env.OPENROUTER_API_KEY) {
     const models = getOpenRouterModels(env);
     for (const model of models) {
@@ -275,10 +274,10 @@ export async function aiComplete(env, settings, params) {
     return { ok: false, error: errMsg };
   }
 
-  console.log(`[AI] v0.5.19 racing ${providers.length} providers (preferred=${preferred}):`);
+  console.log(`[AI] racing ${providers.length} providers (preferred=${preferred}):`);
   providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
 
-  // v0.5.9: Shared AbortController — the moment ANY provider wins,
+  // Shared AbortController — the moment ANY provider wins,
   // abort ALL others to save tokens/CPU/bandwidth.
   const winnerController = new AbortController();
 
@@ -294,7 +293,7 @@ export async function aiComplete(env, settings, params) {
             text = await openRouterComplete(env.OPENROUTER_API_KEY, p.model, params, winnerController.signal);
           }
         } catch (e) {
-          // v0.5.9: Silently ignore CANCELLED errors (intentional abort when another provider won)
+          // Silently ignore CANCELLED errors (intentional abort when another provider won)
           if (e.message === "CANCELLED" || e.message.includes("CANCELLED")) {
             throw new Error("CANCELLED (another provider won)");
           }
@@ -332,8 +331,8 @@ export async function aiComplete(env, settings, params) {
 }
 
 // ============================================================
-// v0.5.5: ULTRA-COMPACT PROMPTS — self-contained, under 800 tokens
-// v0.5.9 HARD RULE: ONLY these prompts are sent to the API.
+// ULTRA-COMPACT PROMPTS — self-contained, under 800 tokens
+// HARD RULE: ONLY these prompts are sent to the API.
 // Never pass buildEditorPrompt() / buildFormatterPrompt() output.
 // ============================================================
 const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
@@ -370,10 +369,10 @@ function buildCompactPrompt(mode) {
 }
 
 // ============================================================
-// REWRITE — v0.5.9: ONLY use compact prompt (never buildEditorPrompt)
+// REWRITE — ONLY use compact prompt (never buildEditorPrompt)
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
-  // v0.5.9 HARD RULE: Only COMPACT_REWRITE_PROMPT (+ optional profile addendum)
+  // HARD RULE: Only COMPACT_REWRITE_PROMPT (+ optional profile addendum)
   let fullSystemPrompt;
   if (settings.active_profile) {
     // Profile addendum is small (~200 tokens), keeps total under 800
@@ -416,7 +415,7 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 }
 
 // ============================================================
-// SUMMARIZE — v0.5.9: accepts targetCharLimit to fit Telegram limits
+// SUMMARIZE — accepts targetCharLimit to fit Telegram limits
 // ============================================================
 export async function aiSummarize(env, settings, text, language, targetCharLimit = 3500) {
   let fullSystemPrompt;

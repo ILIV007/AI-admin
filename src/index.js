@@ -1,11 +1,10 @@
 /**
  * src/index.js
- * AI Admin — Cloudflare Worker entry point — v0.5.14
+ * AI Admin — Cloudflare Worker entry point — v0.6.0
  *
- * v0.5.14: Re-added scheduled() cron handler for SILENT scheduling fallback.
- *   - When native Telegram schedule_date fails, posts are queued in KV
- *   - Cron trigger (every 1 minute) sends due messages
- *   - User sees "📅 Scheduled!" regardless of method used
+ * SILENT scheduling fallback: When native Telegram schedule_date fails,
+ * posts are queued in KV and a cron trigger (every 1 minute) sends due
+ * messages. Users see "📅 Scheduled!" regardless of method used.
  */
 
 import {
@@ -16,7 +15,6 @@ import {
   sendMessage,
   answerCallbackQuery,
   getMe,
-  editMessageText,
   sendChatAction,
   sendMediaGroup,
 } from "./telegram.js";
@@ -47,9 +45,9 @@ import {
 } from "./pipeline.js";
 import { aiRewrite } from "./ai.js";
 import { formatPost } from "./formatter.js";
-import { cleanContent, protectPrompts, restorePrompts } from "./cleaner.js";
+import { protectPrompts, restorePrompts } from "./cleaner.js";
 
-const VERSION = "0.5.24";
+const VERSION = "0.6.0";
 
 // ============================================================
 // MAIN EXPORT
@@ -157,7 +155,7 @@ async function processScheduledQueue(env) {
   const SETTINGS = env.SETTINGS;
   if (!SETTINGS) return;
 
-  console.log(`[cron] v0.5.14 checking for due scheduled messages at ${new Date().toISOString()}`);
+  console.log(`[cron] Checking for due scheduled messages at ${new Date().toISOString()}`);
   const due = await listDueScheduled(SETTINGS);
   if (due.length === 0) return;
   console.log(`[cron] Found ${due.length} due messages`);
@@ -853,7 +851,7 @@ async function handleDebugSchedule(env, content, update) {
     const logText = logs.map((l, i) => `${i + 1}. ${l}`).join("\n");
     await sendMessage(BOT_TOKEN, chatId,
       [
-        `🧪 <b>Scheduling Debug Results (v0.5.12)</b>`,
+        `🧪 <b>Scheduling Debug Results</b>`,
         ``,
         `<blockquote>${logText}</blockquote>`,
         ``,

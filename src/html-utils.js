@@ -1,6 +1,6 @@
 /**
  * src/html-utils.js
- * Safe HTML truncation utilities — v0.5.9
+ * Safe HTML truncation utilities — v0.6.0
  *
  * Provides closeOpenTags() which robustly closes unclosed HTML tags
  * after truncation. Uses a stack-based approach that handles:

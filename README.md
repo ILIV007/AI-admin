@@ -1,464 +1,131 @@
-# 🧠 AI Admin
+# 🤖 AI Admin
 
-<div align="center">
+A intelligent Telegram channel content processing bot built on Cloudflare Workers. Free, serverless, and AI-powered.
 
-**Version 0.1.0**
+## ✨ Features
 
-Telegram channel content processing bot — built on Cloudflare Workers, 100% free.
+- **AI-Powered Content Editing** — Rewrites and cleans posts using Gemini & OpenRouter (free tier models)
+- **Smart Scheduling** — Native Telegram scheduling with KV cron fallback
+- **Approve Mode** — Review posts before publishing with inline buttons
+- **Prompt Protection** — AI image prompts (Midjourney, SD) are detected and preserved
+- **Collapsible Quotes** — Long prompts wrapped in `<blockquote expandable="true">`
+- **RTL Support** — Automatic RTL mark insertion for mixed Persian/English text
+- **Media Group Support** — Album buffering with leader election
+- **Long Post Handling** — Balanced splitting with reply chain, or AI summary for media
+- **Debug Dashboard** — Web UI at `/debug` with test endpoints
+- **Stats Batching** — Reduces KV writes with in-memory caching
+- **AbortController** — Cancels losing AI requests to save tokens
 
-</div>
-
-<div dir="rtl">
-
-ربات ادمین هوشمند تلگرام برای پردازش، تمیزکاری و انتشار پست در کانال.  
-ساخته‌شده برای **Cloudflare Workers** — کاملاً رایگان.
-
-## ✨ امکانات
-
-- 🤖 پردازش خودکار پست‌های ورودی (متن، عکس، ویدیو، فایل، انیمیشن)
-- 🧹 حذف اسپم، تبلیغات، تگ‌های @ و امضاهای نویسنده
-- 🔗 حفظ کامل لینک‌های GitHub، مستندات، API و دانلود
-- ✍️ بازنویسی هوشمند با Gemini (رایگان) + OpenRouter به‌عنوان fallback
-- 🌐 تشخیص خودکار زبان فارسی/انگلیسی
-- 📊 منوی ادمین با inline buttons (بدون اسپم پیام)
-- 🎭 4 حالت شخصیت: دوستانه / حرفه‌ای / فنی / خبری
-- 🔧 موتور فرمت قابل تعویض (HTML / Markdown / Plain)
-- ⚡ همیشه رایگان — Cloudflare Workers free tier کافی است
-
-## 🏗️ معماری
+## 🏗️ Architecture
 
 ```
-┌──────────────┐    webhook    ┌──────────────────────┐
-│   Telegram   │ ────────────► │  Cloudflare Worker   │
-│   Channel    │ ◄──────────── │  (this code)         │
-└──────────────┘   publish     └──────────┬───────────┘
-                                          │
-                       ┌──────────────────┼──────────────────┐
-                       ▼                  ▼                  ▼
-                  ┌─────────┐       ┌──────────┐       ┌──────────┐
-                  │   KV    │       │  Gemini  │       │OpenRouter│
-                  │ (free)  │       │  (free)  │       │ (fallback)│
-                  └─────────┘       └──────────┘       └──────────┘
+Telegram Update → Webhook → Pipeline → [Clean → AI Rewrite → Format → Publish]
+                                                     ↓
+                                              [Approve Mode?]
+                                              Yes → Preview + Buttons
+                                              No  → Auto Publish
 ```
 
-**Pipeline پردازش (طبق پرامپت):**
-
-```
-RECEIVE → EXTRACT → CLASSIFY → CLEAN → [REWRITE/SUMMARIZE] → FORMAT → PUBLISH
-```
-
-اگر هر مرحله‌ای شکست بخورد → به FORMAT_ONLY برمی‌گردیم. **هیچ‌وقت پست drop نمی‌شود.**
-
-## 📦 ساختار پروژه
-
-```
-ai-admin/
-├── wrangler.toml           # تنظیمات Cloudflare Worker (مینیمال)
-├── package.json            # نسخه 0.1.0 + اسکریپت‌ها
-├── VERSION                 # 0.1.0
-├── LICENSE                 # MIT
-├── .dev.vars.example       # نمونه متغیرهای محلی (برای dev)
-├── .gitignore
-├── README.md               # این فایل
-├── scripts/
-│   ├── test-units.mjs      # تست‌های واحد (cleaner, classifier, formatter)
-│   ├── test-pipeline.mjs   # تست integration کل pipeline
-│   └── test-admin.mjs     # تست تطابق با spec پرامپت 3
-└── src/
-    ├── index.js            # entry point + pipeline اصلی
-    ├── telegram.js         # کلاینت Telegram Bot API
-    ├── ai.js               # لایه AI با Gemini + OpenRouter fallback
-    ├── classifier.js       # تشخیص نوع محتوا + نیاز به بازنویسی
-    ├── cleaner.js          # تمیزکاری اسپم و attribution
-    ├── formatter.js        # موتور فرمت قابل تعویض
-    ├── admin.js            # پنل ادمین با 8 دکمه inline
-    ├── kv.js               # ذخیره‌سازی تنظیمات در KV
-    └── prompts.js          # تمام system prompts
-```
-
-## 🚀 راه‌اندازی گام‌به‌گام (دستی از داشبورد Cloudflare)
-
-### پیش‌نیازها (همه چیز رایگان)
-
-| سرویس | از کجا بگیرم | هزینه |
-|-------|--------------|-------|
-| حساب Cloudflare | [dash.cloudflare.com](https://dash.cloudflare.com) | رایگان |
-| ربات تلگرام | از طریق [@BotFather](https://t.me/BotFather) | رایگان |
-| کانال تلگرام | خودت بساز، ربات رو ادمین کن | رایگان |
-| کلید Gemini | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | رایگان (1500 req/day) |
-| کلید OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | رایگان (fallback) |
-| Node.js 18+ | [nodejs.org](https://nodejs.org) | رایگان |
-
-### گام ۱: Clone و نصب
-
-```bash
-git clone https://github.com/YOUR_USERNAME/ai-admin.git
-cd ai-admin
-npm install
-```
-
-### گام ۲: Login به Cloudflare
-
-```bash
-npx wrangler login
-```
-
-مرورگر باز می‌شه، وارد حساب Cloudflare خودت شو.
-
-### گام ۳: Deploy اولیه (Worker ساخته می‌شه)
-
-```bash
-npm run deploy
-```
-
-خروجی شبیه این می‌شه:
-
-```
-Published ai-admin (1.23 sec)
-  https://ai-admin.<your-subdomain>.workers.dev
-```
-
-این URL رو یادت باشه! حالا بریم به داشبورد Cloudflare تا KV، Secretها و Varها رو set کنیم.
-
-### گام ۴: ساخت KV Namespace (از داشبورد)
-
-1. برو به [dash.cloudflare.com](https://dash.cloudflare.com)
-2. منوی چپ: **Storage & Databases → Workers KV**
-3. کلیک روی **Create a namespace**
-4. نام: `ai_admin_settings`
-5. کلیک روی **Add**
-
-### گام ۵: Bind کردن KV به Worker (از داشبورد)
-
-1. برو به **Workers & Pages**
-2. روی worker به نام `ai-admin` کلیک کن
-3. تب **Settings**
-4. بخش **Bindings** → کلیک روی **Add binding**
-5. انتخاب: **KV Namespace**
-6. تنظیمات:
-   - **Variable name**: `SETTINGS` (دقیقاً با حروف بزرگ)
-   - **KV namespace**: `ai_admin_settings` (همونی که گام ۴ ساختی)
-7. کلیک روی **Save and deploy**
-
-### گام ۶: اضافه کردن Secrets (از داشبورد)
-
-همون تب **Settings**، بخش **Variables and Secrets**:
-
-کلیک روی **Add** → انتخاب: **Secret** (رمزنگاری‌شده)
-
-این 3 تا رو اضافه کن:
-
-| نام Secret | مقدار | از کجا |
-|-----------|-------|--------|
-| `BOT_TOKEN` | `123456:ABC-...` | [@BotFather](https://t.me/BotFather) → `/newbot` |
-| `GEMINI_API_KEY` | `AIza...` | [aistudio.google.com](https://aistudio.google.com/apikey) |
-| `OPENROUTER_API_KEY` | `sk-or-v1-...` | [openrouter.ai/keys](https://openrouter.ai/keys) |
-
-(اختیاری) یک Secret هم به اسم `WEBHOOK_SECRET` بساز با یک رشته تصادفی مثل `mySecret123abc` — برای امنیت webhook.
-
-بعد از افزودن همه، کلیک روی **Save and deploy**.
-
-### گام ۷: اضافه کردن Environment Variables (از داشبورد)
-
-همون بخش **Variables and Secrets**، این بار نوع **Plain text** رو انتخاب کن:
-
-| نام Variable | مقدار | توضیح |
-|--------------|-------|-------|
-| `ADMIN_ID` | `123456789` | آیدی عددی تلگرام خودت (از [@userinfobot](https://t.me/userinfobot) بگیر) |
-| `TARGET_CHANNEL` | `@your_channel` | یوزرنیم کانال هدف |
-| `FOOTER_TEXT` | `🌀 @ILIVIR3` | متن فوتر (پیش‌فرض) |
-| `DEFAULT_AI_PROVIDER` | `gemini` | `gemini` یا `openrouter` |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | مدل Gemini رایگان |
-| `OPENROUTER_MODEL` | `google/gemini-2.0-flash-exp:free` | مدل رایگان OpenRouter |
-
-کلیک روی **Save and deploy**.
-
-### گام ۸: تنظیم Webhook تلگرام (دستی)
-
-یه درخواست HTTP به تلگرام بفرست تا Worker رو به‌عنوان webhook ثبت کنه. می‌تونی از terminal یا browser استفاده کنی:
-
-```bash
-curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://ai-admin.<your-subdomain>.workers.dev/webhook",
-    "secret_token": "<YOUR_WEBHOOK_SECRET>",
-    "allowed_updates": ["message", "callback_query", "channel_post"],
-    "drop_pending_updates": true
-  }'
-```
-
-خروجی باید این باشه:
-
-```json
-{"ok":true,"result":true,"description":"Webhook was set"}
-```
-
-برای تایید:
-
-```bash
-curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
-```
-
-اگه `url` خالی بود یا `last_error_message` داشت، یه جای کار می‌لنگه.
-
-### گام ۹: اضافه کردن ربات به کانال
-
-1. کانال رو باز کن
-2. **Channel Info → Administrators → Add Admin**
-3. ربات رو انتخاب کن
-4. دسترسی **Post Messages** رو بده
-
-### گام ۱۰: تست! 🎉
-
-به ربات در چت خصوصی پیام بده با `/start`. منوی ادمین باز می‌شه:
-
-```
-⚙️ ILIVIR3 AI Admin — Settings
-
-Current configuration:
-🌐 Language: auto
-✍️ Rewrite: normal
-🎭 Personality: friendly
-🤖 AI Provider: gemini
-📢 Footer: 🌀 @ILIVIR3
-
-[⚙️ Settings] [🧠 AI Mode]
-[🌐 Language] [✍️ Rewrite]
-[🎭 Personality] [📢 Footer]
-[🤖 AI Provider] [📊 Stats]
-```
-
-حالا یک پست نمونه بفرست → ربات پردازش و در کانال منتشر می‌کنه.
-
-## 🎛️ استفاده
-
-### پنل ادمین (8 دکمه طبق spec)
-
-به ربات `/start` بفرست. این منو باز می‌شه:
-
-| دکمه | کاربرد |
-|------|--------|
-| ⚙️ Settings | نمایش مجدد تنظیمات فعلی |
-| 🧠 AI Mode | Presetهای ترکیبی (Provider + Rewrite) در یک کلیک |
-| 🌐 Language | Auto / Persian / English |
-| ✍️ Rewrite | None / Light / Normal / Summary |
-| 🎭 Personality | Friendly / Professional / Technical / News |
-| 📢 Footer | تغییر متن فوتر |
-| 🤖 AI Provider | Gemini / OpenRouter |
-| 📊 Stats | آمار پردازش |
-
-### نحوه کار
-
-1. **اگر به ربات در PV پیام بفرستی** → پردازش می‌کنه، در کانال منتشر می‌کنه، و feedback می‌ده
-2. **اگر ربات در کانال ادمین باشه** → پست‌های جدید کانال رو پردازش و جایگزین می‌کنه
-3. **هر پست** این مراحل رو طی می‌کنه:
-   - تشخیص نوع محتوا (news / tutorial / github_repo / ...)
-   - تمیزکاری (حذف اسپم، تگ‌ها، attribution)
-   - بازنویسی هوشمند (اگر لازم باشه)
-   - فرمت‌بندی با blockquote برای لینک‌ها
-   - اضافه کردن فوتر `<blockquote>🌀 @ILIVIR3</blockquote>`
-   - انتشار در کانال
-
-### تغییر فوتر
-
-```
-/footer 🌀 @MyNewChannel
-```
-
-## 🧪 تست‌ها
-
-پروژه شامل 3 suite تست است:
-
-```bash
-# همه تست‌ها
-npm test
-
-# فقط unit tests
-npm run test:units
-
-# فقط integration pipeline
-npm run test:pipeline
-
-# فقط admin panel spec compliance
-npm run test:admin
-```
-
-## 🔧 شخصی‌سازی
-
-### اضافه کردن Provider جدید
-
-در `src/ai.js`:
-
-```javascript
-function myProvider({ apiKey }) {
-  return {
-    name: "myprovider",
-    async complete({ system, user }) {
-      const res = await fetch("https://api.myprovider.com/v1/chat", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}` },
-        body: JSON.stringify({ system, user }),
-      });
-      const data = await res.json();
-      return data.text;
-    },
-  };
-}
-```
-
-سپس در `buildAIChain` اضافه‌اش کن.
-
-### اضافه کردن Format Engine جدید
-
-در `src/formatter.js`:
-
-```javascript
-const myEngine = {
-  name: "richmarkdown",
-  parseMode: null,
-  format(text, ctx) { /* ... */ return text; },
-  wrapLink(url) { /* ... */ },
-  wrapFooter(text, footer) { /* ... */ },
-};
-
-registerEngine(myEngine);
-
-// استفاده:
-formatPost(text, { engineName: "richmarkdown", footer: "🌀 @ILIVIR3" });
-```
-
-این معماری طبق پرامپت اصلی طراحی شده — AI pipeline هیچ‌وقت موتور فرمت رو مستقیم صدا نمی‌زنه.
-
-## 💰 هزینه‌ها (همه چیز رایگان!)
-
-| سرویس | Free Tier | کافی برای |
-|-------|-----------|-----------|
-| Cloudflare Workers | 100K request/day | ~70 پست در دقیقه! |
-| Cloudflare KV | 100K read + 1K write/day | ~1000 تنظیمات در روز |
-| Google Gemini | 1500 req/day, 15 RPM | برای اکثر کانال‌ها کافیه |
-| OpenRouter free models | نامحدود (rate-limited) | fallback عالی |
-| Telegram Bot API | نامحدود | همیشه رایگان |
-
-## 🛡️ امنیت
-
-- فقط `ADMIN_ID` دسترسی به پنل داره — بقیه silent ignored می‌شن
-- `WEBHOOK_SECRET` از spoofing جلوگیری می‌کنه (اختیاری ولی توصیه می‌شه)
-- توکن‌ها به‌عنوان Cloudflare Secret ذخیره می‌شن (رمزنگاری‌شده، نه در کد)
-- هیچ‌وقت `.dev.vars` رو commit نکن!
-
-## 🐛 Troubleshooting
-
-### ربات پاسخ نمی‌ده
-
-```bash
-# وضعیت webhook رو چک کن
-curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
-```
-
-اگه `last_error_message` وجود داشت، احتمالاً Worker خطا داده. لاگ‌ها رو ببین:
-
-```bash
-npm run tail
-```
-
-### پست منتشر نمی‌شه
-
-- مطمئن شو ربات **ادمین کانال** باشه
-- `TARGET_CHANNEL` درست set شده باشه (با @ شروع شه یا -100xxx)
-- پیام خطا رو از چت PV ربات ببین
-
-### AI کار نمی‌کنه
-
-- در داشبورد Cloudflare، مطمئن شو `GEMINI_API_KEY` به‌عنوان Secret ثبت شده
-- در پنل ادمین، Provider رو به `openrouter` تغییر بده و دوباره تست کن
-- مدل‌های رایگان گاهی rate-limit می‌شن — چند ثانیه صبر کن
-
-### خطای "KV not bound"
-
-در داشبورد: **Workers & Pages → ai-admin → Settings → Bindings** — مطمئن شو binding با نام دقیقاً `SETTINGS` (با حروف بزرگ) وجود داره.
-
-## 📋 Spec Compliance Checklist
-
-این پروژه طبق 4 پرامپت اصلی ساخته شده:
-
-- ✅ **PROMPT 1 (Master System Prompt)**: همه قوانین در `src/prompts.js`
-- ✅ **PROMPT 2 (System Architecture)**: pipeline، KV schema، media support، failure handling
-- ✅ **PROMPT 3 (Admin Panel)**: 8 دکمه inline، security rule، UX rule
-- ✅ **PROMPT 4 (Process Flow)**: 12 مرحله pipeline، link handling، footer rule، pluggable Format Engine
-
-برای تایید: `npm run test:admin`
+## 🚀 Quick Start
+
+### Prerequisites
+- Cloudflare account (free tier works)
+- Telegram Bot Token (from @BotFather)
+- Gemini API Key (from aistudio.google.com) — optional
+- OpenRouter API Key (from openrouter.ai/keys) — optional
+
+### Setup
+
+1. Clone this repo
+2. Install dependencies: `npm install`
+3. Set secrets:
+   ```bash
+   wrangler secret put BOT_TOKEN
+   wrangler secret put GEMINI_API_KEY
+   wrangler secret put OPENROUTER_API_KEY
+   ```
+4. Deploy: `wrangler deploy`
+5. Set webhook: `https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://your-worker.workers.dev/webhook`
+
+### Configuration
+
+Edit `wrangler.toml` to configure:
+- `ADMIN_ID` — Your Telegram user ID
+- `TARGET_CHANNEL` — Channel username (e.g., `@mychannel`)
+- `DEFAULT_AI_PROVIDER` — `openrouter` or `gemini`
+- `GEMINI_MODEL` — Gemini model to use
+- `OPENROUTER_MODEL` — Primary OpenRouter model
+- `OPENROUTER_FALLBACK_MODELS` — Comma-separated fallback models
+
+## 📋 Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Admin panel (settings, scheduling, approve mode) |
+| `/footer <text>` | Change footer text |
+| `/checkperms` | Check bot permissions in channel |
+| `/debug_schedule` | Test scheduling (5 tests) |
+| `/test_cron` | Manually trigger cron queue |
+| `/test_ai` | Test AI rewrite |
+| `/test_format` | Test formatter |
+| `/test_clean` | Test prompt protection |
+| `/help` | Show all commands |
+
+## 🤖 AI Models
+
+### Gemini (Google Studio)
+1. `gemini-3-flash-preview` (primary)
+2. `gemini-2.5-flash`
+3. `gemini-3.1-flash-lite-preview`
+4. `gemini-2.5-flash-lite`
+5. `gemini-2.0-flash`
+
+### OpenRouter
+1. `meta-llama/llama-3.3-70b-instruct:free`
+2. `qwen/qwen3-next-80b-a3b-instruct:free`
+3. `google/gemma-4-31b-it:free`
+4. `openai/gpt-oss-120b:free`
+5. `nousresearch/hermes-3-llama-3.1-405b:free`
+6. `nvidia/nemotron-3-ultra-550b-a55b:free`
+
+## 🔧 How It Works
+
+### Content Pipeline
+1. **Receive** — Webhook receives Telegram update
+2. **Extract** — Text, media, reply context extracted
+3. **Clean** — Remove spam, ads, attribution lines
+4. **Protect** — AI prompts detected and replaced with placeholders
+5. **AI Rewrite** — Parallel race across all providers (AbortController cancels losers)
+6. **Restore** — Prompts restored after AI processing
+7. **Format** — Markdown → HTML, URLs → links, quotes, RTL marks
+8. **Publish** — Send to channel (with scheduling/approve if enabled)
+
+### Scheduling
+- **Primary**: Native Telegram `schedule_date` (posts in Scheduled Messages view)
+- **Fallback**: KV cron queue (when Telegram silently drops schedule_date)
+- **Toggle**: Cron fallback can be turned on/off from admin panel
+
+### Approve Mode
+When enabled, the bot sends a preview with "✅ Publish" and "❌ Reject" buttons. The post is only published when the admin clicks Publish.
+
+### Long Post Handling
+- **Text posts > 4096 chars**: Split into 2 balanced parts (Part 2 replies to Part 1)
+- **Media posts > 1024 chars**: AI summary (can't split photo+caption)
+- **If split is unbalanced**: AI summary used instead
+
+## 📊 Debug Dashboard
+
+Visit `/debug?token=DEBUG_TOKEN` to access:
+- Bot status & configuration
+- KV test
+- AI test
+- Pipeline tests (cron, AI rewrite, formatter, prompt protection, scheduling)
+- Recent updates & errors log
 
 ## 📝 License
 
-MIT — هر بلایی می‌خوای سرش بیار. 😄
-
-</div>
+MIT — Do whatever you want.
 
 ---
 
-## 📦 Changelog
-
-### v0.5.8 (2026-06-30) — Native Telegram Scheduling + Permission Checking
-
-**📅 Scheduling reverted to native Telegram (with permission checking)**
-
-- **User request:** Posts should appear in Telegram's native "Scheduled Messages" view so the admin can review/edit/delete them before publishing.
-- **Previous approach (v0.5.7):** Used a KV-based cron queue. This worked reliably but posts did NOT appear in Telegram's scheduled view — the admin couldn't review them.
-- **New approach (v0.5.8):** Reverted to Telegram's native `schedule_date` parameter, BUT added **permission checking** to solve the root cause of the previous failures.
-- **Root cause discovered:** Telegram's `schedule_date` silently sends messages immediately when the bot lacks the **"Post Messages"** permission in the channel. The bot was an admin, but only had "Edit Messages" permission — not "Post Messages". This caused Telegram to accept `schedule_date` but send immediately.
-- **Fix:**
-  1. Added `checkSchedulingPermissions()` function that calls `getChatMember` to verify the bot's status and `can_post_messages` permission.
-  2. Before scheduling, the bot checks permissions. If missing, it shows a clear error explaining exactly what to fix.
-  3. After scheduling, the bot verifies `result.date` matches `schedule_date` (within 5s tolerance). If they don't match, Telegram sent immediately — the bot reports this as a failure.
-  4. When scheduling fails, the bot does **NOT** fall back to immediate send. It shows the error and tells the user to fix permissions and resend.
-  5. Capped `schedule_date` to Telegram's valid range: 90 seconds to 7 days from now.
-  6. Removed the cron trigger from `wrangler.toml` (no longer needed).
-
-**🆕 New command: `/checkperms`**
-
-- Admin can run `/checkperms` to verify the bot's permissions in the channel.
-- Shows: bot status (administrator/creator/member), `can_post_messages` permission, and all other admin permissions.
-- If permissions are missing, shows step-by-step instructions on how to fix them.
-
-**📋 How to access scheduled messages in Telegram:**
-
-After the bot schedules a post:
-1. Open the channel in Telegram
-2. Tap the channel name at the top
-3. Select **"Scheduled Messages"** (clock icon 🕐)
-4. You'll see all scheduled posts — you can edit or delete any of them
-5. Posts auto-publish at the scheduled time
-
-**🔐 Permission requirements for scheduling:**
-
-The bot MUST be an admin in the channel with these permissions:
-- ✅ **Post Messages** (required for scheduling)
-- ✅ **Edit Messages** (required for channel editing feature)
-- ✅ **Delete Messages** (optional, for cleanup)
-
-To set permissions:
-1. Open the channel → Channel Settings → Administrators
-2. Find the bot → tap it
-3. Enable **"Post Messages"**
-
-### v0.5.7 (2026-06-30) — Cron-Based Scheduling + AI Import Fix (SUPERSEDED)
-
-- Used KV-based cron queue for scheduling. Worked reliably but posts didn't appear in Telegram's scheduled view.
-- Fixed AI dynamic import issue (converted to static import).
-- v0.5.8 reverts scheduling to native Telegram (with permission checking) per user request.
-
-### v0.5.6 (2026-06-30) — Critical AI + Scheduling Fixes
-
-- Fixed AI fallback: always include the OTHER provider as fallback if API key exists.
-- Added scheduling verification (compare result.date with schedule_date).
-- Discovered Telegram silently sends immediately for bots lacking "Post Messages" permission.
-
----
-
-<div dir="rtl">
-
-ساخته‌شده با ❤️ برای کانال **ILIVIR3**  
-نسخه: **0.5.8**
-
-</div>
+Built with ❤️ for the ILIVIR3 developer community.
