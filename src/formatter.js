@@ -198,7 +198,8 @@ const htmlEngine = {
         if (/^[•\-\*\d]/.test(t)) return line;
         if ((t.match(/[.!?؟!]/g) || []).length < 2) return line;
         if (i === firstIdx) return line;
-        return `<blockquote>${t}</blockquote>`;
+        // v0.5.15: Use collapsible blockquote for long paragraphs
+        return `<blockquote expandable="true">${t}</blockquote>`;
       }).join("\n");
     }
 
@@ -208,14 +209,10 @@ const htmlEngine = {
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
       if (!p) return ''; // Safety check
-      // v0.5.14: Use EXPANDABLE blockquote for long prompts (collapsible in Telegram)
-      // Short prompts (<200 chars) use regular blockquote
-      if (p.content.length < 200) {
-        return `<b>${this.escape(p.label)}:</b>\n<blockquote>${this.escape(p.content)}</blockquote>`;
-      } else {
-        // v0.5.14: expandable="true" makes the quote collapsible — perfect for long AI prompts!
-        return `<b>${this.escape(p.label)}:</b>\n<blockquote expandable="true">${this.escape(p.content)}</blockquote>`;
-      }
+      // v0.5.15: Use collapsible blockquote + monospace for ALL prompts
+      // <blockquote expandable="true"> makes it collapsible
+      // <pre><code> inside makes it monospace
+      return `<b>${this.escape(p.label)}:</b>\n<blockquote expandable="true"><pre><code>${this.escape(p.content)}</code></pre></blockquote>`;
     });
 
     // === PHASE 5: POLISH ===

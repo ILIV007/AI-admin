@@ -45,8 +45,11 @@ import {
   runChannelEditPipeline,
   getBotId,
 } from "./pipeline.js";
+import { aiRewrite } from "./ai.js";
+import { formatPost } from "./formatter.js";
+import { cleanContent, protectPrompts, restorePrompts } from "./cleaner.js";
 
-const VERSION = "0.5.14";
+const VERSION = "0.5.15";
 
 // ============================================================
 // MAIN EXPORT
@@ -353,7 +356,7 @@ async function handlePrivateMessage(env, content, update) {
 
   if (/^\/help\b/i.test(text)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with 5 messages (channel + private chat)\n/help — This message`,
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\n<b>Commands:</b>\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions\n/debug_schedule — Test scheduling (5 tests)\n/test_cron — Manually trigger cron queue\n/test_ai — Test AI rewrite\n/test_format — Test formatter\n/test_clean — Test prompt protection\n/help — This message`,
       { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "ok", "/help", env);
     return;
@@ -368,6 +371,118 @@ async function handlePrivateMessage(env, content, update) {
   // v0.5.9 TASK 2: /debug_schedule — test scheduling with detailed logging
   if (/^\/debug_schedule\b/i.test(text)) {
     await handleDebugSchedule(env, content, update);
+    return;
+  }
+
+  // v0.5.15: /test_cron — manually trigger cron queue processing
+  if (/^\/test_cron\b/i.test(text)) {
+    console.log(`[test_cron] Manually triggering processScheduledQueue`);
+    await sendMessage(env.BOT_TOKEN, content.chatId, `⏳ <b>Running cron test...</b>`, { parse_mode: "HTML" });
+    try {
+      await processScheduledQueue(env);
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `✅ <b>Cron test completed.</b>\nCheck Cloudflare logs for details.`, { parse_mode: "HTML" });
+    } catch (e) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `❌ <b>Cron test failed:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
+    }
+    await logUpdate(SETTINGS, update, "ok", "/test_cron", env);
+    return;
+  }
+
+  // v0.5.15: /test_ai — manually test AI
+  if (/^\/test_ai\b/i.test(text)) {
+    console.log(`[test_ai] Manually testing AI`);
+    await sendMessage(env.BOT_TOKEN, content.chatId, `⏳ <b>Testing AI...</b>`, { parse_mode: "HTML" });
+    try {
+      const settings = await getSettings(SETTINGS, content.fromId);
+      const testText = "This is a test post about Cloudflare Workers. It should be rewritten nicely.";
+      const result = await aiRewrite(env, settings, testText, "light", "auto", "friendly", 60, 20);
+
+      if (result.ok) {
+        await sendMessage(env.BOT_TOKEN, content.chatId,
+          [
+            `✅ <b>AI test successful</b>`,
+            ``,
+            `<b>Provider:</b> <code>${result.provider}</code>`,
+            `<b>Model:</b> <code>${result.model}</code>`,
+            ``,
+            `<b>Input:</b> <i>${testText}</i>`,
+            `<b>Output:</b> <i>${result.text.slice(0, 300)}</i>`,
+          ].join("\n"),
+          { parse_mode: "HTML" });
+      } else {
+        await sendMessage(env.BOT_TOKEN, content.chatId,
+          `❌ <b>AI test failed</b>\nError: <code>${result.error}</code>`, { parse_mode: "HTML" });
+      }
+    } catch (e) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `❌ <b>AI test exception:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
+    }
+    await logUpdate(SETTINGS, update, "ok", "/test_ai", env);
+    return;
+  }
+
+  // v0.5.15: /test_format — test the formatter
+  if (/^\/test_format\b/i.test(text)) {
+    console.log(`[test_format] Testing formatter`);
+    await sendMessage(env.BOT_TOKEN, content.chatId, `⏳ <b>Testing formatter...</b>`, { parse_mode: "HTML" });
+    try {
+      const testText = `This is a test post about AI tools.
+
+Prompt:
+Keep the face 100% identical to the reference. Photorealistic mirror selfie of a young woman indoors. Cinematic lighting. 8k. Ultra detailed. Octane render. --ar 16:9 --v 6.0
+
+This is another paragraph that is long enough to be quoted. It has multiple sentences. It should be collapsible in Telegram. This makes the post look much cleaner and more professional.`;
+
+      const { text: formatted, parseMode } = formatPost(testText, {
+        engineName: "html",
+        intensity: 60,
+        emojiLevel: 20,
+      });
+
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        [
+          `✅ <b>Format test</b>`,
+          ``,
+          `<b>Parse mode:</b> ${parseMode}`,
+          `<b>Length:</b> ${formatted.length} chars`,
+          `<b>Result:</b>`,
+          formatted,
+        ].join("\n"),
+        { parse_mode: parseMode });
+    } catch (e) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `❌ <b>Format test failed:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
+    }
+    await logUpdate(SETTINGS, update, "ok", "/test_format", env);
+    return;
+  }
+
+  // v0.5.15: /test_clean — test prompt protection
+  if (/^\/test_clean\b/i.test(text)) {
+    console.log(`[test_clean] Testing prompt protection`);
+    const testText = `This is a normal post about AI.
+
+Keep the face 100% identical to the reference. Photorealistic mirror selfie. Cinematic lighting. 8k. Ultra detailed. Octane render. --ar 3:2 --v 6.0. ` + "A".repeat(200);
+
+    const { text: protected_, prompts } = protectPrompts(testText);
+    const restored = restorePrompts(protected_, prompts);
+
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      [
+        `🧪 <b>Prompt Protection Test</b>`,
+        ``,
+        `<b>Original length:</b> ${testText.length} chars`,
+        `<b>Protected text length:</b> ${protected_.length} chars`,
+        `<b>Prompts detected:</b> ${prompts.length}`,
+        `<b>Restore matches original:</b> ${restored === testText ? "✅ YES" : "❌ NO"}`,
+        ``,
+        `<b>Protected text preview:</b>`,
+        `<code>${protected_.slice(0, 200)}...</code>`,
+      ].join("\n"),
+      { parse_mode: "HTML" });
+    await logUpdate(SETTINGS, update, "ok", "/test_clean", env);
     return;
   }
 

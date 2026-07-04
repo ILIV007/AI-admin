@@ -178,6 +178,7 @@ function profileMenuText(currentProfile) {
 
 function scheduleKeyboard(s) {
   const enabled = s?.scheduling_enabled;
+  const cronEnabled = s?.cron_fallback_enabled !== false; // Default true (undefined = on)
   const delay = s?.schedule_delay_hours ?? 24;
   const interval = s?.schedule_interval_minutes ?? 30;
   const ppd = s?.schedule_posts_per_day ?? 0;
@@ -202,6 +203,8 @@ function scheduleKeyboard(s) {
         { text: `${ppd > 0 ? ppd : "∞"}`, callback_data: "ignore" },
         { text: "+", callback_data: "set:sched:posts:inc" },
       ],
+      // v0.5.15: Cron fallback toggle
+      [{ text: `${cronEnabled ? "🟢" : "🔴"} Cron Fallback: ${cronEnabled ? "ON" : "OFF"}`, callback_data: "set:sched:cron:toggle" }],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -209,6 +212,7 @@ function scheduleKeyboard(s) {
 
 function scheduleMenuText(s) {
   const enabled = s?.scheduling_enabled;
+  const cronEnabled = s?.cron_fallback_enabled !== false;
   const delay = s?.schedule_delay_hours ?? 24;
   const interval = s?.schedule_interval_minutes ?? 30;
   const ppd = s?.schedule_posts_per_day ?? 0;
@@ -220,12 +224,15 @@ function scheduleMenuText(s) {
     `Delay: <b>${delay} hours</b>`,
     `Spacing: <b>${interval} minutes</b>`,
     `Posts/day: <b>${ppdText}</b>`,
+    `Cron Fallback: <b>${cronEnabled ? "🟢 ON" : "🔴 OFF"}</b>`,
     ``,
     `<i>How it works:</i>`,
     `• Posts are delayed by ${delay}h`,
     `• Multiple posts are spaced by ${ppd > 0 ? Math.floor(1440/ppd) : interval}m`,
     `• You still receive immediate feedback`,
     `• Channel edits are NOT scheduled`,
+    ``,
+    `<i>💡 Cron Fallback: When Telegram ignores schedule_date, posts are queued and sent by cron at the scheduled time.</i>`,
   ].join("\n");
 }
 
@@ -536,6 +543,13 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
         newText = scheduleMenuText(updated);
         newKb = scheduleKeyboard(updated);
         toast = updated.scheduling_enabled ? "✅ Scheduling ON" : "✅ Scheduling OFF";
+      } else if (value === "cron:toggle") {
+        // v0.5.15: Toggle cron fallback
+        const currentCron = settings.cron_fallback_enabled !== false;
+        const updated = await updateSetting(SETTINGS, userId, "cron_fallback_enabled", !currentCron);
+        newText = scheduleMenuText(updated);
+        newKb = scheduleKeyboard(updated);
+        toast = !currentCron ? "✅ Cron Fallback ON" : "✅ Cron Fallback OFF";
       } else if (value === "delay:inc") {
         const newDelay = Math.min(168, (settings.schedule_delay_hours ?? 24) + 1);
         const updated = await updateSetting(SETTINGS, userId, "schedule_delay_hours", newDelay);

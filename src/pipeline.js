@@ -313,22 +313,30 @@ export async function runMediaGroupPipeline(env, items, update) {
             wasScheduled = true;
             console.log(`[mg-sched] ✓ Native scheduling VERIFIED`);
           } else {
-            // Native failed — silently enqueue to KV cron queue
-            console.warn(`[mg-sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
-            const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-            await enqueueScheduled(SETTINGS, {
-              id: schedId,
-              scheduledTime,
-              chatId: targetChannel,
-              mediaGroupItems: mediaItems,
-              parseMode,
-              adminId,
-              notifyChatId: feedbackChatId,
-              createdAt: Date.now(),
-            });
-            publishOk = true;
-            wasScheduled = true;
-            console.log(`[mg-sched] ✓ Enqueued for cron fallback`);
+            // v0.5.15: Respect cron_fallback_enabled setting
+            const cronEnabled = settings.cron_fallback_enabled !== false;
+            if (!cronEnabled) {
+              console.warn(`[mg-sched] ⚠️ Native failed and cron fallback is OFF. Showing error.`);
+              scheduleError = verification.description || "Scheduling failed (cron disabled)";
+              publishOk = false;
+            } else {
+              // Native failed — silently enqueue to KV cron queue
+              console.warn(`[mg-sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
+              const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+              await enqueueScheduled(SETTINGS, {
+                id: schedId,
+                scheduledTime,
+                chatId: resolvedChannel, // Use numeric chatId
+                mediaGroupItems: mediaItems,
+                parseMode,
+                adminId,
+                notifyChatId: feedbackChatId,
+                createdAt: Date.now(),
+              });
+              publishOk = true;
+              wasScheduled = true;
+              console.log(`[mg-sched] ✓ Enqueued for cron fallback`);
+            }
           }
         }
 
@@ -739,26 +747,35 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
           console.log(`[sched] ✓ Native scheduling VERIFIED`);
         } else {
           // v0.5.14: SILENT CRON FALLBACK — don't show error, just queue it
-          console.warn(`[sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
-          usedCronFallback = true;
+          // v0.5.15: Respect cron_fallback_enabled setting
+          const cronEnabled = settings.cron_fallback_enabled !== false;
+          if (!cronEnabled) {
+            console.warn(`[sched] ⚠️ Native scheduling failed and cron fallback is OFF. Showing error.`);
+            scheduleError = verification.description || publishRes.description || "Scheduling failed (cron fallback disabled)";
+            publishRes.scheduleError = scheduleError;
+            wasScheduled = false;
+          } else {
+            console.warn(`[sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
+            usedCronFallback = true;
 
-          const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-          await enqueueScheduled(SETTINGS, {
-            id: schedId,
-            scheduledTime,
-            chatId: targetChannel,
-            text: safeFormattedText,
-            mediaType: content.mediaType,
-            mediaFileId: content.mediaFileId,
-            parseMode,
-            adminId,
-            notifyChatId: feedbackChatId,
-            createdAt: Date.now(),
-          });
-          // Tell the user it's scheduled — they don't know it's via cron
-          publishRes = { ok: true, scheduled: true };
-          wasScheduled = true;
-          traceStep("cron_fallback", true, `id=${schedId}`);
+            const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            await enqueueScheduled(SETTINGS, {
+              id: schedId,
+              scheduledTime,
+              chatId: resolvedChannel, // Use numeric chatId
+              text: safeFormattedText,
+              mediaType: content.mediaType,
+              mediaFileId: content.mediaFileId,
+              parseMode,
+              adminId,
+              notifyChatId: feedbackChatId,
+              createdAt: Date.now(),
+            });
+            // Tell the user it's scheduled — they don't know it's via cron
+            publishRes = { ok: true, scheduled: true };
+            wasScheduled = true;
+            traceStep("cron_fallback", true, `id=${schedId}`);
+          }
         }
       }
     } catch (e) {

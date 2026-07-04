@@ -88,40 +88,55 @@ const PROMPT_KEYWORDS = [
   "unreal engine", "blender", "zbrush", "substance painter",
   "highly detailed", "intricate details", "sharp focus", "depth of field",
   "bokeh", "film grain", "color grading", "hdr", "uhd",
+  "prompt:", "system prompt:", "user:", "assistant:", "instruction:",
+  "face identical", "lighting may change", "hairstyle", "facial shape",
 ];
 
 /**
- * Detect and protect AI image generation prompts in the text.
- * Returns { text: textWithPlaceholders, prompts: [array of prompt strings] }
+ * v0.5.15: Improved prompt detection — catches more formats.
+ * Detects AI image generation prompts and protects them from AI rewrite.
  *
- * Detection criteria:
- * - Block of text > 200 chars
- * - Contains at least 2 prompt keywords
- * - OR contains Midjourney parameter syntax (--ar, --v, etc.)
+ * Detection criteria (IMPROVED in v0.5.15):
+ * - Paragraph >150 chars AND (2+ keywords OR MJ params OR starts with prompt label)
+ * - OR paragraph >300 chars (likely a long technical prompt)
+ *
+ * Returns { text: textWithPlaceholders, prompts: [array of prompt strings] }
  */
 export function protectPrompts(text) {
   if (!text) return { text, prompts: [] };
 
   const prompts = [];
 
-  // Split into paragraphs and check each one
+  // Split into paragraphs
   const paragraphs = text.split(/\n\n+/);
-  const protectedParagraphs = paragraphs.map((para) => {
-    // Check if this paragraph looks like an AI prompt
+
+  const protectedParagraphs = paragraphs.map((para, index) => {
     const paraLower = para.toLowerCase();
+
+    // Count keyword matches
     let keywordCount = 0;
     for (const kw of PROMPT_KEYWORDS) {
       if (paraLower.includes(kw)) keywordCount++;
     }
 
-    // Also check for Midjourney parameter syntax
+    // Check for Midjourney parameter syntax (--ar, --v, etc.)
     const hasMJParams = /--\w+\s+\S+/.test(para);
 
-    // Heuristic: >200 chars AND (2+ keywords OR MJ params)
-    if (para.length > 200 && (keywordCount >= 2 || hasMJParams)) {
+    // Check if paragraph starts with "Prompt:", "System:", etc.
+    const startsWithPromptLabel = /^(prompt|system|user|assistant|instruction|role|پرامپت|سیستم)\s*:/i.test(para.trim());
+
+    // v0.5.15: Improved heuristic — protect if:
+    // - >150 chars AND (2+ keywords OR MJ params OR starts with prompt label)
+    // - OR >300 chars (likely a long prompt)
+    const shouldProtect = (
+      (para.length > 150 && (keywordCount >= 2 || hasMJParams || startsWithPromptLabel)) ||
+      (para.length > 300)
+    );
+
+    if (shouldProtect) {
       const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
       prompts.push(para);
-      console.log(`[cleaner] v0.5.14 protected AI prompt block (${para.length} chars, ${keywordCount} keywords)`);
+      console.log(`[cleaner] v0.5.15 protected prompt block ${prompts.length - 1}: ${para.length} chars, ${keywordCount} keywords, MJ=${hasMJParams}, label=${startsWithPromptLabel}`);
       return placeholder;
     }
 

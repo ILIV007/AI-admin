@@ -27,6 +27,8 @@ export const DEFAULTS = Object.freeze({
   schedule_delay_hours: 24,
   schedule_interval_minutes: 30,
   schedule_posts_per_day: 0,
+  // v0.5.15: Cron fallback toggle (default ON)
+  cron_fallback_enabled: true,
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 

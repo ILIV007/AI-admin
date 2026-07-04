@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.14 — Silent Cron Fallback + Prompt Protection + AI Guard</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.15 — Test Commands + Cron Toggle + Collapsible Quotes</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -463,19 +463,40 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
-  <div class="section"><h2>📅 Scheduling Info (v0.5.14)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
-    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 5 messages</div>
-    <div><strong>v0.5.14 Fixes (MAJOR):</strong></div>
+  <div class="section"><h2>💬 Bot Commands (run in PV)</h2><div style="font-size:0.9em; line-height:2;">
+    <div><code>/start</code> — Admin panel (scheduling, AI, footer settings)</div>
+    <div><code>/checkperms</code> — Check bot permissions in channel</div>
+    <div><code>/debug_schedule</code> — Test scheduling (5 tests: HTML, Plain, Minimal, Raw API, Private Chat)</div>
+    <div><code>/test_cron</code> — Manually trigger cron queue processing</div>
+    <div><code>/test_ai</code> — Test AI rewrite with a sample post</div>
+    <div><code>/test_format</code> — Test formatter (collapsible quotes, prompts)</div>
+    <div><code>/test_clean</code> — Test prompt protection (Midjourney/SD detection)</div>
+    <div><code>/footer &lt;text&gt;</code> — Change footer text</div>
+    <div><code>/help</code> — Show all commands</div>
+  </div></div>
+  <div class="section"><h2>📅 Scheduling Info (v0.5.15)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
+    <div><strong>Scheduling Methods:</strong></div>
     <ul style="margin-left:20px; margin-top:4px;">
-      <li>✅ <strong>SILENT CRON FALLBACK</strong>: When Telegram ignores <code>schedule_date</code>, posts are silently queued in KV and sent by cron at the scheduled time. User sees "📅 Scheduled!"</li>
-      <li>✅ <strong>SUMMARY_TRIGGER = 4050</strong>: Posts under 4050 chars are NOT summarized anymore (was 3800)</li>
-      <li>✅ <strong>AI Over-Summarization Guard</strong>: If AI shrinks text by &gt;40%, original is used instead</li>
-      <li>✅ <strong>Prompt Protection</strong>: AI image prompts (Midjourney, SD) are detected and protected from AI rewrite via placeholders</li>
-      <li>✅ <strong>Expandable Blockquotes</strong>: Long prompts use <code>&lt;blockquote expandable="true"&gt;</code> — collapsible in Telegram!</li>
-      <li>✅ <strong>Word-safe truncation</strong>: <code>truncateHtml</code> never cuts mid-word</li>
+      <li><strong>Primary:</strong> Native Telegram <code>schedule_date</code> (posts in Scheduled Messages view)</li>
+      <li><strong>Fallback:</strong> KV Cron Queue (when Telegram silently drops schedule_date)</li>
+    </ul>
+    <div><strong>v0.5.15 New Features:</strong></div>
+    <ul style="margin-left:20px; margin-top:4px;">
+      <li>✅ <strong>Cron Fallback Toggle</strong> — Turn on/off from admin panel → Schedule Manager</li>
+      <li>✅ <strong>Test Commands</strong> — <code>/test_cron</code>, <code>/test_ai</code>, <code>/test_format</code>, <code>/test_clean</code></li>
+      <li>✅ <strong>Collapsible + Monospace Quotes</strong> — Prompts use <code>&lt;blockquote expandable="true"&gt;&lt;pre&gt;&lt;code&gt;</code></li>
+      <li>✅ <strong>Improved Prompt Detection</strong> — Lower threshold (150 chars), catches more formats</li>
+    </ul>
+    <div><strong>v0.5.14 Fixes (still active):</strong></div>
+    <ul style="margin-left:20px; margin-top:4px;">
+      <li>✅ Silent Cron Fallback (auto-queues when native fails)</li>
+      <li>✅ SUMMARY_TRIGGER = 4050 (only summarize if truly too long)</li>
+      <li>✅ AI Over-Summarization Guard (reject if shrunk &gt;40%)</li>
+      <li>✅ Prompt Protection via placeholders</li>
+      <li>✅ Word-safe truncation</li>
     </ul>
     <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #3fb950;">
-      <strong>✅ Scheduling now works!</strong> Even if Telegram drops <code>schedule_date</code>, the cron fallback ensures posts are sent at the right time.
+      <strong>✅ Scheduling works!</strong> Even if Telegram drops <code>schedule_date</code>, cron fallback sends at the right time. Toggle it in <code>/start</code> → Schedule Manager.
     </div>
   </div></div>
   <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>
