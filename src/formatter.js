@@ -85,18 +85,24 @@ const htmlEngine = {
       return ` §IC${inlineCodes.length - 1}§ `;
     });
 
-    // 3. Prompt blocks (System: ..., Prompt: ..., User: ... followed by multi-line content)
-    // v0.5.13: Improved regex — catches more formats:
-    //   - "### Prompt:" (markdown heading)
-    //   - "**Prompt:**" (bold)
-    //   - "Prompt:" (with colon)
-    //   - "Prompt" (without colon)
-    //   - "Query:", "Question:", "Task:" (additional keywords)
-    //   - Persian colon ":" support
-    //   - v0.5.18: Also catches "🎨 AI Prompt:" label (from restorePrompts)
+    // 3. Prompt blocks — v0.5.20: Two detection methods:
+    //    A) §PROMPT_START§...§PROMPT_END§ markers (from restorePrompts — no label needed)
+    //    B) Traditional label-based: "Prompt:", "System:", "🎨 AI Prompt:", etc.
     const promptBlocks = [];
+
+    // v0.5.20: Method A — detect marker-wrapped prompts (no label shown to user)
+    work = work.replace(/§PROMPT_START§([\s\S]*?)§PROMPT_END§/g, (_, content) => {
+      if (content.trim().length > 20) {
+        promptBlocks.push({ label: "", content: content.trim() }); // Empty label = no label shown
+        return ` §P${promptBlocks.length - 1}§ `;
+      }
+      return content;
+    });
+
+    // Method B — traditional label-based detection
+    // Catches: "### Prompt:", "**Prompt:**", "Prompt:", "🎨 AI Prompt:", Persian keywords
     work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(🎨\s*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|AI Prompt|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, emoji, label, content) => {
-      if (content.trim().length > 20) { // v0.5.13: Lower threshold (was 30) to catch shorter prompts
+      if (content.trim().length > 20) {
         promptBlocks.push({ label: (label || "Prompt").trim(), content: content.trim() });
         return ` §P${promptBlocks.length - 1}§ `;
       }
@@ -210,10 +216,9 @@ const htmlEngine = {
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
       if (!p) return ''; // Safety check
-      // v0.5.17: Use <blockquote expandable="true"> with <code> inside
-      // <code> makes it monospace (copyable) — works inside blockquote
-      // <pre> inside blockquote does NOT render properly in Telegram, so we use <code> only
-      return `<b>${this.escape(p.label)}:</b>\n<blockquote expandable="true"><code>${this.escape(p.content)}</code></blockquote>`;
+      // v0.5.20: Only show label if it's non-empty (marker-based prompts have empty label)
+      const labelHtml = p.label ? `<b>${this.escape(p.label)}:</b>\n` : "";
+      return `${labelHtml}<blockquote expandable="true"><code>${this.escape(p.content)}</code></blockquote>`;
     });
 
     // === PHASE 5: POLISH ===

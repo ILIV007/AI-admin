@@ -1,6 +1,6 @@
 # ============================================================
 # AI Admin — Cloudflare Worker configuration
-# Version: v0.5.19
+# Version: v0.5.20
 # ============================================================
 
 name = "ai-admin"
@@ -40,13 +40,13 @@ DEFAULT_AI_PROVIDER = "openrouter"
 # Fallback chain: gemini-3-flash-preview → gemini-2.5-flash → gemini-3.1-flash-lite-preview → gemini-2.5-flash-lite → gemini-2.0-flash
 GEMINI_MODEL = "gemini-3-flash-preview"
 
-# OpenRouter primary model — v0.5.19: Using qwen3-coder (top ranked)
-# Fallback chain: qwen3-coder → deepseek-chat-v3 → gemma-4-31b → llama-3.3-70b
-OPENROUTER_MODEL = "qwen/qwen3-coder:free"
+# OpenRouter primary model — v0.5.20: Using llama-3.3-70b (best quality)
+# Fallback chain: llama-3.3-70b → qwen3-next-80b → gemma-4-31b → gpt-oss-120b → hermes-3-405b → nemotron-ultra-550b
+OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # OpenRouter FALLBACK models (comma-separated, ALL tried in parallel via Promise.any)
-# v0.5.19: Updated with user-provided rankings
-OPENROUTER_FALLBACK_MODELS = "qwen/qwen3-coder:free,deepseek/deepseek-chat-v3:free,google/gemma-4-31b-it:free,meta-llama/llama-3.3-70b-instruct:free"
+# v0.5.20: Top 6 from user's list, ranked by quality
+OPENROUTER_FALLBACK_MODELS = "meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-next-80b-a3b-instruct:free,google/gemma-4-31b-it:free,openai/gpt-oss-120b:free,nousresearch/hermes-3-llama-3.1-405b:free,nvidia/nemotron-3-ultra-550b-a55b:free"
 
 # ============================================================
 # Secrets (DO NOT put real values here — set via dashboard):

@@ -199,9 +199,10 @@ export function restorePrompts(text, prompts) {
   return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => {
     const prompt = prompts[Number(i)];
     if (!prompt) return "";
-    // v0.5.18: Wrap with label + blank lines so formatter regex boundary works
-    // The \n\n before and after ensures the formatter's (?=\n\n|\n#|\n\*\*|$) boundary triggers
-    return `\n🎨 AI Prompt:\n${prompt}\n`;
+    // v0.5.20: No label — just the prompt text surrounded by special markers
+    // that the formatter can detect and wrap in collapsible blockquote.
+    // §PROMPT_START§ and §PROMPT_END§ are converted to §P0§ by the formatter.
+    return `\n§PROMPT_START§${prompt}§PROMPT_END§\n`;
   });
 }
 

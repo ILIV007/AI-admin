@@ -19,9 +19,9 @@ import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // ============================================================
-// DEFAULT FREE MODELS — v0.5.19 (latest ranked models)
+// DEFAULT FREE MODELS — v0.5.20 (latest ranked models)
 // ============================================================
-// User-provided rankings (2026-07):
+// User-provided list (2026-07) — top 6 selected and ranked by quality:
 //
 // Google Studio (Gemini):
 //   1. gemini-3-flash-preview         (newest, best quality)
@@ -30,11 +30,13 @@ const REQUEST_TIMEOUT_MS = 15_000;
 //   4. gemini-2.5-flash-lite          (cheapest stable)
 //   5. gemini-2.0-flash               (legacy fallback)
 //
-// OpenRouter:
-//   1. qwen/qwen3-coder:free          (top ranked)
-//   2. deepseek/deepseek-chat-v3:free (strong all-rounder, good Persian)
-//   3. google/gemma-4-31b-it:free     (solid, fast)
-//   4. meta-llama/llama-3.3-70b-instruct:free (high quality)
+// OpenRouter (top 6 from user's list, ranked):
+//   1. meta-llama/llama-3.3-70b-instruct:free    (best quality, excellent Persian)
+//   2. qwen/qwen3-next-80b-a3b-instruct:free     (80B, strong all-rounder)
+//   3. google/gemma-4-31b-it:free                (fast, balanced, Google-backed)
+//   4. openai/gpt-oss-120b:free                  (120B, high quality)
+//   5. nousresearch/hermes-3-llama-3.1-405b:free (405B, largest model)
+//   6. nvidia/nemotron-3-ultra-550b-a55b:free    (550B, smartest)
 // ============================================================
 
 const GEMINI_MODELS = [
@@ -46,10 +48,12 @@ const GEMINI_MODELS = [
 ];
 
 const DEFAULT_OPENROUTER_MODELS = [
-  "qwen/qwen3-coder:free",
-  "deepseek/deepseek-chat-v3:free",
-  "google/gemma-4-31b-it:free",
   "meta-llama/llama-3.3-70b-instruct:free",
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "google/gemma-4-31b-it:free",
+  "openai/gpt-oss-120b:free",
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
 ];
 
 // ============================================================
