@@ -575,9 +575,11 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   // Summarization will happen ONLY if the formatted text exceeds Telegram's limit
   // AND the bot gets an error from Telegram when trying to publish.
   // (See the retry-with-summary logic in the publish section below.)
+  // v0.5.22: Use ACTUAL Telegram limits (not conservative estimates)
+  // Telegram text limit: 4096 chars, caption limit: 1024 chars
   const hasMedia = !!content.mediaFileId;
-  const TELEGRAM_TEXT_LIMIT = 4000;
-  const TELEGRAM_CAPTION_LIMIT = 900;
+  const TELEGRAM_TEXT_LIMIT = 4096;
+  const TELEGRAM_CAPTION_LIMIT = 1024;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
   let finalMode = effectiveRewriteMode;
@@ -655,27 +657,90 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
-  let maxBodyLen = effectiveLimit - footerLen - 50;
+  let maxBodyLen = effectiveLimit - footerLen - 10; // v0.5.22: Minimal margin (was 50)
 
-  // v0.5.17: CRITICAL FIX — If maxBodyLen is too small or negative,
-  // the post can't fit with the footer. In this case:
-  // 1. Skip the footer (it's better to publish without footer than to truncate to nothing)
-  // 2. Use the full limit for the body
+  // v0.5.17: If maxBodyLen is too small, skip footer
   let effectiveFooterHtml = footerHtml;
   let effectiveFooterLen = footerLen;
   if (maxBodyLen < 200) {
-    console.warn(`[pipeline] v0.5.17 ⚠️ maxBodyLen too small (${maxBodyLen})! Footer would eat the entire post. Skipping footer.`);
+    console.warn(`[pipeline] v0.5.17 ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
     effectiveFooterHtml = "";
     effectiveFooterLen = 0;
-    maxBodyLen = effectiveLimit - 50; // Full limit minus safety margin
+    maxBodyLen = effectiveLimit - 10;
   }
 
-  // Step 3: v0.5.9 TASK 6 — Use safe truncateHtml() instead of brittle regex
+  // Step 3: v0.5.22 — SPLIT instead of truncate!
+  // If text exceeds Telegram's limit, split it into multiple parts instead of
+  // cutting it with "…". Each part is sent as a separate message.
   let safeBody = formattedBody;
+  let extraParts = []; // v0.5.22: Additional parts to send after the main post
+
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
-    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
-    traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
+    console.warn(`[pipeline] v0.5.22 body too long (${formattedBody.length} > ${maxBodyLen}), splitting into parts...`);
+
+    // Split at paragraph boundaries first, then sentence boundaries
+    let remaining = formattedBody;
+    let currentPart = "";
+    const partLimit = maxBodyLen - 20; // Leave room for "(ادامه...)" marker
+
+    while (remaining.length > 0) {
+      if ((currentPart + remaining).length <= partLimit) {
+        currentPart += remaining;
+        remaining = "";
+        break;
+      }
+
+      // Find the best split point in remaining
+      let splitPoint = partLimit - currentPart.length;
+      if (splitPoint <= 0) splitPoint = partLimit;
+
+      // Try paragraph boundary
+      let bestSplit = remaining.lastIndexOf("\n\n", splitPoint);
+      if (bestSplit < partLimit * 0.5) {
+        // Try single newline
+        bestSplit = remaining.lastIndexOf("\n", splitPoint);
+      }
+      if (bestSplit < partLimit * 0.5) {
+        // Try sentence boundary
+        bestSplit = Math.max(
+          remaining.lastIndexOf(". ", splitPoint),
+          remaining.lastIndexOf("! ", splitPoint),
+          remaining.lastIndexOf("? ", splitPoint),
+          remaining.lastIndexOf("۔ ", splitPoint),
+        );
+      }
+      if (bestSplit < partLimit * 0.3) {
+        // Try space (don't cut mid-word)
+        bestSplit = remaining.lastIndexOf(" ", splitPoint);
+      }
+      if (bestSplit < 10) {
+        // Last resort: hard cut
+        bestSplit = splitPoint;
+      }
+
+      currentPart += remaining.slice(0, bestSplit);
+      extraParts.push(currentPart);
+
+      remaining = remaining.slice(bestSplit).trim();
+      currentPart = "";
+    }
+
+    // The last currentPart (or the only part if no split was needed)
+    if (currentPart.length > 0) {
+      extraParts.push(currentPart);
+    }
+
+    // First part is the main post, rest go in extraParts
+    if (extraParts.length > 0) {
+      safeBody = extraParts.shift(); // First part
+      // Add "(ادامه...)" to the main post if there are more parts
+      if (extraParts.length > 0) {
+        safeBody += "\n\n<i>(ادامه...)</i>";
+      }
+    }
+
+    console.log(`[pipeline] v0.5.22 split into ${extraParts.length + 1} parts (main: ${safeBody.length} chars, ${extraParts.length} extra)`);
+    traceStep("split_post", true, `${formattedBody.length} chars → ${extraParts.length + 1} parts`);
   }
 
   // Step 4: Append footer (may be empty if maxBodyLen was too small)
@@ -936,6 +1001,32 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         ].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
+
+    // v0.5.22: Send extra parts (if the post was split)
+    if (extraParts.length > 0 && !settings.scheduling_enabled) {
+      console.log(`[pipeline] v0.5.22 sending ${extraParts.length} extra part(s)...`);
+      for (let i = 0; i < extraParts.length; i++) {
+        const partText = extraParts[i];
+        const isLast = i === extraParts.length - 1;
+        // Add footer only to the last part
+        const partFooter = isLast ? effectiveFooterHtml : "";
+        const partText2 = partText + partFooter;
+
+        console.log(`[pipeline] v0.5.22 sending part ${i + 2}/${extraParts.length + 1} (${partText2.length} chars)`);
+        const partRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: partText2, mediaType: null, mediaFileId: null,
+          extra: { parse_mode: parseMode, disable_web_page_preview: false },
+        }).catch((e) => ({ ok: false, description: e.message }));
+
+        if (!partRes.ok) {
+          console.error(`[pipeline] v0.5.22 part ${i + 2} failed: ${partRes.description}`);
+        }
+        // Small delay between parts to maintain order
+        if (!isLast) await new Promise((r) => setTimeout(r, 500));
+      }
+      traceStep("extra_parts_sent", true, `${extraParts.length} parts`);
+    }
+
     return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
