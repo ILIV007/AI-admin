@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.20 — New Models + No Label Prompts + Clean Output</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.5.21 — No Auto-Summary (only on Telegram error)</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>

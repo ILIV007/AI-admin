@@ -184,19 +184,15 @@ export async function runMediaGroupPipeline(env, items, update) {
   let aiError = null;
 
   const effectiveRewriteMode = settings.rewrite_mode || "normal";
-  const MG_CAPTION_LIMIT = 800;
+  // v0.5.21: No auto-summary for media groups either. Only use rewrite_mode setting.
+  // If caption is too long, truncateHtml will handle it (not AI summary).
   let shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
-
-  if (cleanedText.length > MG_CAPTION_LIMIT) {
-    shouldRewrite = true;
-    console.log(`[mg-pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${MG_CAPTION_LIMIT} [MEDIA])`);
-  }
 
   if (shouldRewrite) {
     try {
-      const mode = cleanedText.length > MG_CAPTION_LIMIT ? "summary" : effectiveRewriteMode;
-      const targetCharLimit = MG_CAPTION_LIMIT - 100;
+      const mode = effectiveRewriteMode; // v0.5.21: Never force "summary" — use user's setting
       if (mode === "summary") {
+        const targetCharLimit = 800; // MG caption limit
         const res = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
         if (res.ok && res.text) {
           finalText = res.text;
@@ -574,22 +570,20 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
-  // v0.5.9: Better long-post handling
+  // v0.5.21: REMOVED auto-summarization trigger.
+  // The bot should NEVER summarize on its own. It should only use "rewrite" mode.
+  // Summarization will happen ONLY if the formatted text exceeds Telegram's limit
+  // AND the bot gets an error from Telegram when trying to publish.
+  // (See the retry-with-summary logic in the publish section below.)
   const hasMedia = !!content.mediaFileId;
   const TELEGRAM_TEXT_LIMIT = 4000;
   const TELEGRAM_CAPTION_LIMIT = 900;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
-  // v0.5.14: Only summarize if STRICTLY over Telegram's safe zone (4050 of 4096)
-  // Was 3800 — still too aggressive for posts that fit fine
-  const SUMMARY_TRIGGER = hasMedia ? 700 : 4050;
   let finalMode = effectiveRewriteMode;
-  if (cleanedText.length > SUMMARY_TRIGGER) {
-    finalMode = "summary";
-    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${SUMMARY_TRIGGER}${hasMedia ? " [MEDIA]" : ""}, limit=${effectiveLimit})`);
-  }
+  // v0.5.21: Do NOT force summary based on text length. Only use the user's rewrite_mode setting.
   const shouldRewrite = finalMode !== "none" && cleanedText.length > 0 && !isMostlyPlaceholders;
-  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, trigger=${SUMMARY_TRIGGER})`);
+  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, limit=${effectiveLimit})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
@@ -834,6 +828,58 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
     });
   }
+
+  // v0.5.21: RETRY WITH SUMMARY — if publishing fails because the text is too long,
+  // automatically summarize and retry. This is the ONLY time summarization happens.
+  if (!publishRes.ok && !settings.scheduling_enabled) {
+    const errDesc = (publishRes.description || "").toLowerCase();
+    const isTooLongError = errDesc.includes("too long") || errDesc.includes("message is too long") || errDesc.includes("caption is too long") || errDesc.includes("400");
+
+    if (isTooLongError && !wasRewritten) {
+      console.warn(`[pipeline] v0.5.21 ⚠️ Publish failed (too long: ${safeFormattedText.length} chars). Retrying with AI summary...`);
+      traceStep("retry_summary_start", false, `text too long: ${safeFormattedText.length} chars`);
+
+      try {
+        const targetCharLimit = effectiveLimit - 200;
+        const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+        if (summaryRes.ok && summaryRes.text) {
+          // Restore prompts in the summary too
+          let summaryText = summaryRes.text;
+          if (protectedPrompts.length > 0) {
+            summaryText = restorePrompts(summaryText, protectedPrompts);
+          }
+
+          const { text: summaryFormatted, parseMode: summaryParseMode } = formatPost(summaryText, {
+            footer: settings.footer_text, engineName: "html", intensity: 40, emojiLevel: 10,
+          });
+
+          // Truncate if still too long
+          let summarySafe = summaryFormatted;
+          if (summaryFormatted.length > effectiveLimit - 50) {
+            summarySafe = truncateHtml(summaryFormatted, effectiveLimit - 50, "\n\n<i>…</i>");
+          }
+
+          console.log(`[pipeline] v0.5.21 Summary generated: ${summarySafe.length} chars (was ${safeFormattedText.length})`);
+          publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+            text: summarySafe, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+            extra: { parse_mode: summaryParseMode, disable_web_page_preview: false },
+          });
+
+          if (publishRes.ok) {
+            wasRewritten = true;
+            aiProvider = summaryRes.provider;
+            traceStep("retry_summary_ok", true, `summarized to ${summarySafe.length} chars`);
+          } else {
+            traceStep("retry_summary_fail", false, publishRes.description || "unknown");
+          }
+        }
+      } catch (summaryErr) {
+        console.error(`[pipeline] v0.5.21 Summary retry failed: ${summaryErr.message}`);
+        traceStep("retry_summary_error", false, summaryErr.message);
+      }
+    }
+  }
+
   traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (wasScheduled ? "scheduled" : "ok") : (publishRes.scheduleError || publishRes.description));
 
   if (publishRes.ok) {
