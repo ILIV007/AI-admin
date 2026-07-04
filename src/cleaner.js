@@ -117,73 +117,54 @@ export function protectPrompts(text) {
 
   const prompts = [];
 
-  // Split into lines
-  const lines = text.split("\n");
-
-  // Find contiguous runs of English-dominant lines
+  // v0.6.1: Split into PARAGRAPHS (separated by blank lines) instead of lines.
+  // This handles multi-paragraph English prompts (like "Character reference sheet"
+  // which has Panel 1, Panel 2, etc. separated by blank lines).
+  const paragraphs = text.split(/\n\s*\n/); // Split on blank lines
   const result = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
 
-    // Check if this line is English-dominant (>50% ASCII letters vs Persian/Arabic)
-    const asciiLetters = (line.match(/[a-zA-Z]/g) || []).length;
-    const persianChars = (line.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
-    const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 10;
+  for (const para of paragraphs) {
+    const paraTrimmed = para.trim();
+    if (!paraTrimmed) { result.push(para); continue; }
+
+    // Check if this paragraph is English-dominant
+    const asciiLetters = (paraTrimmed.match(/[a-zA-Z]/g) || []).length;
+    const persianChars = (paraTrimmed.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+    const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 15;
 
     if (isEnglishDominant) {
-      // Collect contiguous English-dominant lines
-      const englishBlock = [line];
-      let j = i + 1;
-      while (j < lines.length) {
-        const nextLine = lines[j];
-        const nextAscii = (nextLine.match(/[a-zA-Z]/g) || []).length;
-        const nextPersian = (nextLine.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
-        const nextIsEnglish = nextAscii > nextPersian && nextAscii > 10;
-        // Also include short lines (empty, URLs, etc.) between English lines
-        const nextIsShort = nextLine.trim().length < 20;
-        if (nextIsEnglish || (nextIsShort && englishBlock.length > 0)) {
-          englishBlock.push(nextLine);
-          j++;
-        } else {
-          break;
-        }
-      }
-
-      const blockText = englishBlock.join("\n").trim();
-
-      // Check if this block looks like an AI prompt
-      const blockLower = blockText.toLowerCase();
+      // Check if this paragraph looks like an AI prompt
+      const paraLower = paraTrimmed.toLowerCase();
       let keywordCount = 0;
       for (const kw of PROMPT_KEYWORDS) {
-        if (blockLower.includes(kw)) keywordCount++;
+        if (paraLower.includes(kw)) keywordCount++;
       }
-      const hasMJParams = /--\w+\s+\S+/.test(blockText);
-      const startsWithLabel = /^(prompt|system|user|assistant|instruction|role)\s*:/i.test(blockText.trim());
+      const hasMJParams = /--\w+\s+\S+/.test(paraTrimmed);
+      const startsWithLabel = /^(prompt|system|user|assistant|instruction|role)\s*:/i.test(paraTrimmed);
 
-      // Protect if: >80 chars AND (1+ keyword OR MJ params OR starts with label)
-      // OR: >150 chars of pure English (likely a prompt even without keywords)
+      // v0.6.1: Also check for common prompt structure words
+      const hasPromptStructure = /\b(panel|reference sheet|grid layout|view|profile|lighting|lens|framing|shot|angle|background|camera|render)\b/i.test(paraTrimmed);
+
       const shouldProtect = (
-        (blockText.length > 80 && (keywordCount >= 1 || hasMJParams || startsWithLabel)) ||
-        (blockText.length > 150 && keywordCount >= 1)
+        (paraTrimmed.length > 80 && (keywordCount >= 1 || hasMJParams || startsWithLabel || hasPromptStructure)) ||
+        (paraTrimmed.length > 150 && keywordCount >= 1) ||
+        (paraTrimmed.length > 200 && isEnglishDominant) // Long English paragraph = likely a prompt
       );
 
       if (shouldProtect) {
         const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
-        prompts.push(blockText);
-        console.log(`[cleaner] protected English prompt block ${prompts.length - 1}: ${blockText.length} chars, ${keywordCount} keywords, MJ=${hasMJParams}`);
+        prompts.push(paraTrimmed);
+        console.log(`[cleaner] protected prompt block ${prompts.length - 1}: ${paraTrimmed.length} chars, ${keywordCount} keywords, structure=${hasPromptStructure}`);
         result.push(placeholder);
-        i = j; // Skip past the block
         continue;
       }
     }
 
-    result.push(line);
-    i++;
+    result.push(para);
   }
 
   return {
-    text: result.join("\n"),
+    text: result.join("\n\n"),
     prompts,
   };
 }

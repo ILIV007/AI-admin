@@ -450,7 +450,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.6.0 — Optimized & Production Ready</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.6.1 — List Quotes + Prompt Detection + Approve Fix</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>

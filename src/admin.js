@@ -34,8 +34,8 @@ function mainMenuKeyboard(settings) {
     ? "📅 Schedule: ON ✅"
     : "📅 Schedule: OFF";
   const approveLabel = settings?.approve_enabled
-    ? "✅ Approve: ON ✅"
-    : "✅ Approve: OFF";
+    ? "🔐 Approve: ON"
+    : "🔓 Approve: OFF";
   return {
     inline_keyboard: [
       [

@@ -217,9 +217,61 @@ const htmlEngine = {
         if (/^[•\-\*\d]/.test(t)) return line;
         if ((t.match(/[.!?؟!]/g) || []).length < 2) return line;
         if (i === firstIdx) return line;
-        // v0.5.15: Use collapsible blockquote for long paragraphs
         return `<blockquote expandable="true">${t}</blockquote>`;
       }).join("\n");
+    }
+
+    // v0.6.1: Quote list items that follow a heading (line ending with ":")
+    // Groups consecutive non-heading lines after a heading into a blockquote
+    if (intensity >= 20) {
+      const lines = work.split("\n");
+      const result = [];
+      let inListSection = false;
+      let listBuffer = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const t = lines[i].trim();
+        const isHeading = t.length > 3 && t.length < 100 && /[:：]\s*$/.test(t) && !t.startsWith("<");
+
+        if (isHeading) {
+          if (listBuffer.length > 0) {
+            result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
+            listBuffer = [];
+          }
+          result.push(lines[i]);
+          inListSection = true;
+          continue;
+        }
+
+        if (inListSection) {
+          if (t && !t.startsWith("<") && !t.startsWith("§") && !/[:：]\s*$/.test(t) && t.length > 5 && t.length < 500) {
+            listBuffer.push(t);
+            const nextLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
+            const nextIsEmpty = !nextLine;
+            const nextIsHeading = nextLine.length > 3 && nextLine.length < 100 && /[:：]\s*$/.test(nextLine);
+            if (nextIsEmpty || nextIsHeading) {
+              if (listBuffer.length > 0) {
+                result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
+                listBuffer = [];
+              }
+              inListSection = nextIsHeading;
+            }
+          } else {
+            if (listBuffer.length > 0) {
+              result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
+              listBuffer = [];
+            }
+            inListSection = false;
+            result.push(lines[i]);
+          }
+        } else {
+          result.push(lines[i]);
+        }
+      }
+      if (listBuffer.length > 0) {
+        result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
+      }
+      work = result.join("\n");
     }
 
     // === PHASE 4: RESTORE PROTECTED CONTENT ===
