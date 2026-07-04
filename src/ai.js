@@ -19,21 +19,37 @@ import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // ============================================================
-// DEFAULT FREE MODELS on OpenRouter
+// DEFAULT FREE MODELS — v0.5.19 (latest ranked models)
 // ============================================================
+// User-provided rankings (2026-07):
+//
+// Google Studio (Gemini):
+//   1. gemini-3-flash-preview         (newest, best quality)
+//   2. gemini-2.5-flash               (stable, reliable)
+//   3. gemini-3.1-flash-lite-preview  (cheap, fast)
+//   4. gemini-2.5-flash-lite          (cheapest stable)
+//   5. gemini-2.0-flash               (legacy fallback)
+//
+// OpenRouter:
+//   1. qwen/qwen3-coder:free          (top ranked)
+//   2. deepseek/deepseek-chat-v3:free (strong all-rounder, good Persian)
+//   3. google/gemma-4-31b-it:free     (solid, fast)
+//   4. meta-llama/llama-3.3-70b-instruct:free (high quality)
+// ============================================================
+
+const GEMINI_MODELS = [
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-3.1-flash-lite-preview",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+];
+
 const DEFAULT_OPENROUTER_MODELS = [
-  "nvidia/nemotron-3-nano-30b-a3b:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
+  "qwen/qwen3-coder:free",
+  "deepseek/deepseek-chat-v3:free",
   "google/gemma-4-31b-it:free",
-  "openai/gpt-oss-20b:free",
-  "google/gemma-4-26b-a4b-it:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "openrouter/free",
-  "qwen/qwen3-next-80b-a3b-instruct:free",
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-  "meta-llama/llama-3.2-3b-instruct:free",
-  "meta-llama/llama-3.1-8b-instruct:free",
-  "poolside/laguna-m.1:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
 ];
 
 // ============================================================
@@ -199,16 +215,17 @@ export async function aiComplete(env, settings, params) {
   const geminiProviders = [];
   const openRouterProviders = [];
 
-  // 1. Gemini models
+  // v0.5.19: Use new model lists — preferred provider's TOP 2 models first,
+  // then the OTHER provider's models as fallback.
+
+  // 1. Gemini models (using new GEMINI_MODELS list)
   if (env.GEMINI_API_KEY) {
-    const geminiModels = [
-      env.GEMINI_MODEL || "gemini-2.5-flash",
-      "gemini-2.5-flash",
-      "gemini-2.5-flash-lite",
-      "gemini-2.0-flash",
-    ];
-    const uniqueGeminiModels = [...new Set(geminiModels)];
-    for (const model of uniqueGeminiModels) {
+    // If user set GEMINI_MODEL env, put it first, then the rest of the list
+    const userModel = env.GEMINI_MODEL;
+    const geminiModels = userModel && !GEMINI_MODELS.includes(userModel)
+      ? [userModel, ...GEMINI_MODELS]
+      : GEMINI_MODELS;
+    for (const model of geminiModels) {
       geminiProviders.push({
         name: "gemini",
         model: model,
@@ -216,7 +233,7 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // 2. OpenRouter models
+  // 2. OpenRouter models (using new DEFAULT_OPENROUTER_MODELS list)
   if (env.OPENROUTER_API_KEY) {
     const models = getOpenRouterModels(env);
     for (const model of models) {
@@ -227,12 +244,20 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // Order providers — preferred FIRST, then fallback
+  // v0.5.19: Fallback logic — preferred provider's TOP 2 models first,
+  // then the OTHER provider's models, then the rest of preferred provider's models.
+  // This ensures: if preferred's top models fail, we try the other provider
+  // before trying preferred's lower-ranked models.
   if (preferred === "gemini") {
-    providers.push(...geminiProviders, ...openRouterProviders);
+    const topGemini = geminiProviders.slice(0, 2);    // Top 2 Gemini
+    const restGemini = geminiProviders.slice(2);       // Remaining Gemini
+    providers.push(...topGemini, ...openRouterProviders, ...restGemini);
   } else if (preferred === "openrouter") {
-    providers.push(...openRouterProviders, ...geminiProviders);
+    const topOR = openRouterProviders.slice(0, 2);    // Top 2 OpenRouter
+    const restOR = openRouterProviders.slice(2);       // Remaining OpenRouter
+    providers.push(...topOR, ...geminiProviders, ...restOR);
   } else {
+    // "auto" — try both in parallel
     providers.push(...geminiProviders, ...openRouterProviders);
   }
 
@@ -246,7 +271,7 @@ export async function aiComplete(env, settings, params) {
     return { ok: false, error: errMsg };
   }
 
-  console.log(`[AI] v0.5.9 racing ${providers.length} providers (preferred=${preferred}):`);
+  console.log(`[AI] v0.5.19 racing ${providers.length} providers (preferred=${preferred}):`);
   providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
 
   // v0.5.9: Shared AbortController — the moment ANY provider wins,
@@ -309,6 +334,8 @@ export async function aiComplete(env, settings, params) {
 // ============================================================
 const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
 
+CRITICAL RULE: You are EDITING an existing post. Output ONLY the edited version. Do NOT write new content, do NOT answer questions, do NOT respond to the post. Your output must be the SAME post, just improved.
+
 RULES:
 - Keep input language. NEVER translate.
 - PRESERVE: GitHub links, docs, APIs, commands, code blocks, filenames, version numbers.
@@ -319,7 +346,8 @@ RULES:
 - v0.5.14: PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
 - Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`code blocks\`\`\`).
 - Do NOT add footer. Do NOT add explanations. Do NOT add HTML tags.
-- Write each URL on its OWN line.`;
+- Write each URL on its OWN line.
+- NEVER start your response with "Here is" or "Sure" or "I'll" — just output the edited post directly.`;
 
 const COMPACT_SUMMARIZE_PROMPT = `You are a Telegram channel content editor. The post is too long for Telegram. TRIM it (don't summarize into bullet points).
 

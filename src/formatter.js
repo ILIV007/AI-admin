@@ -93,10 +93,11 @@ const htmlEngine = {
     //   - "Prompt" (without colon)
     //   - "Query:", "Question:", "Task:" (additional keywords)
     //   - Persian colon ":" support
+    //   - v0.5.18: Also catches "🎨 AI Prompt:" label (from restorePrompts)
     const promptBlocks = [];
-    work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, label, content) => {
+    work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(🎨\s*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|AI Prompt|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, emoji, label, content) => {
       if (content.trim().length > 20) { // v0.5.13: Lower threshold (was 30) to catch shorter prompts
-        promptBlocks.push({ label: label.trim(), content: content.trim() });
+        promptBlocks.push({ label: (label || "Prompt").trim(), content: content.trim() });
         return ` §P${promptBlocks.length - 1}§ `;
       }
       return _;
@@ -219,6 +220,27 @@ const htmlEngine = {
     if (emojiLevel > 0 && intensity >= 40) {
       work = this.addEmojisToHeadings(work, emojiLevel);
     }
+
+    // v0.5.19: RTL fix — if a line starts with English/Latin chars but contains Persian,
+    // prepend U+200F (Right-to-Left Mark) to force correct bidirectional rendering.
+    // This prevents the "English word at start → entire line goes LTR" bug.
+    work = work.split("\n").map((line) => {
+      // Skip empty lines, HTML tags, or placeholders
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("<") || trimmed.startsWith("§")) return line;
+
+      // Check if line starts with Latin chars and contains Persian/Arabic
+      const startsWithLatin = /^[A-Za-z0-9\-_/.]/.test(trimmed);
+      const hasPersian = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(line);
+      const hasLatin = /[A-Za-z]/.test(line);
+
+      // If line has both Persian and Latin, and starts with Latin → needs RTL mark
+      if (startsWithLatin && hasPersian && hasLatin) {
+        return "\u200F" + line;
+      }
+      return line;
+    }).join("\n");
+
     work = work.replace(/\n{3,}/g, "\n\n");
     if (footer) work = `${work}\n\n<blockquote>${footer}</blockquote>`;
 

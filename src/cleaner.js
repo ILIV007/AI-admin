@@ -190,10 +190,19 @@ export function protectPrompts(text) {
 /**
  * Restore protected AI prompt blocks back into the text.
  * Called AFTER the AI rewrite step.
+ *
+ * v0.5.18: Restored prompts are wrapped with "🎨 AI Prompt:" label
+ * so the formatter can detect them and wrap in collapsible blockquote.
  */
 export function restorePrompts(text, prompts) {
   if (!text || !prompts || prompts.length === 0) return text;
-  return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => prompts[Number(i)] || "");
+  return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => {
+    const prompt = prompts[Number(i)];
+    if (!prompt) return "";
+    // v0.5.18: Wrap with label + blank lines so formatter regex boundary works
+    // The \n\n before and after ensures the formatter's (?=\n\n|\n#|\n\*\*|$) boundary triggers
+    return `\n🎨 AI Prompt:\n${prompt}\n`;
+  });
 }
 
 // ============================================================
