@@ -153,6 +153,18 @@ const htmlEngine = {
       return `<a href="${link.url}">${this.escape(link.text)}</a>`;
     });
 
+    // v0.5.24: Standalone links (on their own line, between paragraphs) → wrap in blockquote
+    // Only wraps links that are ALONE on their line (not inline with other text)
+    work = work.split("\n").map((line) => {
+      const trimmed = line.trim();
+      // Check if the line is ONLY a link (nothing else except whitespace)
+      const linkMatch = trimmed.match(/^<a\s+href="[^"]+">[^<]*<\/a>$/i);
+      if (linkMatch) {
+        return `<blockquote>${trimmed}</blockquote>`;
+      }
+      return line;
+    }).join("\n");
+
     // 9. Restore protected HTML tags (after escape — they're real HTML)
     work = work.replace(/§H(\d+)§/g, (_, i) => htmlTags[Number(i)] || "");
 

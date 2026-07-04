@@ -29,6 +29,8 @@ export const DEFAULTS = Object.freeze({
   schedule_posts_per_day: 0,
   // v0.5.15: Cron fallback toggle (default ON)
   cron_fallback_enabled: true,
+  // v0.5.24: Approve mode — bot shows approve button before publishing
+  approve_enabled: false,
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 

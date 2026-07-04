@@ -704,22 +704,22 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     maxBodyLen = effectiveLimit - 10;
   }
 
-  // Step 3: v0.5.23 — Handle long posts differently based on media presence:
-  //   - Text posts (no media): SPLIT into multiple parts (already implemented in v0.5.22)
-  //   - Media posts (photo/video): Use AI SUMMARY (can't split photo+caption)
+  // Step 3: v0.5.24 — Handle long posts:
+  //   - Media posts: AI summary (can't split photo+caption)
+  //   - Text posts: Try to SPLIT into balanced parts. If 2nd part is too small (<200 chars),
+  //     use AI summary instead. Split parts reply to each other.
   let safeBody = formattedBody;
-  let extraParts = []; // Additional parts to send after the main post (text posts only)
+  let extraParts = []; // Additional parts to send after the main post
 
   if (formattedBody.length > maxBodyLen) {
     if (hasMedia) {
-      // v0.5.23: Media posts — use AI summary (NOT split, NOT … truncation)
+      // v0.5.23: Media posts — use AI summary
       console.warn(`[pipeline] v0.5.23 caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
       try {
         const targetCharLimit = maxBodyLen - 50;
         const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
         if (summaryRes.ok && summaryRes.text) {
           let summaryText = summaryRes.text;
-          // Restore prompts in summary
           if (protectedPrompts.length > 0) {
             summaryText = restorePrompts(summaryText, protectedPrompts);
           }
@@ -732,11 +732,9 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
             aiProvider = summaryRes.provider;
             console.log(`[pipeline] v0.5.23 AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
           } else {
-            // Summary didn't help — truncate WITHOUT …
             safeBody = truncateHtml(formattedBody, maxBodyLen, "");
           }
         } else {
-          // AI failed — truncate WITHOUT …
           safeBody = truncateHtml(formattedBody, maxBodyLen, "");
         }
       } catch (e) {
@@ -744,53 +742,64 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         safeBody = truncateHtml(formattedBody, maxBodyLen, "");
       }
     } else {
-      // v0.5.22: Text posts — SPLIT into multiple parts
-      console.warn(`[pipeline] v0.5.22 body too long (${formattedBody.length} > ${maxBodyLen}), splitting into parts...`);
+      // v0.5.24: Text posts — try balanced split first
+      console.warn(`[pipeline] v0.5.24 body too long (${formattedBody.length} > ${maxBodyLen})`);
 
-      let remaining = formattedBody;
-      let currentPart = "";
-      const partLimit = maxBodyLen - 20;
-
-      while (remaining.length > 0) {
-        if ((currentPart + remaining).length <= partLimit) {
-          currentPart += remaining;
-          remaining = "";
-          break;
-        }
-
-        let splitPoint = partLimit - currentPart.length;
-        if (splitPoint <= 0) splitPoint = partLimit;
-
-        let bestSplit = remaining.lastIndexOf("\n\n", splitPoint);
-        if (bestSplit < partLimit * 0.5) bestSplit = remaining.lastIndexOf("\n", splitPoint);
-        if (bestSplit < partLimit * 0.5) {
-          bestSplit = Math.max(
-            remaining.lastIndexOf(". ", splitPoint),
-            remaining.lastIndexOf("! ", splitPoint),
-            remaining.lastIndexOf("? ", splitPoint),
-            remaining.lastIndexOf("۔ ", splitPoint),
-          );
-        }
-        if (bestSplit < partLimit * 0.3) bestSplit = remaining.lastIndexOf(" ", splitPoint);
-        if (bestSplit < 10) bestSplit = splitPoint;
-
-        currentPart += remaining.slice(0, bestSplit);
-        extraParts.push(currentPart);
-        remaining = remaining.slice(bestSplit).trim();
-        currentPart = "";
+      // Try to split into 2 balanced parts
+      const halfPoint = Math.floor(formattedBody.length / 2);
+      // Find best split point near the middle (paragraph > newline > sentence > space)
+      let bestSplit = formattedBody.lastIndexOf("\n\n", halfPoint);
+      if (bestSplit < halfPoint * 0.4) bestSplit = formattedBody.lastIndexOf("\n", halfPoint);
+      if (bestSplit < halfPoint * 0.4) {
+        bestSplit = Math.max(
+          formattedBody.lastIndexOf(". ", halfPoint),
+          formattedBody.lastIndexOf("! ", halfPoint),
+          formattedBody.lastIndexOf("? ", halfPoint),
+          formattedBody.lastIndexOf("۔ ", halfPoint),
+        );
       }
+      if (bestSplit < halfPoint * 0.3) bestSplit = formattedBody.lastIndexOf(" ", halfPoint);
+      if (bestSplit < 100) bestSplit = halfPoint;
 
-      if (currentPart.length > 0) extraParts.push(currentPart);
+      const part1 = formattedBody.slice(0, bestSplit).trim();
+      const part2 = formattedBody.slice(bestSplit).trim();
 
-      if (extraParts.length > 0) {
-        safeBody = extraParts.shift();
-        if (extraParts.length > 0) {
-          safeBody += "\n\n<i>(ادامه...)</i>";
+      // v0.5.24: If part2 is too small (<200 chars), use AI summary instead of split
+      if (part2.length < 200 || part1.length > maxBodyLen) {
+        console.warn(`[pipeline] v0.5.24 split would be unbalanced (p1=${part1.length}, p2=${part2.length}). Using AI summary...`);
+        try {
+          const targetCharLimit = maxBodyLen - 50;
+          const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+          if (summaryRes.ok && summaryRes.text) {
+            let summaryText = summaryRes.text;
+            if (protectedPrompts.length > 0) {
+              summaryText = restorePrompts(summaryText, protectedPrompts);
+            }
+            const { text: summaryFormatted } = formatPost(summaryText, {
+              footer: null, engineName: "html", intensity: 40, emojiLevel: 10,
+            });
+            if (summaryFormatted.length > 0 && summaryFormatted.length <= maxBodyLen) {
+              safeBody = summaryFormatted;
+              wasRewritten = true;
+              aiProvider = summaryRes.provider;
+              console.log(`[pipeline] v0.5.24 AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
+            } else {
+              safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+            }
+          } else {
+            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+          }
+        } catch (e) {
+          console.error(`[pipeline] v0.5.24 AI summary exception: ${e.message}`);
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
         }
+      } else {
+        // Split is balanced — use it
+        safeBody = part1;
+        extraParts.push(part2);
+        console.log(`[pipeline] v0.5.24 balanced split: p1=${part1.length}, p2=${part2.length}`);
+        traceStep("split_post", true, `${formattedBody.length} chars → 2 parts (balanced)`);
       }
-
-      console.log(`[pipeline] v0.5.22 split into ${extraParts.length + 1} parts`);
-      traceStep("split_post", true, `${formattedBody.length} chars → ${extraParts.length + 1} parts`);
     }
   }
 
@@ -820,6 +829,101 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Send to user
   if (feedbackChatId) {
+    // v0.5.24: If approve mode is ON, send preview with approve/reject buttons
+    if (settings.approve_enabled && !settings.scheduling_enabled) {
+      console.log(`[pipeline] v0.5.24 approve mode ON — sending preview with buttons`);
+
+      // Send preview to user
+      const previewRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+        extra: {
+          parse_mode: parseMode,
+          disable_web_page_preview: false,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:PREVIEW_ID` },
+                { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:PREVIEW_ID` },
+              ],
+            ],
+          },
+        },
+      });
+
+      if (previewRes.ok) {
+        const previewMsgId = previewRes.result?.message_id;
+        // Fix the callback_data with actual message ID
+        // We need to edit the message to update the callback_data
+        // Actually, Telegram doesn't allow editing reply_markup without resending...
+        // Better approach: store the post data in KV with the preview message ID,
+        // and use a generic callback that looks up the data.
+
+        // Store post data in KV
+        const storageKey = `approve:${previewMsgId}`;
+        const postData = {
+          text: safeFormattedText,
+          mediaType: content.mediaType,
+          mediaFileId: content.mediaFileId,
+          parseMode,
+          targetChannel,
+          extraParts,
+          footerHtml: effectiveFooterHtml,
+          createdAt: Date.now(),
+        };
+        await SETTINGS.put(storageKey, JSON.stringify(postData), { expirationTtl: 3600 });
+
+        // Now edit the message to fix the callback_data with real message ID
+        await editMessageText(env.BOT_TOKEN, feedbackChatId, previewMsgId,
+          safeFormattedText + (content.mediaType ? "" : ""), // Can't edit caption of photo message
+          {
+            parse_mode: parseMode,
+            disable_web_page_preview: false,
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
+                  { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
+                ],
+              ],
+            },
+          }
+        ).catch(() => {}); // May fail for media messages (can't edit caption with editMessageText)
+
+        // If it's a media message, we can't edit the caption's reply_markup via editMessageText.
+        // For media messages, we need to use editMessageCaption. But for simplicity,
+        // let's just send a separate message with the buttons.
+        if (content.mediaType) {
+          await sendMessage(env.BOT_TOKEN, feedbackChatId,
+            `<b>👇 Review the post above</b>`,
+            {
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
+                    { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
+                  ],
+                ],
+              },
+            }
+          );
+        }
+
+        traceStep("approve_preview", true, `preview msg=${previewMsgId}`);
+      }
+
+      // Skip actual publishing — it will happen when user clicks "Publish"
+      if (feedbackChatId && processingMsgId) {
+        const totalMs = Date.now() - startTime;
+        await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+          `⏸️ <b>Waiting for approval</b>\n\nReview the preview above and click <b>✅ Publish</b> or <b>❌ Reject</b>.`,
+          { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+      }
+      return { ok: true, detail: "approve: waiting for user approval" };
+    }
+
+    // Normal: send preview to user
     const userRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
       text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
@@ -1053,29 +1157,34 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
 
-    // v0.5.22: Send extra parts (if the post was split)
+    // v0.5.24: Send extra parts (if the post was split)
+    // Part 2 replies to Part 1 for continuity
     if (extraParts.length > 0 && !settings.scheduling_enabled) {
-      console.log(`[pipeline] v0.5.22 sending ${extraParts.length} extra part(s)...`);
+      console.log(`[pipeline] v0.5.24 sending ${extraParts.length} extra part(s)...`);
+      // Get the message_id of the first post for reply
+      const firstMsgId = publishRes?.result?.message_id;
       for (let i = 0; i < extraParts.length; i++) {
         const partText = extraParts[i];
         const isLast = i === extraParts.length - 1;
-        // Add footer only to the last part
         const partFooter = isLast ? effectiveFooterHtml : "";
-        const partText2 = partText + partFooter;
+        const partTextWithFooter = partText + partFooter;
 
-        console.log(`[pipeline] v0.5.22 sending part ${i + 2}/${extraParts.length + 1} (${partText2.length} chars)`);
+        console.log(`[pipeline] v0.5.24 sending part ${i + 2}/${extraParts.length + 1} (${partTextWithFooter.length} chars, reply_to=${firstMsgId})`);
         const partRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-          text: partText2, mediaType: null, mediaFileId: null,
-          extra: { parse_mode: parseMode, disable_web_page_preview: false },
+          text: partTextWithFooter, mediaType: null, mediaFileId: null,
+          extra: {
+            parse_mode: parseMode,
+            disable_web_page_preview: false,
+            reply_to_message_id: firstMsgId, // v0.5.24: Reply to first part
+          },
         }).catch((e) => ({ ok: false, description: e.message }));
 
         if (!partRes.ok) {
-          console.error(`[pipeline] v0.5.22 part ${i + 2} failed: ${partRes.description}`);
+          console.error(`[pipeline] v0.5.24 part ${i + 2} failed: ${partRes.description}`);
         }
-        // Small delay between parts to maintain order
         if (!isLast) await new Promise((r) => setTimeout(r, 500));
       }
-      traceStep("extra_parts_sent", true, `${extraParts.length} parts`);
+      traceStep("extra_parts_sent", true, `${extraParts.length} parts (reply chain)`);
     }
 
     return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };

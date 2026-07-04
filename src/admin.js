@@ -33,6 +33,9 @@ function mainMenuKeyboard(settings) {
   const schedLabel = settings?.scheduling_enabled
     ? "📅 Schedule: ON ✅"
     : "📅 Schedule: OFF";
+  const approveLabel = settings?.approve_enabled
+    ? "✅ Approve: ON ✅"
+    : "✅ Approve: OFF";
   return {
     inline_keyboard: [
       [
@@ -57,6 +60,7 @@ function mainMenuKeyboard(settings) {
       ],
       [
         { text: channelEditLabel, callback_data: "toggle:channeledit" },
+        { text: approveLabel, callback_data: "toggle:approve" },
       ],
     ],
   };
@@ -257,6 +261,7 @@ function mainMenuText(settings) {
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
     `📺 Channel Edit: <code>${settings.channel_editing_enabled ? "ON" : "OFF"}</code>`,
+    `✅ Approve: <code>${settings.approve_enabled ? "ON" : "OFF"}</code>`,
     ``,
     `<i>Send any post to this bot to process and publish it.</i>`,
   ].join("\n");
@@ -482,6 +487,82 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
     newText = mainMenuText(updated);
     newKb = mainMenuKeyboard(updated);
     toast = newVal ? "✅ Channel editing ON" : "✅ Channel editing OFF";
+  }
+  // v0.5.24: Approve toggle
+  else if (data === "toggle:approve") {
+    const newVal = !settings.approve_enabled;
+    const updated = await updateSetting(SETTINGS, userId, "approve_enabled", newVal);
+    newText = mainMenuText(updated);
+    newKb = mainMenuKeyboard(updated);
+    toast = newVal ? "✅ Approve mode ON — posts need approval" : "✅ Approve mode OFF — auto publish";
+  }
+  // v0.5.24: Approve post callback (when user clicks "✅ Publish" button)
+  else if (data.startsWith("approve:publish:")) {
+    // Data format: "approve:publish:<chatId>:<messageId>"
+    // The post data was stored in KV when the preview was sent
+    const parts = data.split(":");
+    const targetChatId = parts[2];
+    const previewMsgId = parts[3];
+
+    // Retrieve stored post data from KV
+    const storageKey = `approve:${previewMsgId}`;
+    const storedRaw = await SETTINGS.get(storageKey);
+    if (!storedRaw) {
+      await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post data expired. Please resend.");
+      return;
+    }
+
+    let postData;
+    try { postData = JSON.parse(storedRaw); } catch { await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Invalid post data"); return; }
+
+    // Publish to channel
+    const { publishToChannel } = await import("./telegram.js");
+    const pubRes = await publishToChannel(env.BOT_TOKEN, postData.targetChannel, {
+      text: postData.text,
+      mediaType: postData.mediaType,
+      mediaFileId: postData.mediaFileId,
+      extra: { parse_mode: postData.parseMode, disable_web_page_preview: false },
+    });
+
+    if (pubRes.ok) {
+      // Send extra parts if any
+      if (postData.extraParts && postData.extraParts.length > 0) {
+        const firstMsgId = pubRes.result?.message_id;
+        for (let i = 0; i < postData.extraParts.length; i++) {
+          const isLast = i === postData.extraParts.length - 1;
+          const partFooter = isLast ? (postData.footerHtml || "") : "";
+          await publishToChannel(env.BOT_TOKEN, postData.targetChannel, {
+            text: postData.extraParts[i] + partFooter, mediaType: null, mediaFileId: null,
+            extra: { parse_mode: postData.parseMode, reply_to_message_id: firstMsgId },
+          }).catch(() => {});
+          if (!isLast) await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+
+      await answerCallbackQuery(env.BOT_TOKEN, cq.id, "✅ Published to channel!");
+      // Edit the preview message to show it's published
+      await editMessageText(env.BOT_TOKEN, targetChatId, Number(previewMsgId),
+        `✅ <b>Published to channel!</b>\n📍 <code>${postData.targetChannel}</code>`,
+        { parse_mode: "HTML" }).catch(() => {});
+    } else {
+      await answerCallbackQuery(env.BOT_TOKEN, cq.id, `❌ Failed: ${pubRes.description}`);
+    }
+
+    // Clean up stored data
+    await SETTINGS.delete(storageKey);
+    return;
+  }
+  // v0.5.24: Reject post callback
+  else if (data.startsWith("approve:reject:")) {
+    const parts = data.split(":");
+    const targetChatId = parts[2];
+    const previewMsgId = parts[3];
+    await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post rejected");
+    await editMessageText(env.BOT_TOKEN, targetChatId, Number(previewMsgId),
+      `❌ <b>Post rejected</b>`, { parse_mode: "HTML" }).catch(() => {});
+    // Clean up stored data
+    await SETTINGS.delete(`approve:${previewMsgId}`);
+    return;
   }
   // ----- Setting changes -----
   else if (data.startsWith("set:")) {
