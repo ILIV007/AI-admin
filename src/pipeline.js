@@ -226,15 +226,22 @@ export async function runMediaGroupPipeline(env, items, update) {
   });
 
   // v0.5.9 TASK 6: Use safe truncateHtml for media group captions
+  // v0.5.17: Same fix as runPipelineInner — skip footer if maxBodyLen too small
   const MG_LIMIT = 900;
   const footerHtml = settings.footer_text ? `\n\n<blockquote>${settings.footer_text}</blockquote>` : "";
-  const maxBodyLen = MG_LIMIT - footerHtml.length - 30;
+  let maxBodyLen = MG_LIMIT - footerHtml.length - 30;
+  let effectiveFooterHtml = footerHtml;
+  if (maxBodyLen < 200) {
+    console.warn(`[mg-pipeline] v0.5.17 ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
+    effectiveFooterHtml = "";
+    maxBodyLen = MG_LIMIT - 30;
+  }
   let safeBody = formattedBody;
   if (formattedBody.length > maxBodyLen) {
     console.warn(`[mg-pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
     safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
   }
-  const formattedText = safeBody + footerHtml;
+  const formattedText = safeBody + effectiveFooterHtml;
 
   const mediaItems = items.map((it, i) => ({
     type: it.type, fileId: it.fileId,
@@ -544,9 +551,11 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   // v0.5.16: CRITICAL FIX — If protectedText is mostly placeholders (>80%),
   // the AI has nothing to work with and will return empty/garbage output.
   // In this case, SKIP AI rewrite entirely and use the original cleanedText.
+  // v0.5.17: Changed threshold — only skip if non-placeholder text is <50 chars
+  // (was 20% of original, which was too aggressive for posts with Persian intro)
   const placeholderCount = (protectedText.match(/__PROMPT_BLOCK_\d+__/g) || []).length;
   const nonPlaceholderText = protectedText.replace(/__PROMPT_BLOCK_\d+__/g, "").trim();
-  const isMostlyPlaceholders = nonPlaceholderText.length < cleanedText.length * 0.20 && placeholderCount > 0;
+  const isMostlyPlaceholders = nonPlaceholderText.length < 50 && placeholderCount > 0;
 
   if (isMostlyPlaceholders) {
     console.log(`[pipeline] v0.5.16 ⚠️ Text is mostly prompt placeholders (${placeholderCount} blocks, only ${nonPlaceholderText.length} chars of non-prompt text). Skipping AI rewrite.`);
@@ -652,7 +661,20 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
-  const maxBodyLen = effectiveLimit - footerLen - 50;
+  let maxBodyLen = effectiveLimit - footerLen - 50;
+
+  // v0.5.17: CRITICAL FIX — If maxBodyLen is too small or negative,
+  // the post can't fit with the footer. In this case:
+  // 1. Skip the footer (it's better to publish without footer than to truncate to nothing)
+  // 2. Use the full limit for the body
+  let effectiveFooterHtml = footerHtml;
+  let effectiveFooterLen = footerLen;
+  if (maxBodyLen < 200) {
+    console.warn(`[pipeline] v0.5.17 ⚠️ maxBodyLen too small (${maxBodyLen})! Footer would eat the entire post. Skipping footer.`);
+    effectiveFooterHtml = "";
+    effectiveFooterLen = 0;
+    maxBodyLen = effectiveLimit - 50; // Full limit minus safety margin
+  }
 
   // Step 3: v0.5.9 TASK 6 — Use safe truncateHtml() instead of brittle regex
   let safeBody = formattedBody;
@@ -662,9 +684,9 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
   }
 
-  // Step 4: Append footer
-  let safeFormattedText = safeBody + footerHtml;
-  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
+  // Step 4: Append footer (may be empty if maxBodyLen was too small)
+  let safeFormattedText = safeBody + effectiveFooterHtml;
+  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${effectiveFooterLen})`);
 
   // v0.5.16: CRITICAL SAFETY CHECK — Never send empty output
   // If formatting produced empty/near-empty text, fall back to cleanedText

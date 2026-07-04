@@ -209,10 +209,10 @@ const htmlEngine = {
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
       if (!p) return ''; // Safety check
-      // v0.5.15: Use collapsible blockquote + monospace for ALL prompts
-      // <blockquote expandable="true"> makes it collapsible
-      // <pre><code> inside makes it monospace
-      return `<b>${this.escape(p.label)}:</b>\n<blockquote expandable="true"><pre><code>${this.escape(p.content)}</code></pre></blockquote>`;
+      // v0.5.17: Use <blockquote expandable="true"> with <code> inside
+      // <code> makes it monospace (copyable) — works inside blockquote
+      // <pre> inside blockquote does NOT render properly in Telegram, so we use <code> only
+      return `<b>${this.escape(p.label)}:</b>\n<blockquote expandable="true"><code>${this.escape(p.content)}</code></blockquote>`;
     });
 
     // === PHASE 5: POLISH ===

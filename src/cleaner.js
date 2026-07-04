@@ -93,58 +93,96 @@ const PROMPT_KEYWORDS = [
 ];
 
 /**
- * v0.5.15: Improved prompt detection — catches more formats.
- * Detects AI image generation prompts and protects them from AI rewrite.
+ * v0.5.17: COMPLETELY REWRITTEN prompt detection.
  *
- * Detection criteria (IMPROVED in v0.5.15):
- * - Paragraph >150 chars AND (2+ keywords OR MJ params OR starts with prompt label)
- * - OR paragraph >300 chars (likely a long technical prompt)
+ * Problem in v0.5.15: When a post has Persian text + English prompt + Persian text
+ * all in one paragraph (separated by single \n), the entire paragraph was protected.
+ * This caused isMostlyPlaceholders=true → AI skipped → Persian text not cleaned.
  *
- * Returns { text: textWithPlaceholders, prompts: [array of prompt strings] }
+ * Solution: Instead of protecting whole paragraphs, detect CONTIGUOUS ENGLISH
+ * blocks WITHIN paragraphs and protect only those.
+ *
+ * Algorithm:
+ * 1. Split text into lines (by \n)
+ * 2. Find contiguous runs of English-dominant lines (>50% ASCII letters)
+ * 3. If such a run is >100 chars AND contains prompt keywords, protect it
+ * 4. Leave surrounding Persian/non-prompt text for AI to process
+ *
+ * This way: "متن فارسی\nKeep the face 100% identical...\nمتن فارسی"
+ * → Only the English block is protected, Persian text goes to AI.
  */
 export function protectPrompts(text) {
   if (!text) return { text, prompts: [] };
 
   const prompts = [];
 
-  // Split into paragraphs
-  const paragraphs = text.split(/\n\n+/);
+  // Split into lines
+  const lines = text.split("\n");
 
-  const protectedParagraphs = paragraphs.map((para, index) => {
-    const paraLower = para.toLowerCase();
+  // Find contiguous runs of English-dominant lines
+  const result = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
 
-    // Count keyword matches
-    let keywordCount = 0;
-    for (const kw of PROMPT_KEYWORDS) {
-      if (paraLower.includes(kw)) keywordCount++;
+    // Check if this line is English-dominant (>50% ASCII letters vs Persian/Arabic)
+    const asciiLetters = (line.match(/[a-zA-Z]/g) || []).length;
+    const persianChars = (line.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+    const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 10;
+
+    if (isEnglishDominant) {
+      // Collect contiguous English-dominant lines
+      const englishBlock = [line];
+      let j = i + 1;
+      while (j < lines.length) {
+        const nextLine = lines[j];
+        const nextAscii = (nextLine.match(/[a-zA-Z]/g) || []).length;
+        const nextPersian = (nextLine.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+        const nextIsEnglish = nextAscii > nextPersian && nextAscii > 10;
+        // Also include short lines (empty, URLs, etc.) between English lines
+        const nextIsShort = nextLine.trim().length < 20;
+        if (nextIsEnglish || (nextIsShort && englishBlock.length > 0)) {
+          englishBlock.push(nextLine);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      const blockText = englishBlock.join("\n").trim();
+
+      // Check if this block looks like an AI prompt
+      const blockLower = blockText.toLowerCase();
+      let keywordCount = 0;
+      for (const kw of PROMPT_KEYWORDS) {
+        if (blockLower.includes(kw)) keywordCount++;
+      }
+      const hasMJParams = /--\w+\s+\S+/.test(blockText);
+      const startsWithLabel = /^(prompt|system|user|assistant|instruction|role)\s*:/i.test(blockText.trim());
+
+      // Protect if: >80 chars AND (1+ keyword OR MJ params OR starts with label)
+      // OR: >150 chars of pure English (likely a prompt even without keywords)
+      const shouldProtect = (
+        (blockText.length > 80 && (keywordCount >= 1 || hasMJParams || startsWithLabel)) ||
+        (blockText.length > 150 && keywordCount >= 1)
+      );
+
+      if (shouldProtect) {
+        const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
+        prompts.push(blockText);
+        console.log(`[cleaner] v0.5.17 protected English prompt block ${prompts.length - 1}: ${blockText.length} chars, ${keywordCount} keywords, MJ=${hasMJParams}`);
+        result.push(placeholder);
+        i = j; // Skip past the block
+        continue;
+      }
     }
 
-    // Check for Midjourney parameter syntax (--ar, --v, etc.)
-    const hasMJParams = /--\w+\s+\S+/.test(para);
-
-    // Check if paragraph starts with "Prompt:", "System:", etc.
-    const startsWithPromptLabel = /^(prompt|system|user|assistant|instruction|role|پرامپت|سیستم)\s*:/i.test(para.trim());
-
-    // v0.5.15: Improved heuristic — protect if:
-    // - >150 chars AND (2+ keywords OR MJ params OR starts with prompt label)
-    // - OR >300 chars (likely a long prompt)
-    const shouldProtect = (
-      (para.length > 150 && (keywordCount >= 2 || hasMJParams || startsWithPromptLabel)) ||
-      (para.length > 300)
-    );
-
-    if (shouldProtect) {
-      const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
-      prompts.push(para);
-      console.log(`[cleaner] v0.5.15 protected prompt block ${prompts.length - 1}: ${para.length} chars, ${keywordCount} keywords, MJ=${hasMJParams}, label=${startsWithPromptLabel}`);
-      return placeholder;
-    }
-
-    return para;
-  });
+    result.push(line);
+    i++;
+  }
 
   return {
-    text: protectedParagraphs.join("\n\n"),
+    text: result.join("\n"),
     prompts,
   };
 }

@@ -49,7 +49,7 @@ import { aiRewrite } from "./ai.js";
 import { formatPost } from "./formatter.js";
 import { cleanContent, protectPrompts, restorePrompts } from "./cleaner.js";
 
-const VERSION = "0.5.16";
+const VERSION = "0.5.17";
 
 // ============================================================
 // MAIN EXPORT
