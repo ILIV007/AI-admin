@@ -221,27 +221,20 @@ const htmlEngine = {
       let i = 0;
       while (i < lines.length) {
         if (isListHeading(lines[i])) {
-          const startsNumbered = isNumberedDashItem(lines[i]);
-          const block = [lines[i]];
+          // v0.6.5: Heading stays OUTSIDE blockquote, only description goes inside
+          out.push(lines[i]); // Heading line — NOT quoted
           i++;
+          const block = [];
           while (i < lines.length) {
             const t = lines[i].trim();
-            if (t === "") break;  // blank line ends the block
-            // Next numbered item ALWAYS ends the block
-            if (isNumberedDashItem(lines[i])) break;
-            if (startsNumbered) {
-              // Inside a numbered-item block: راه‌حل: and colon headings are
-              // treated as description (do NOT terminate the block)
-              block.push(lines[i]);
-              i++;
-            } else {
-              // Inside a راه‌حل/colon block: another راه‌حل/colon heading ends it
-              if (isRaholOrColonHeading(lines[i])) break;
-              block.push(lines[i]);
-              i++;
-            }
+            if (t === "") break;
+            if (isListHeading(lines[i])) break;
+            block.push(lines[i]);
+            i++;
           }
-          out.push(`<blockquote>${block.join("\n")}</blockquote>`);
+          if (block.length > 0) {
+            out.push(`<blockquote>${block.join("\n")}</blockquote>`);
+          }
         } else {
           out.push(lines[i]);
           i++;

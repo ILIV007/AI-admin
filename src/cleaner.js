@@ -91,36 +91,75 @@ function isEnglishDominant(text) {
   return enChars > faChars && enChars > 10;
 }
 
-function protectPrompts(text) {
-  if (!text || !text.includes("پرامپت")) {
-    return { text: text || "", placeholders: [] };
-  }
+const PROMPT_KEYWORDS = [
+  "photorealistic", "octane render", "masterpiece", "8k", "4k", "ultra detailed",
+  "keep the face", "identical to the reference", "no changes to identity",
+  "--ar", "--v", "--niji", "--seed", "--chaos", "--stylize",
+  "stable diffusion", "midjourney", "dall-e", "sdxl", "controlnet",
+  "negative prompt", "steps:", "cfg scale", "sampler", "denoising",
+  "render", "cinematic lighting", "volumetric lighting", "ray tracing",
+  "unreal engine", "blender", "zbrush", "substance painter",
+  "highly detailed", "intricate details", "sharp focus", "depth of field",
+  "bokeh", "film grain", "color grading", "hdr", "uhd",
+  "prompt:", "system prompt:", "user:", "assistant:", "instruction:",
+  "face identical", "lighting may change", "hairstyle", "facial shape",
+  "panel", "reference sheet", "grid layout", "lens", "framing", "shot", "angle",
+  "background", "camera", "pure white", "studio",
+];
 
-  // Split into paragraphs by double-newline
-  const paragraphs = text.split(/\n\n+/);
-  const placeholders = [];
+export function protectPrompts(text) {
+  if (!text) return { text, prompts: [] };
+  const prompts = [];
+  const paragraphs = text.split(/\n\s*\n/);
+  const result = [];
 
-  for (let i = 0; i < paragraphs.length; i++) {
-    if (!paragraphs[i].includes("پرامپت")) continue;
+  for (const para of paragraphs) {
+    const paraTrimmed = para.trim();
+    if (!paraTrimmed) { result.push(para); continue; }
 
-    // Look at the next 1-2 paragraphs (within 1-2 paragraphs after "پرامپت")
-    for (let j = i + 1; j < Math.min(i + 3, paragraphs.length); j++) {
-      const para = paragraphs[j].trim();
-      if (!para) continue;
-      // Protect if English-dominant and >80 chars
-      if (isEnglishDominant(para) && para.length > 80) {
-        const placeholder = `__PROMPT_BLOCK_${placeholders.length}__`;
-        placeholders.push(para);
-        paragraphs[j] = placeholder;
-        // Only protect the first eligible paragraph after each "پرامپت"
-        break;
+    const asciiLetters = (paraTrimmed.match(/[a-zA-Z]/g) || []).length;
+    const persianChars = (paraTrimmed.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+    const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 15;
+
+    if (isEnglishDominant) {
+      const paraLower = paraTrimmed.toLowerCase();
+      let keywordCount = 0;
+      for (const kw of PROMPT_KEYWORDS) {
+        if (paraLower.includes(kw)) keywordCount++;
       }
-      // Stop early if we hit a non-English short paragraph (likely not a prompt)
-      if (!isEnglishDominant(para) && para.length < 40) break;
+      const hasMJParams = /--\w+\s+\S+/.test(paraTrimmed);
+      const startsWithLabel = /^(prompt|system|user|assistant|instruction|role)\s*:/i.test(paraTrimmed);
+      const hasPromptStructure = /\b(panel|reference sheet|grid layout|view|profile|lighting|lens|framing|shot|angle|background|camera|render)\b/i.test(paraTrimmed);
+      // Also check if the word "پرامپت" appears in nearby text (previous paragraph)
+      const prevPara = result.length > 0 ? result[result.length - 1] : "";
+      const hasNearbyPromptWord = prevPara.includes("پرامپت") || paraTrimmed.includes("پرامپت");
+
+      const shouldProtect = (
+        (paraTrimmed.length > 80 && (keywordCount >= 1 || hasMJParams || startsWithLabel || hasPromptStructure || hasNearbyPromptWord)) ||
+        (paraTrimmed.length > 200 && isEnglishDominant)
+      );
+
+      if (shouldProtect) {
+        const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
+        prompts.push(paraTrimmed);
+        console.log(`[cleaner] protected prompt block ${prompts.length - 1}: ${paraTrimmed.length} chars, ${keywordCount} keywords`);
+        result.push(placeholder);
+        continue;
+      }
     }
+    result.push(para);
   }
 
-  return { text: paragraphs.join("\n\n"), placeholders };
+  return { text: result.join("\n\n"), prompts };
+}
+
+export function restorePrompts(text, prompts) {
+  if (!text || !prompts || prompts.length === 0) return text;
+  return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => {
+    const prompt = prompts[Number(i)];
+    if (!prompt) return "";
+    return `\n§PROMPT_START§${prompt}§PROMPT_END§\n`;
+  });
 }
 
 // ============================================================
@@ -142,11 +181,6 @@ export function cleanContent(rawText) {
     inlineCodes.push(m);
     return `__INLINE_CODE_${inlineCodes.length - 1}__`;
   });
-
-  // v0.6.2: Protect prompt paragraphs (English-dominant paragraphs that follow
-  // the Persian word "پرامپت") from being modified by the cleaner.
-  const { text: textAfterPromptProtect, placeholders: promptPlaceholders } = protectPrompts(text);
-  text = textAfterPromptProtect;
 
   // 2. Protect URLs (GitHub, docs, etc.) — but REMOVE spam links first.
   //    Spam links: Telegram invite links (t.me/joinchat, t.me/+xxx), sticker packs
@@ -208,10 +242,6 @@ export function cleanContent(rawText) {
 
   // 13. Restore code blocks
   text = text.replace(/__CODE_BLOCK_(\d+)__/g, (_, i) => codeBlocks[Number(i)]);
-
-  // v0.6.2: Restore protected prompt paragraphs (English-dominant paragraphs
-  // that followed the Persian word "پرامپت").
-  text = text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => promptPlaceholders[Number(i)]);
 
   // 14. Clean up extra whitespace
   text = text
