@@ -452,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.7.1 — KV + Token Optimization (settings cache, batch 25, parallel media group, max_tokens 2048, 4 providers max)</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.7.2 — Two-Wave AI Fallback (Wave 1: top 4 fast, Wave 2: all remaining)</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>

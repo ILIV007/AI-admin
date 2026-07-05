@@ -226,25 +226,91 @@ function truncateInput(text, maxChars = MAX_INPUT_CHARS) {
 }
 
 // ============================================================
-// UNIFIED complete() — v0.5.9: AbortController cancels losers
-// v0.7.1: Limit to MAX_PARALLEL_PROVIDERS (4) instead of racing all
+// UNIFIED complete() — v0.7.2: TWO-WAVE fallback
 // ============================================================
-// CRITICAL FIX (TASK 3): Previously, when Promise.any resolved with the
-// first successful response, the other 9 fetch requests kept running in
-// the background — wasting tokens, CPU, and bandwidth. Now we create a
-// shared AbortController. The moment ANY provider succeeds, we call
-// controller.abort() to cancel all others. Losers get a CANCELLED error
-// which we silently ignore (it's intentional, not a real failure).
+// v0.5.9: AbortController cancels losers when winner succeeds.
 //
-// v0.7.1: We also limit the number of providers racing in parallel.
-// Old code raced up to 11 providers (5 Gemini + 6 OpenRouter). Each
-// loser still consumed INPUT tokens before being aborted. Now we only
-// race the top 4: top 2 of preferred provider + top 2 of other.
-// This cuts input token cost by ~60% with no quality loss (the top 4
-// are the most likely to succeed anyway).
+// v0.7.1 bug: limited to 4 racing providers — if ALL 4 failed
+// (e.g. Gemini rate-limited AND top 2 OpenRouter models failed),
+// there was NO fallback to the remaining 7 providers. Bot ended up
+// format-only even though OpenRouter had 4 more models available.
+//
+// v0.7.2 fix: TWO-WAVE strategy.
+//   Wave 1: Race top 2 preferred + top 2 other = 4 providers (fast, token-efficient).
+//   Wave 2: ONLY if Wave 1 all fail, race ALL remaining providers (robust fallback).
+// Most requests succeed in Wave 1 (cheap). Only when Wave 1 fails do we
+// spend tokens on Wave 2. This preserves v0.7.1's token savings while
+// restoring v0.6.11's robust fallback behavior.
+//
+// Also: explicit warnings when API keys are missing, so the user can
+// diagnose "format-only fallback" quickly.
 // ============================================================
+
+/**
+ * Race a list of providers with Promise.any + shared AbortController.
+ * Returns { ok, text, provider, model, ms } on success, or { ok:false, errors } on failure.
+ */
+async function raceProviders(providers, env, params, label = "wave") {
+  if (providers.length === 0) {
+    return { ok: false, errors: [], empty: true };
+  }
+
+  const winnerController = new AbortController();
+
+  try {
+    const result = await Promise.any(
+      providers.map(async (p) => {
+        const start = Date.now();
+        let text;
+        try {
+          if (p.name === "gemini") {
+            text = await geminiComplete(env.GEMINI_API_KEY, p.model, params, winnerController.signal);
+          } else {
+            text = await openRouterComplete(env.OPENROUTER_API_KEY, p.model, params, winnerController.signal);
+          }
+        } catch (e) {
+          if (e.message === "CANCELLED" || e.message.includes("CANCELLED")) {
+            throw new Error("CANCELLED (another provider won)");
+          }
+          throw e;
+        }
+        const ms = Date.now() - start;
+        console.log(`[AI] ✓ [${label}] ${p.name}/${p.model} OK in ${ms}ms (${text.length} chars) — aborting others`);
+        winnerController.abort();
+        return { ok: true, text, provider: p.name, model: p.model, ms };
+      })
+    );
+    console.log(`[AI] WINNER [${label}]: ${result.provider}/${result.model}`);
+    return result;
+  } catch (aggErr) {
+    const errors = providers.map((p, i) => {
+      const errMsg = aggErr.errors?.[i]?.message || "unknown";
+      if (errMsg.includes("CANCELLED")) return { provider: p.name, model: p.model, error: "cancelled" };
+      return { provider: p.name, model: p.model, error: errMsg };
+    });
+    const realErrors = errors.filter((e) => e.error !== "cancelled");
+    console.error(`[AI] [${label}] ALL ${providers.length} providers failed (${realErrors.length} real errors):`);
+    realErrors.forEach((e) => console.error(`[AI]   ✗ [${label}] ${e.provider}/${e.model}: ${e.error}`));
+    return { ok: false, errors: realErrors };
+  }
+}
+
 export async function aiComplete(env, settings, params) {
   const preferred = settings?.ai_provider || env.DEFAULT_AI_PROVIDER || "openrouter";
+
+  // v0.7.2: Explicit warnings when API keys are missing — helps diagnose
+  // "format-only fallback" issues quickly.
+  if (!env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY) {
+    const errMsg = "No AI providers configured (need GEMINI_API_KEY or OPENROUTER_API_KEY set as secrets)";
+    console.error(`[AI] NO PROVIDERS: ${errMsg}`);
+    return { ok: false, error: errMsg };
+  }
+  if (!env.OPENROUTER_API_KEY) {
+    console.warn(`[AI] ⚠️ OPENROUTER_API_KEY not set — OpenRouter fallback disabled. If Gemini rate-limits, bot will use format-only.`);
+  }
+  if (!env.GEMINI_API_KEY) {
+    console.warn(`[AI] ⚠️ GEMINI_API_KEY not set — Gemini disabled. Using OpenRouter only.`);
+  }
 
   const geminiProviders = [];
   const openRouterProviders = [];
@@ -256,10 +322,7 @@ export async function aiComplete(env, settings, params) {
       ? [userModel, ...GEMINI_MODELS]
       : GEMINI_MODELS;
     for (const model of geminiModels) {
-      geminiProviders.push({
-        name: "gemini",
-        model: model,
-      });
+      geminiProviders.push({ name: "gemini", model });
     }
   }
 
@@ -267,101 +330,71 @@ export async function aiComplete(env, settings, params) {
   if (env.OPENROUTER_API_KEY) {
     const models = getOpenRouterModels(env);
     for (const model of models) {
-      openRouterProviders.push({
-        name: "openrouter",
-        model: model,
-      });
+      openRouterProviders.push({ name: "openrouter", model });
     }
   }
 
-  // v0.7.1: Smart fallback — preferred's TOP 2 + other's TOP 2 = max 4 racing
-  // (Old code raced up to 11 providers — wasted input tokens on losers)
-  const providers = [];
-  if (preferred === "gemini") {
-    providers.push(...geminiProviders.slice(0, 2));
-    providers.push(...openRouterProviders.slice(0, 2));
-    // Add more only if we have room
-    if (providers.length < MAX_PARALLEL_PROVIDERS) {
-      providers.push(...geminiProviders.slice(2, 2 + MAX_PARALLEL_PROVIDERS - providers.length));
-    }
-  } else if (preferred === "openrouter") {
-    providers.push(...openRouterProviders.slice(0, 2));
-    providers.push(...geminiProviders.slice(0, 2));
-    if (providers.length < MAX_PARALLEL_PROVIDERS) {
-      providers.push(...openRouterProviders.slice(2, 2 + MAX_PARALLEL_PROVIDERS - providers.length));
-    }
+  // ----- Wave 1: top 2 preferred + top 2 other (max 4, fast) -----
+  const wave1 = [];
+  if (preferred === "openrouter") {
+    wave1.push(...openRouterProviders.slice(0, 2));
+    wave1.push(...geminiProviders.slice(0, 2));
   } else {
-    providers.push(...geminiProviders.slice(0, 2));
-    providers.push(...openRouterProviders.slice(0, 2));
+    // default to gemini preferred
+    wave1.push(...geminiProviders.slice(0, 2));
+    wave1.push(...openRouterProviders.slice(0, 2));
+  }
+  const wave1Racing = wave1.slice(0, MAX_PARALLEL_PROVIDERS);
+
+  console.log(`[AI] v0.7.2 Wave 1: racing ${wave1Racing.length} providers (preferred=${preferred}):`);
+  wave1Racing.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
+
+  const wave1Result = await raceProviders(wave1Racing, env, params, "wave1");
+  if (wave1Result.ok) {
+    return wave1Result;
   }
 
-  // Hard cap
-  const racingProviders = providers.slice(0, MAX_PARALLEL_PROVIDERS);
-
-  if (racingProviders.length === 0) {
-    const errMsg = !env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY
-      ? "No AI providers configured (need GEMINI_API_KEY or OPENROUTER_API_KEY)"
-      : !env.OPENROUTER_API_KEY
-        ? `OPENROUTER_API_KEY is missing (preferred=${preferred}). Set it as a secret in Cloudflare dashboard.`
-        : `GEMINI_API_KEY is missing (preferred=${preferred}). Set it as a secret in Cloudflare dashboard.`;
-    console.error(`[AI] NO PROVIDERS AVAILABLE: ${errMsg}`);
-    return { ok: false, error: errMsg };
+  // ----- Wave 2: ALL remaining providers (robust fallback) -----
+  // v0.7.2: Only reached if Wave 1 all failed. Try every remaining provider.
+  const wave1Keys = new Set(wave1Racing.map((p) => `${p.name}/${p.model}`));
+  const wave2 = [];
+  for (const p of [...geminiProviders, ...openRouterProviders]) {
+    if (!wave1Keys.has(`${p.name}/${p.model}`)) {
+      wave2.push(p);
+    }
   }
 
-  console.log(`[AI] v0.7.1 racing ${racingProviders.length} providers (preferred=${preferred}):`);
-  racingProviders.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
-
-  // v0.5.9: Shared AbortController — the moment ANY provider wins,
-  // abort ALL others to save tokens/CPU/bandwidth.
-  const winnerController = new AbortController();
-
-  try {
-    const result = await Promise.any(
-      racingProviders.map(async (p) => {
-        const start = Date.now();
-        let text;
-        try {
-          if (p.name === "gemini") {
-            text = await geminiComplete(env.GEMINI_API_KEY, p.model, params, winnerController.signal);
-          } else {
-            text = await openRouterComplete(env.OPENROUTER_API_KEY, p.model, params, winnerController.signal);
-          }
-        } catch (e) {
-          // v0.5.9: Silently ignore CANCELLED errors (intentional abort when another provider won)
-          if (e.message === "CANCELLED" || e.message.includes("CANCELLED")) {
-            throw new Error("CANCELLED (another provider won)");
-          }
-          throw e;
-        }
-        const ms = Date.now() - start;
-        console.log(`[AI] ✓ ${p.name}/${p.model} OK in ${ms}ms (${text.length} chars) — aborting others`);
-        // CRITICAL: Abort all other in-flight requests to save tokens
-        winnerController.abort();
-        return { ok: true, text, provider: p.name, model: p.model, ms };
-      })
-    );
-    console.log(`[AI] WINNER: ${result.provider}/${result.model}`);
-    return result;
-  } catch (aggErr) {
-    // All providers failed (or were cancelled). Collect real errors only.
-    const errors = racingProviders.map((p, i) => {
-      const errMsg = aggErr.errors?.[i]?.message || "unknown";
-      // Don't report CANCELLED as a real error
-      if (errMsg.includes("CANCELLED")) return { provider: p.name, model: p.model, error: "cancelled (another provider won)" };
-      return { provider: p.name, model: p.model, error: errMsg };
-    });
-    const realErrors = errors.filter((e) => !e.error.includes("cancelled"));
-    console.error(`[AI] ALL ${racingProviders.length} providers failed (${realErrors.length} real errors, ${errors.length - realErrors.length} cancelled):`);
-    realErrors.forEach((e) => console.error(`[AI]   ✗ ${e.provider}/${e.model}: ${e.error}`));
-
+  if (wave2.length === 0) {
+    console.error(`[AI] Wave 2 empty — no more providers to try`);
     return {
       ok: false,
-      error: realErrors.length > 0
-        ? realErrors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
-        : "All providers cancelled (should not happen)",
-      details: realErrors,
+      error: wave1Result.errors?.length > 0
+        ? wave1Result.errors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
+        : "All Wave 1 providers failed (no Wave 2 available)",
+      details: wave1Result.errors,
     };
   }
+
+  console.warn(`[AI] ⚠️ Wave 1 failed — trying Wave 2 with ${wave2.length} remaining providers:`);
+  wave2.forEach((p) => console.warn(`[AI]   - ${p.name}/${p.model}`));
+
+  const wave2Result = await raceProviders(wave2, env, params, "wave2");
+  if (wave2Result.ok) {
+    return wave2Result;
+  }
+
+  // Both waves failed
+  const allErrors = [...(wave1Result.errors || []), ...(wave2Result.errors || [])];
+  console.error(`[AI] ❌ BOTH WAVES FAILED (${allErrors.length} total errors):`);
+  allErrors.forEach((e) => console.error(`[AI]   ✗ ${e.provider}/${e.model}: ${e.error}`));
+
+  return {
+    ok: false,
+    error: allErrors.length > 0
+      ? allErrors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
+      : "All providers failed",
+    details: allErrors,
+  };
 }
 
 // ============================================================
