@@ -898,13 +898,30 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   }
   traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (wasScheduled ? "scheduled" : "ok") : (publishRes.scheduleError || publishRes.description));
 
-  // v0.6.2: RETRY WITH SUMMARY — if publish fails with "too long" error,
-  // try again with a shorter summarized version. Works regardless of
-  // scheduling_enabled (previously was restricted to non-scheduling path).
+  // v0.6.7: RETRY WITH SUMMARY — if publish fails with "too long" OR "can't parse" error,
+  // try again with a shorter summarized version.
   if (!publishRes.ok) {
     const errMsg = String(publishRes.description || publishRes.scheduleError || "");
-    if (/too long|too_long|TOO_LONG|caption/i.test(errMsg)) {
-      console.log(`[pipeline] v0.6.2 RETRY WITH SUMMARY: publish failed (${errMsg}), retrying with shorter version...`);
+    // v0.6.7: Also catch "can't parse entities" (HTML parsing errors)
+    if (/too long|too_long|TOO_LONG|caption|can.t parse|parse entities|Unexpected end tag/i.test(errMsg)) {
+      console.log(`[pipeline] RETRY WITH SUMMARY: publish failed (${errMsg}), retrying...`);
+
+      // v0.6.7: If it's a parse error (not length), try sending as plain text first
+      if (/can.t parse|parse entities|Unexpected end tag/i.test(errMsg)) {
+        console.log(`[pipeline] HTML parse error detected, trying plain text...`);
+        publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+          // No parse_mode = plain text
+          extra: { disable_web_page_preview: false },
+        });
+        if (publishRes.ok) {
+          console.log(`[pipeline] Plain text retry succeeded!`);
+          traceStep("retry_plaintext", true, "sent as plain text");
+        }
+      }
+
+      // If still failed, try with AI summary
+      if (!publishRes.ok) {
       try {
         const retryTargetLimit = effectiveLimit - 300;
         const retryRes = await aiSummarize(env, settings, textForAI, effectiveLang, retryTargetLimit);
@@ -966,6 +983,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         traceStep("retry_summary", false, e.message);
         console.error(`[pipeline] retry-with-summary exception: ${e.message}`);
       }
+      } // end if (!publishRes.ok) after plain text attempt
     }
   }
 

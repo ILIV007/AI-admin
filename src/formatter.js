@@ -43,15 +43,23 @@ function trimUrlPunctuation(url) { return url.replace(/[.,);:!?}\]]+$/, ""); }
 
 function validateAndFixHtml(html) {
   let r = html;
+  // v0.6.7: Fix <blockquote expandable="true"> tags — they need special handling
   const tags = ["blockquote", "a", "b", "i", "code", "pre", "s", "u"];
   for (const tag of tags) {
-    const open = tag === "a" ? (r.match(/<a\s/g) || []).length : (r.match(new RegExp(`<${tag}>`, "g")) || []).length;
+    // Count both <tag> and <tag ...> (with attributes like expandable)
+    const openRegex = tag === "a" ? /<a\s/g : new RegExp(`<${tag}(?:\\s[^>]*)?>`, "g");
+    const open = (r.match(openRegex) || []).length;
     const close = (r.match(new RegExp(`</${tag}>`, "g")) || []).length;
     if (open > close) r += `</${tag}>`.repeat(open - close);
   }
-  // Remove nested blockquotes
+  // Remove nested blockquotes (but not expandable ones)
   r = r.replace(/<blockquote>([^<]*?)<blockquote>/g, "$1");
   r = r.replace(/<\/blockquote>([^<]*?)<\/blockquote>/g, "$1</blockquote>");
+  // v0.6.7: Fix common HTML issues that cause "can't parse entities" errors
+  // Remove empty tags
+  r = r.replace(/<b>\s*<\/b>/g, "");
+  r = r.replace(/<i>\s*<\/i>/g, "");
+  r = r.replace(/<code>\s*<\/code>/g, "");
   return r;
 }
 
@@ -308,9 +316,11 @@ const htmlEngine = {
     });
 
     // === PHASE 5: POLISH ===
-    if (emojiLevel > 0 && intensity >= 40) {
-      work = this.addEmojisToHeadings(work, emojiLevel);
-    }
+    // v0.6.7: DISABLED auto emoji addition to headings — was adding random emojis
+    // that confused users. The AI prompt already handles emoji preservation.
+    // if (emojiLevel > 0 && intensity >= 40) {
+    //   work = this.addEmojisToHeadings(work, emojiLevel);
+    // }
     work = work.replace(/\n{3,}/g, "\n\n");
     if (footer) work = `${work}\n\n<blockquote>${footer}</blockquote>`;
 
