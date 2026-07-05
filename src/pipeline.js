@@ -793,6 +793,54 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Send to user
   if (feedbackChatId) {
+    // v0.6.8: If approve mode is ON, send preview with approve/reject buttons
+    if (settings.approve_enabled && !settings.scheduling_enabled) {
+      console.log(`[pipeline] approve mode ON — sending preview with buttons`);
+      const previewRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+        extra: {
+          parse_mode: parseMode,
+          disable_web_page_preview: false,
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:PREVIEW_ID` },
+              { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:PREVIEW_ID` },
+            ]],
+          },
+        },
+      });
+      if (previewRes.ok) {
+        const previewMsgId = previewRes.result?.message_id;
+        const storageKey = `approve:${previewMsgId}`;
+        await SETTINGS.put(storageKey, JSON.stringify({
+          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+          parseMode, targetChannel, extraParts, footerHtml: effectiveFooterHtml, createdAt: Date.now(),
+        }), { expirationTtl: 3600 });
+        // Fix callback_data with real message ID
+        await editMessageText(env.BOT_TOKEN, feedbackChatId, previewMsgId, safeFormattedText, {
+          parse_mode: parseMode, disable_web_page_preview: false,
+          reply_markup: { inline_keyboard: [[
+            { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
+            { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
+          ]] },
+        }).catch(() => {});
+        if (content.mediaType) {
+          await sendMessage(env.BOT_TOKEN, feedbackChatId, `<b>👇 Review the post above</b>`,
+            { parse_mode: "HTML", disable_web_page_preview: true,
+              reply_markup: { inline_keyboard: [[
+                { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
+                { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
+              ]] },
+            });
+        }
+      }
+      if (feedbackChatId && processingMsgId) {
+        await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+          `⏸️ <b>Waiting for approval</b>\n\nReview the preview above and click <b>✅ Publish</b> or <b>❌ Reject</b>.`,
+          { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+      }
+      return { ok: true, detail: "approve: waiting for user approval" };
+    }
     const userRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
       text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },

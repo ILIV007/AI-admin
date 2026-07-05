@@ -50,7 +50,7 @@ import {
   getBotId,
 } from "./pipeline.js";
 
-const VERSION = "0.6.8";
+const VERSION = "0.6.9";
 
 // ============================================================
 // MAIN EXPORT
@@ -214,7 +214,7 @@ async function handleUpdate(update, env) {
     if (update.callback_query) {
       const cq = update.callback_query;
       const cqSettings = await getSettings(SETTINGS, cq.from.id);
-      if (!isAuthorized(env, cq.from.id, cqSettings)) {
+      if (!await isAuthorized(env, cq.from.id, SETTINGS)) {
         await answerCallbackQuery(env.BOT_TOKEN, cq.id, "⛔ Unauthorized");
         await logUpdate(SETTINGS, update, "unauthorized", `from=${cq.from.id}`, env);
         return;
@@ -230,7 +230,7 @@ async function handleUpdate(update, env) {
     // v0.6.2: Check authorization BEFORE routing media groups
     // Non-admin users get a format-only response (no AI, no publish)
     const msgSettings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
-    const isAdmin = env.ADMIN_ID && isAuthorized(env, content.fromId, msgSettings);
+    const isAdmin = env.ADMIN_ID && await isAuthorized(env, content.fromId, SETTINGS);
 
     // Media group handling
     if (content.mediaGroupId) {
@@ -298,7 +298,7 @@ async function handlePrivateMessage(env, content, update) {
   // v0.6.2: Non-admin users — only /start is recognized.
   // All other messages (commands or text/media) get format-only response.
   const privSettings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
-  if (!isAuthorized(env, content.fromId, privSettings)) {
+  if (!await isAuthorized(env, content.fromId, SETTINGS)) {
     // Typing indicator
     if (content.chatId) {
       await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});

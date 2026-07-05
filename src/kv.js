@@ -11,6 +11,7 @@
 
 const KEY_ADMIN = (id) => `admin:${id}`;
 const KEY_GLOBAL_STATS = "stats:global";
+const KEY_ADMIN_LIST = "global:admin_list";
 
 export const DEFAULTS = Object.freeze({
   language_mode: "auto",
@@ -30,6 +31,8 @@ export const DEFAULTS = Object.freeze({
   stats: { processed: 0, rewritten: 0, failed: 0 },
   // v0.6.8: Additional admins (array of user IDs)
   admin_list: [],
+  // v0.6.8: Approve mode — bot shows approve button before publishing
+  approve_enabled: false,
 });
 
 // ============================================================
@@ -70,6 +73,26 @@ export async function getSettings(SETTINGS, adminId) {
 /** Persist the entire settings blob */
 export async function saveSettings(SETTINGS, adminId, settings) {
   await SETTINGS.put(KEY_ADMIN(adminId), JSON.stringify(settings));
+  // v0.6.9: Also sync admin_list to global key so other admins can be authorized
+  if (settings.admin_list !== undefined) {
+    await SETTINGS.put(KEY_ADMIN_LIST, JSON.stringify(settings.admin_list));
+  }
+}
+
+// v0.6.9: Get admin list from global key (so any user's auth check can read it)
+export async function getAdminList(SETTINGS) {
+  if (!SETTINGS) return [];
+  try {
+    const raw = await SETTINGS.get(KEY_ADMIN_LIST);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+// v0.6.9: Check if a user ID is in the admin list (global)
+export async function isAdminInList(SETTINGS, userId) {
+  const list = await getAdminList(SETTINGS);
+  const uid = String(userId);
+  return list.some(id => String(id) === uid);
 }
 
 /** Update a single field, returning the new merged settings */
