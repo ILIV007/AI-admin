@@ -14,16 +14,27 @@ import { getAllProfiles, getProfile } from "../ai/profiles/index.js";
 // ============================================================
 // AUTHORIZATION
 // ============================================================
-export function isAuthorized(env, userId) {
+export function isAuthorized(env, userId, settings) {
   const adminId = String(env.ADMIN_ID || "");
-  return String(userId) === adminId;
+  const uid = String(userId);
+  if (uid === adminId) return true;
+  // v0.6.8: Check additional admin list
+  if (settings?.admin_list && Array.isArray(settings.admin_list)) {
+    return settings.admin_list.includes(uid) || settings.admin_list.includes(Number(uid));
+  }
+  return false;
+}
+
+// v0.6.8: Check if user is the OWNER (not just an admin)
+export function isOwner(env, userId) {
+  return String(userId) === String(env.ADMIN_ID || "");
 }
 
 // ============================================================
 // MENU BUILDERS
 // ============================================================
 
-function mainMenuKeyboard(settings) {
+function mainMenuKeyboard(settings, env) {
   const channelEditLabel = settings?.channel_editing_enabled
     ? "📺 Channel Edit: ON ✅"
     : "📺 Channel Edit: OFF";
@@ -33,8 +44,9 @@ function mainMenuKeyboard(settings) {
   const schedLabel = settings?.scheduling_enabled
     ? "📅 Schedule: ON ✅"
     : "📅 Schedule: OFF";
-  return {
-    inline_keyboard: [
+  const isOwnerRow = env && String(env.ADMIN_ID) === String(env.ADMIN_ID); // always show if env exists
+  
+  const keyboard = [
       [
         { text: schedLabel, callback_data: "menu:schedule" },
         { text: profileLabel, callback_data: "menu:profile" },
@@ -58,8 +70,56 @@ function mainMenuKeyboard(settings) {
       [
         { text: channelEditLabel, callback_data: "toggle:channeledit" },
       ],
-    ],
-  };
+    ];
+
+  // v0.6.8: Admin management button — only for owner
+  if (env && env.ADMIN_ID) {
+    keyboard.push([{ text: "👤 Admins", callback_data: "menu:admins" }]);
+  }
+
+  return { inline_keyboard: keyboard };
+}
+
+// v0.6.8: Admin management keyboard
+function adminsKeyboard(settings) {
+  const adminList = settings?.admin_list || [];
+  const rows = [];
+  
+  for (const adminId of adminList) {
+    rows.push([{ text: `❌ Remove ${adminId}`, callback_data: `admin:remove:${adminId}` }]);
+  }
+  
+  rows.push([{ text: "➕ Add Admin", callback_data: "admin:add" }]);
+  rows.push([{ text: "← Back", callback_data: "menu:main" }]);
+  
+  return { inline_keyboard: rows };
+}
+
+function adminsMenuText(settings, env) {
+  const adminList = settings?.admin_list || [];
+  const ownerId = env?.ADMIN_ID || "?";
+  let text = [
+    `<b>👤 Admin Management</b>`,
+    ``,
+    `<b>👑 Owner:</b> <code>${ownerId}</code>`,
+    `<b>Additional Admins:</b> ${adminList.length}`,
+    ``,
+  ];
+  
+  if (adminList.length > 0) {
+    text.push(`<b>Admin list:</b>`);
+    for (let i = 0; i < adminList.length; i++) {
+      text.push(`${i + 1}. <code>${adminList[i]}</code>`);
+    }
+  } else {
+    text.push(`<i>No additional admins. Only the owner can use the bot.</i>`);
+  }
+  
+  text.push(``);
+  text.push(`<i>Tap "➕ Add Admin" and send the user's Telegram ID.</i>`);
+  text.push(`<i>To get an ID: forward a message to @userinfobot</i>`);
+  
+  return text.join("\n");
 }
 
 function languageKeyboard(current) {
@@ -403,7 +463,7 @@ export async function handleMenu(env, SETTINGS, msg) {
   const settings = await getSettings(SETTINGS, msg.from.id);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, mainMenuText(settings), {
     parse_mode: "HTML",
-    reply_markup: mainMenuKeyboard(settings),
+    reply_markup: mainMenuKeyboard(settings, env),
   });
 }
 
@@ -470,7 +530,7 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   // ----- Navigation menus -----
   if (data === "menu:main") {
     newText = mainMenuText(settings);
-    newKb = mainMenuKeyboard(settings);
+    newKb = mainMenuKeyboard(settings, env);
   } else if (data === "menu:schedule") {
     newText = scheduleMenuText(settings);
     newKb = scheduleKeyboard(settings);
@@ -502,12 +562,35 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
     newText = await statsMenuText(SETTINGS, settings);
     newKb = backOnlyKeyboard();
   }
+  // v0.6.8: Admin management
+  else if (data === "menu:admins") {
+    newText = adminsMenuText(settings, env);
+    newKb = adminsKeyboard(settings);
+  }
+  else if (data === "admin:add") {
+    // Prompt for admin ID — set a flag in KV
+    await SETTINGS.put(`admin:adding:${userId}`, "1", { expirationTtl: 300 });
+    await answerCallbackQuery(env.BOT_TOKEN, cq.id, "");
+    await sendMessage(env.BOT_TOKEN, chatId,
+      `➕ <b>Add Admin</b>\n\nSend the Telegram user ID of the person you want to add as admin.\n\n<i>To get an ID: forward a message to @userinfobot</i>`,
+      { parse_mode: "HTML", disable_web_page_preview: true });
+    return;
+  }
+  else if (data.startsWith("admin:remove:")) {
+    const removeId = data.split(":")[2];
+    const currentList = settings.admin_list || [];
+    const newList = currentList.filter(id => String(id) !== String(removeId));
+    const updated = await updateSetting(SETTINGS, userId, "admin_list", newList);
+    newText = adminsMenuText(updated, env);
+    newKb = adminsKeyboard(updated);
+    toast = `✅ Admin ${removeId} removed`;
+  }
   // ----- Toggle channel editing -----
   else if (data === "toggle:channeledit") {
     const newVal = !settings.channel_editing_enabled;
     const updated = await updateSetting(SETTINGS, userId, "channel_editing_enabled", newVal);
     newText = mainMenuText(updated);
-    newKb = mainMenuKeyboard(updated);
+    newKb = mainMenuKeyboard(updated, env);
     toast = newVal ? "✅ Channel editing ON" : "✅ Channel editing OFF";
   }
   // ----- Setting changes -----

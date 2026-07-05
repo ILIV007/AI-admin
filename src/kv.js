@@ -28,6 +28,8 @@ export const DEFAULTS = Object.freeze({
   schedule_interval_minutes: 30,
   schedule_posts_per_day: 0,
   stats: { processed: 0, rewritten: 0, failed: 0 },
+  // v0.6.8: Additional admins (array of user IDs)
+  admin_list: [],
 });
 
 // ============================================================

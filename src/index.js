@@ -26,8 +26,9 @@ import {
 import {
   getSettings,
   flushAllStats,
+  updateSetting,
 } from "./kv.js";
-import { isAuthorized, handleStart, handleMenu, handleFooterCommand, handleCallbackQuery } from "./admin.js";
+import { isAuthorized, isOwner, handleStart, handleMenu, handleFooterCommand, handleCallbackQuery } from "./admin.js";
 import { cleanContent } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import {
@@ -49,7 +50,7 @@ import {
   getBotId,
 } from "./pipeline.js";
 
-const VERSION = "0.6.7";
+const VERSION = "0.6.8";
 
 // ============================================================
 // MAIN EXPORT
@@ -212,7 +213,8 @@ async function handleUpdate(update, env) {
   try {
     if (update.callback_query) {
       const cq = update.callback_query;
-      if (!isAuthorized(env, cq.from.id)) {
+      const cqSettings = await getSettings(SETTINGS, cq.from.id);
+      if (!isAuthorized(env, cq.from.id, cqSettings)) {
         await answerCallbackQuery(env.BOT_TOKEN, cq.id, "⛔ Unauthorized");
         await logUpdate(SETTINGS, update, "unauthorized", `from=${cq.from.id}`, env);
         return;
@@ -227,7 +229,8 @@ async function handleUpdate(update, env) {
 
     // v0.6.2: Check authorization BEFORE routing media groups
     // Non-admin users get a format-only response (no AI, no publish)
-    const isAdmin = env.ADMIN_ID && isAuthorized(env, content.fromId);
+    const msgSettings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
+    const isAdmin = env.ADMIN_ID && isAuthorized(env, content.fromId, msgSettings);
 
     // Media group handling
     if (content.mediaGroupId) {
@@ -294,7 +297,8 @@ async function handlePrivateMessage(env, content, update) {
 
   // v0.6.2: Non-admin users — only /start is recognized.
   // All other messages (commands or text/media) get format-only response.
-  if (!isAuthorized(env, content.fromId)) {
+  const privSettings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
+  if (!isAuthorized(env, content.fromId, privSettings)) {
     // Typing indicator
     if (content.chatId) {
       await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
@@ -340,6 +344,52 @@ async function handlePrivateMessage(env, content, update) {
   // v0.5.9 TASK 2: /debug_schedule — test scheduling with detailed logging
   if (/^\/debug_schedule\b/i.test(text)) {
     await handleDebugSchedule(env, content, update);
+    return;
+  }
+
+  // v0.6.8: Check if user is in "adding admin" mode
+  const addingAdminFlag = await SETTINGS.get(`admin:adding:${content.fromId}`);
+  if (addingAdminFlag) {
+    // User should send a Telegram user ID
+    const newAdminId = text.trim().replace(/\s/g, "");
+    if (!/^\d+$/.test(newAdminId)) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `❌ Invalid ID. Please send a numeric Telegram user ID.\n\n<i>Example: 123456789</i>`,
+        { parse_mode: "HTML" });
+      return;
+    }
+    
+    // Get current admin list
+    const adminSettings = await getSettings(SETTINGS, content.fromId);
+    const currentList = adminSettings.admin_list || [];
+    
+    // Check if already exists
+    if (currentList.includes(newAdminId) || currentList.includes(Number(newAdminId))) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `⚠️ User <code>${newAdminId}</code> is already an admin.`,
+        { parse_mode: "HTML" });
+      await SETTINGS.delete(`admin:adding:${content.fromId}`);
+      return;
+    }
+    
+    // Don't allow adding the owner
+    if (String(newAdminId) === String(env.ADMIN_ID)) {
+      await sendMessage(env.BOT_TOKEN, content.chatId,
+        `⚠️ This user is already the owner.`,
+        { parse_mode: "HTML" });
+      await SETTINGS.delete(`admin:adding:${content.fromId}`);
+      return;
+    }
+    
+    // Add to list
+    const newList = [...currentList, newAdminId];
+    await updateSetting(SETTINGS, content.fromId, "admin_list", newList);
+    await SETTINGS.delete(`admin:adding:${content.fromId}`);
+    
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `✅ <b>Admin added!</b>\n\nUser <code>${newAdminId}</code> can now use the bot.\n\nThey can send /menu to access settings.`,
+      { parse_mode: "HTML", disable_web_page_preview: true });
+    await logUpdate(SETTINGS, update, "ok", `admin added: ${newAdminId}`, env);
     return;
   }
 
