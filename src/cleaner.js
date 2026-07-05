@@ -213,18 +213,50 @@ export function cleanContent(rawText) {
   text = text.replace(/\bsource\s*:\s*@[\w_]+\b/gi, "");
 
   // 5. Remove "@DevTwitter | <Author>" style attribution lines (signature at end of post)
-  //    IMPORTANT: use [^\n]* (single-line) NOT [^]* — otherwise we'd delete all content
-  //    after the attribution line, causing data loss.
   text = text.replace(/\n\s*@\w+\s*\|[^\n]*$/gim, "");
   text = text.replace(/\n\s*@\w+\s*[—–-]\s*[^\n]*$/gim, "");
 
-  // 6. Remove standalone @channel_username lines that are pure promo
-  //    BUT keep usernames that appear inside a URL or as part of code/tech content
+  // v0.6.11: Remove promotional footer PATTERNS
+  text = text.split("\n").map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (trimmed.includes("🌀 @ILIVIR3")) return line;
+
+    // Check if line starts with an emoji (non-ASCII, non-Persian, non-letter)
+    const startsWithEmoji = /^[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(trimmed);
+
+    // Remove: emoji + @username (e.g. "🆔 @ShahrSakhtAfzar", "🎮 @GamotionArt")
+    if (startsWithEmoji && /@\w+/.test(trimmed) && trimmed.length < 80) return "";
+    // Remove: @username | description
+    if (/^@\w+\s*[|•·]\s*[^\n]{0,60}$/.test(trimmed)) return "";
+    // Remove: @username • description
+    if (/^@\w+\s*•/.test(trimmed)) return "";
+    // Remove: standalone @username
+    if (/^@\w+$/.test(trimmed)) return "";
+    // Remove: dots/separators
+    if (/^[.·•─—–-]{3,}$/.test(trimmed)) return "";
+    return line;
+  }).join("\n");
+
+  // 6. Remove @channel_username inline (but not URLs or bot footer)
   text = text.replace(/(^|\s)@([A-Za-z][A-Za-z0-9_]{3,})\b/g, (match, prefix, username, offset) => {
     if (isUsernamePartOfUrl(text, offset + prefix.length)) return match;
-    // Keep if username is at the start of a quoted reply context
+    if (username === "ILIVIR3") return match;
     return prefix;
   });
+
+  // v0.6.11: Clean up leftover lines (standalone emoji or emoji + separator + short text)
+  text = text.split("\n").map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (trimmed.includes("🌀 @ILIVIR3")) return line;
+    // Remove: standalone non-alphanumeric line (leftover emoji)
+    if (/^[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]+$/.test(trimmed) && trimmed.length < 5) return "";
+    // Remove: emoji + separator + short text (leftover from @channel | desc)
+    const startsWithEmoji = /^[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(trimmed);
+    if (startsWithEmoji && /[|•·-]/.test(trimmed) && trimmed.length < 60) return "";
+    return line;
+  }).join("\n");
 
   // 7. Remove "Join / Follow / Subscribe" lines
   text = text.replace(/^\s*(join|subscribe|follow|don't miss out|click here to)\b[^\n]*$/gim, "");
@@ -233,15 +265,13 @@ export function cleanContent(rawText) {
   // 8. Remove "for more: @channel" / "more: t.me/xxx"
   text = text.replace(/\b(for more|more info|more details?)\s*[:：]\s*@?[\w/.\-]+/gi, "");
 
-  // 9. Collapse spam hashtag blocks (5+ consecutive hashtags → keep first 2)
-  //    Use [ \t]* instead of \s* so we DON'T consume the trailing newline
-  //    (otherwise the next line gets glued onto the hashtags).
+  // 9. Collapse spam hashtag blocks
   text = text.replace(/((?:#\w+[ \t]*){5,})/g, (block) => {
     const tags = block.trim().split(/[ \t]+/);
     return tags.slice(0, 2).join(" ");
   });
 
-  // 10. Remove promotional footers like "📡 @channel | 💬 @chat | 🌐 site"
+  // 10. Remove promotional footers (already handled above, but keep as fallback)
   text = text.replace(/\n\s*[📡💬🌐🚀📢]*\s*@[A-Za-z]\w+(?:\s*\|\s*[@🌐][^\n]+)*\s*$/i, "");
 
   // 11. Restore URLs
