@@ -11,7 +11,6 @@
 
 const KEY_ADMIN = (id) => `admin:${id}`;
 const KEY_GLOBAL_STATS = "stats:global";
-const KEY_ADMIN_LIST = "global:admin_list";
 
 export const DEFAULTS = Object.freeze({
   language_mode: "auto",
@@ -29,10 +28,6 @@ export const DEFAULTS = Object.freeze({
   schedule_interval_minutes: 30,
   schedule_posts_per_day: 0,
   stats: { processed: 0, rewritten: 0, failed: 0 },
-  // v0.6.8: Additional admins (array of user IDs)
-  admin_list: [],
-  // v0.6.8: Approve mode — bot shows approve button before publishing
-  approve_enabled: false,
 });
 
 // ============================================================
@@ -58,41 +53,39 @@ export async function setLastScheduledTime(SETTINGS, channel, timestamp) {
   }
 }
 
+// v0.7.0: Module-level settings cache — avoids redundant getSettings reads
+const _settingsCache = new Map();
+const SETTINGS_CACHE_TTL = 30_000; // 30 seconds
+
 /** Read the admin's settings, merged with defaults */
 export async function getSettings(SETTINGS, adminId) {
-  const raw = await SETTINGS.get(KEY_ADMIN(adminId));
-  if (!raw) return { ...DEFAULTS, admin_id: String(adminId) };
-  try {
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULTS, ...parsed, admin_id: String(adminId) };
-  } catch {
-    return { ...DEFAULTS, admin_id: String(adminId) };
+  const cacheKey = String(adminId);
+  const cached = _settingsCache.get(cacheKey);
+  if (cached && (Date.now() - cached._ts < SETTINGS_CACHE_TTL)) {
+    return { ...cached.settings };
   }
+
+  const raw = await SETTINGS.get(KEY_ADMIN(adminId));
+  let settings;
+  if (!raw) {
+    settings = { ...DEFAULTS, admin_id: String(adminId) };
+  } else {
+    try {
+      const parsed = JSON.parse(raw);
+      settings = { ...DEFAULTS, ...parsed, admin_id: String(adminId) };
+    } catch {
+      settings = { ...DEFAULTS, admin_id: String(adminId) };
+    }
+  }
+  _settingsCache.set(cacheKey, { settings, _ts: Date.now() });
+  return settings;
 }
 
 /** Persist the entire settings blob */
 export async function saveSettings(SETTINGS, adminId, settings) {
   await SETTINGS.put(KEY_ADMIN(adminId), JSON.stringify(settings));
-  // v0.6.9: Also sync admin_list to global key so other admins can be authorized
-  if (settings.admin_list !== undefined) {
-    await SETTINGS.put(KEY_ADMIN_LIST, JSON.stringify(settings.admin_list));
-  }
-}
-
-// v0.6.9: Get admin list from global key (so any user's auth check can read it)
-export async function getAdminList(SETTINGS) {
-  if (!SETTINGS) return [];
-  try {
-    const raw = await SETTINGS.get(KEY_ADMIN_LIST);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-// v0.6.9: Check if a user ID is in the admin list (global)
-export async function isAdminInList(SETTINGS, userId) {
-  const list = await getAdminList(SETTINGS);
-  const uid = String(userId);
-  return list.some(id => String(id) === uid);
+  // v0.7.0: Update cache
+  _settingsCache.set(String(adminId), { settings: { ...settings }, _ts: Date.now() });
 }
 
 /** Update a single field, returning the new merged settings */
@@ -116,7 +109,7 @@ export async function updateSetting(SETTINGS, adminId, key, value) {
 // when the isolate dies — but that's an acceptable tradeoff vs. hitting
 // the write quota. Stats are "best effort", not "exact".
 // ============================================================
-const BATCH_FLUSH_THRESHOLD = 10; // flush to KV every 10 increments
+const BATCH_FLUSH_THRESHOLD = 20; // v0.7.0: flush to KV every 20 increments (was 10)
 const _statsCache = {
   perAdmin: new Map(), // adminId → { processed, rewritten, failed, _count }
   global: { processed: 0, rewritten: 0, failed: 0, _count: 0 },
@@ -250,8 +243,9 @@ export async function listMediaGroupItems(SETTINGS, groupId) {
   try {
     const list = await SETTINGS.list({ prefix: MG_PREFIX(groupId), limit: 100 });
     const items = [];
-    for (const key of list.keys) {
-      const raw = await SETTINGS.get(key.name);
+    // v0.7.0: Use Promise.all for parallel reads (was sequential — N reads = N round trips)
+    const raws = await Promise.all(list.keys.map(key => SETTINGS.get(key.name)));
+    for (const raw of raws) {
       if (raw) {
         try {
           items.push(JSON.parse(raw));
@@ -270,9 +264,8 @@ export async function deleteMediaGroup(SETTINGS, groupId) {
   if (!SETTINGS || !groupId) return;
   try {
     const list = await SETTINGS.list({ prefix: MG_PREFIX(groupId), limit: 100 });
-    for (const key of list.keys) {
-      await SETTINGS.delete(key.name);
-    }
+    // v0.7.0: Use Promise.all for parallel deletes (was sequential)
+    await Promise.all(list.keys.map(key => SETTINGS.delete(key.name)));
   } catch (e) {
     console.error("[kv] deleteMediaGroup failed:", e.message);
   }

@@ -14,29 +14,16 @@ import { getAllProfiles, getProfile } from "../ai/profiles/index.js";
 // ============================================================
 // AUTHORIZATION
 // ============================================================
-// v0.6.9: isAuthorized is now async — checks global admin_list in KV
-export async function isAuthorized(env, userId, SETTINGS) {
+export function isAuthorized(env, userId) {
   const adminId = String(env.ADMIN_ID || "");
-  const uid = String(userId);
-  if (uid === adminId) return true;
-  // v0.6.9: Check global admin list in KV (not per-user settings)
-  if (SETTINGS) {
-    const { isAdminInList } = await import("./kv.js");
-    return await isAdminInList(SETTINGS, uid);
-  }
-  return false;
-}
-
-// v0.6.8: Check if user is the OWNER (not just an admin)
-export function isOwner(env, userId) {
-  return String(userId) === String(env.ADMIN_ID || "");
+  return String(userId) === adminId;
 }
 
 // ============================================================
 // MENU BUILDERS
 // ============================================================
 
-function mainMenuKeyboard(settings, env) {
+function mainMenuKeyboard(settings) {
   const channelEditLabel = settings?.channel_editing_enabled
     ? "📺 Channel Edit: ON ✅"
     : "📺 Channel Edit: OFF";
@@ -46,11 +33,8 @@ function mainMenuKeyboard(settings, env) {
   const schedLabel = settings?.scheduling_enabled
     ? "📅 Schedule: ON ✅"
     : "📅 Schedule: OFF";
-  const approveLabel = settings?.approve_enabled
-    ? "🔐 Approve: ON"
-    : "🔓 Approve: OFF";
-  
-  const keyboard = [
+  return {
+    inline_keyboard: [
       [
         { text: schedLabel, callback_data: "menu:schedule" },
         { text: profileLabel, callback_data: "menu:profile" },
@@ -73,58 +57,9 @@ function mainMenuKeyboard(settings, env) {
       ],
       [
         { text: channelEditLabel, callback_data: "toggle:channeledit" },
-        { text: approveLabel, callback_data: "toggle:approve" },
       ],
-    ];
-
-  // v0.6.8: Admin management button — only for owner
-  if (env && env.ADMIN_ID) {
-    keyboard.push([{ text: "👤 Admins", callback_data: "menu:admins" }]);
-  }
-
-  return { inline_keyboard: keyboard };
-}
-
-// v0.6.8: Admin management keyboard
-function adminsKeyboard(settings) {
-  const adminList = settings?.admin_list || [];
-  const rows = [];
-  
-  for (const adminId of adminList) {
-    rows.push([{ text: `❌ Remove ${adminId}`, callback_data: `admin:remove:${adminId}` }]);
-  }
-  
-  rows.push([{ text: "➕ Add Admin", callback_data: "admin:add" }]);
-  rows.push([{ text: "← Back", callback_data: "menu:main" }]);
-  
-  return { inline_keyboard: rows };
-}
-
-function adminsMenuText(settings, env) {
-  const adminList = settings?.admin_list || [];
-  const ownerId = env?.ADMIN_ID || "?";
-  let text = [
-    `<b>👤 Admin Management</b>`,
-    ``,
-    `<b>👑 Owner:</b> <code>${ownerId}</code>`,
-    `<b>Additional Admins:</b> ${adminList.length}`,
-    ``,
-  ];
-  
-  if (adminList.length > 0) {
-    text.push(`<b>Admin list:</b>`);
-    for (let i = 0; i < adminList.length; i++) {
-      text.push(`${i + 1}. <code>${adminList[i]}</code>`);
-    }
-  } else {
-    text.push(`<i>No additional admins. Only the owner can use the bot.</i>`);
-  }
-  
-  text.push(``);
-  text.push(`<i>Tap "➕ Add Admin" and send the user's Telegram ID.</i>`);
-  text.push(`<i>To get an ID: forward a message to @userinfobot</i>`);
-  
-  return text.join("\n");
+    ],
+  };
 }
 
 function languageKeyboard(current) {
@@ -315,7 +250,6 @@ function mainMenuText(settings) {
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
     `📺 Channel Edit: <code>${settings.channel_editing_enabled ? "ON" : "OFF"}</code>`,
-    `🔐 Approve: <code>${settings.approve_enabled ? "ON" : "OFF"}</code>`,
     ``,
     `<i>Send any post to this bot to process and publish it.</i>`,
   ].join("\n");
@@ -429,47 +363,13 @@ async function statsMenuText(SETTINGS, settings) {
 }
 
 // ============================================================
-// v0.6.2: COMMAND: /start — Full bot introduction (ALL users, not just admins)
+// COMMAND: /start
 // ============================================================
-const INTRO_TEXT = [
-  `🤖 <b>AI Admin — Intelligent Content Processing Bot</b>`,
-  ``,
-  `A powerful bot for processing, editing, and intelligently publishing posts in Telegram channels. Built on Cloudflare Workers — 100% free and serverless.`,
-  ``,
-  `✨ <b>Features:</b>`,
-  `<blockquote>`,
-  `• AI-powered content editing (Gemini + OpenRouter)`,
-  `• AI prompt detection & protection (Midjourney, Stable Diffusion)`,
-  `• Smart scheduling with cron fallback`,
-  `• Approve mode — review before publishing`,
-  `• RTL support for Persian/Arabic text`,
-  `• Media group (album) support`,
-  `• Collapsible quotes for long prompts`,
-  `• Debug dashboard at /debug`,
-  `</blockquote>`,
-  ``,
-  `🌀 <b>Creator Channel:</b> @ILIVIR3`,
-  ``,
-  `Send /menu for admin settings.`,
-  `Send any post to process and publish it.`,
-].join("\n");
-
 export async function handleStart(env, SETTINGS, msg) {
-  await sendMessage(env.BOT_TOKEN, msg.chat.id, INTRO_TEXT, {
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-  });
-}
-
-// ============================================================
-// v0.6.2: COMMAND: /menu — Admin settings panel (admin only)
-// (Previously /start — renamed in v0.6.2 to split intro from admin panel)
-// ============================================================
-export async function handleMenu(env, SETTINGS, msg) {
   const settings = await getSettings(SETTINGS, msg.from.id);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, mainMenuText(settings), {
     parse_mode: "HTML",
-    reply_markup: mainMenuKeyboard(settings, env),
+    reply_markup: mainMenuKeyboard(settings),
   });
 }
 
@@ -536,7 +436,7 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
   // ----- Navigation menus -----
   if (data === "menu:main") {
     newText = mainMenuText(settings);
-    newKb = mainMenuKeyboard(settings, env);
+    newKb = mainMenuKeyboard(settings);
   } else if (data === "menu:schedule") {
     newText = scheduleMenuText(settings);
     newKb = scheduleKeyboard(settings);
@@ -568,95 +468,13 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
     newText = await statsMenuText(SETTINGS, settings);
     newKb = backOnlyKeyboard();
   }
-  // v0.6.8: Admin management
-  else if (data === "menu:admins") {
-    newText = adminsMenuText(settings, env);
-    newKb = adminsKeyboard(settings);
-  }
-  else if (data === "admin:add") {
-    // Prompt for admin ID — set a flag in KV
-    await SETTINGS.put(`admin:adding:${userId}`, "1", { expirationTtl: 300 });
-    await answerCallbackQuery(env.BOT_TOKEN, cq.id, "");
-    await sendMessage(env.BOT_TOKEN, chatId,
-      `➕ <b>Add Admin</b>\n\nSend the Telegram user ID of the person you want to add as admin.\n\n<i>To get an ID: forward a message to @userinfobot</i>`,
-      { parse_mode: "HTML", disable_web_page_preview: true });
-    return;
-  }
-  else if (data.startsWith("admin:remove:")) {
-    const removeId = data.split(":")[2];
-    const currentList = settings.admin_list || [];
-    const newList = currentList.filter(id => String(id) !== String(removeId));
-    const updated = await updateSetting(SETTINGS, userId, "admin_list", newList);
-    newText = adminsMenuText(updated, env);
-    newKb = adminsKeyboard(updated);
-    toast = `✅ Admin ${removeId} removed`;
-  }
   // ----- Toggle channel editing -----
   else if (data === "toggle:channeledit") {
     const newVal = !settings.channel_editing_enabled;
     const updated = await updateSetting(SETTINGS, userId, "channel_editing_enabled", newVal);
     newText = mainMenuText(updated);
-    newKb = mainMenuKeyboard(updated, env);
+    newKb = mainMenuKeyboard(updated);
     toast = newVal ? "✅ Channel editing ON" : "✅ Channel editing OFF";
-  }
-  // v0.6.8: Approve toggle
-  else if (data === "toggle:approve") {
-    const newVal = !settings.approve_enabled;
-    const updated = await updateSetting(SETTINGS, userId, "approve_enabled", newVal);
-    newText = mainMenuText(updated);
-    newKb = mainMenuKeyboard(updated, env);
-    toast = newVal ? "✅ Approve mode ON" : "✅ Approve mode OFF";
-  }
-  // v0.6.8: Approve post callback
-  else if (data.startsWith("approve:publish:")) {
-    const parts = data.split(":");
-    const targetChatId = parts[2];
-    const previewMsgId = parts[3];
-    const storageKey = `approve:${previewMsgId}`;
-    const storedRaw = await SETTINGS.get(storageKey);
-    if (!storedRaw) {
-      await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post data expired. Please resend.");
-      return;
-    }
-    let postData;
-    try { postData = JSON.parse(storedRaw); } catch { await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Invalid post data"); return; }
-    const { publishToChannel } = await import("./telegram.js");
-    const pubRes = await publishToChannel(env.BOT_TOKEN, postData.targetChannel, {
-      text: postData.text, mediaType: postData.mediaType, mediaFileId: postData.mediaFileId,
-      extra: { parse_mode: postData.parseMode, disable_web_page_preview: false },
-    });
-    if (pubRes.ok) {
-      if (postData.extraParts && postData.extraParts.length > 0) {
-        const firstMsgId = pubRes.result?.message_id;
-        for (let i = 0; i < postData.extraParts.length; i++) {
-          const isLast = i === postData.extraParts.length - 1;
-          const partFooter = isLast ? (postData.footerHtml || "") : "";
-          await publishToChannel(env.BOT_TOKEN, postData.targetChannel, {
-            text: postData.extraParts[i] + partFooter, mediaType: null, mediaFileId: null,
-            extra: { parse_mode: postData.parseMode, reply_to_message_id: firstMsgId },
-          }).catch(() => {});
-          if (!isLast) await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-      await answerCallbackQuery(env.BOT_TOKEN, cq.id, "✅ Published to channel!");
-      await sendMessage(env.BOT_TOKEN, targetChatId,
-        `✅ <b>Published to channel!</b>\n📍 <code>${postData.targetChannel}</code>`,
-        { parse_mode: "HTML" }).catch(() => {});
-    } else {
-      await answerCallbackQuery(env.BOT_TOKEN, cq.id, `❌ Failed: ${pubRes.description}`);
-    }
-    await SETTINGS.delete(storageKey);
-    return;
-  }
-  else if (data.startsWith("approve:reject:")) {
-    const parts = data.split(":");
-    const targetChatId = parts[2];
-    const previewMsgId = parts[3];
-    await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post rejected");
-    await sendMessage(env.BOT_TOKEN, targetChatId,
-      `❌ <b>Post rejected</b>`, { parse_mode: "HTML" }).catch(() => {});
-    await SETTINGS.delete(`approve:${previewMsgId}`);
-    return;
   }
   // ----- Setting changes -----
   else if (data.startsWith("set:")) {

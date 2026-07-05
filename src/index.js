@@ -26,11 +26,8 @@ import {
 import {
   getSettings,
   flushAllStats,
-  updateSetting,
 } from "./kv.js";
-import { isAuthorized, isOwner, handleStart, handleMenu, handleFooterCommand, handleCallbackQuery } from "./admin.js";
-import { cleanContent } from "./cleaner.js";
-import { formatPost } from "./formatter.js";
+import { isAuthorized, handleStart, handleFooterCommand, handleCallbackQuery } from "./admin.js";
 import {
   checkDebugAuth,
   getStatus,
@@ -50,7 +47,7 @@ import {
   getBotId,
 } from "./pipeline.js";
 
-const VERSION = "0.6.11";
+const VERSION = "0.7.0";
 
 // ============================================================
 // MAIN EXPORT
@@ -123,15 +120,18 @@ export default {
       console.log(`[webhook] 200 — type=${updateInfo.updateType} from=${updateInfo.fromId}`);
 
       ctx.waitUntil((async () => {
-        await logRawRequest(SETTINGS, {
-          method: request.method, path: url.pathname,
-          hasSecret: !!secret, secretMatch: secretMatches, bodySize,
-          updateType: updateInfo.updateType, fromId: updateInfo.fromId,
-          chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
-          status: "ok", detail: "processed",
-        }, env);
+        // v0.7.0: logRawRequest only if DEBUG_MODE is on (saves 1 KV write per request)
+        // logRawRequest already checks DEBUG_MODE internally, but we skip the call entirely
+        if (env.DEBUG_MODE === "true" || env.DEBUG_MODE === true) {
+          await logRawRequest(SETTINGS, {
+            method: request.method, path: url.pathname,
+            hasSecret: !!secret, secretMatch: secretMatches, bodySize,
+            updateType: updateInfo.updateType, fromId: updateInfo.fromId,
+            chatId: updateInfo.chatId, textPreview: updateInfo.textPreview,
+            status: "ok", detail: "processed",
+          }, env);
+        }
         await handleUpdate(update, env);
-        // v0.5.9 TASK 4: Flush batched stats after each request
         await flushAllStats(SETTINGS);
       })());
       return new Response("ok", { status: 200 });
@@ -213,8 +213,7 @@ async function handleUpdate(update, env) {
   try {
     if (update.callback_query) {
       const cq = update.callback_query;
-      const cqSettings = await getSettings(SETTINGS, cq.from.id);
-      if (!await isAuthorized(env, cq.from.id, SETTINGS)) {
+      if (!isAuthorized(env, cq.from.id)) {
         await answerCallbackQuery(env.BOT_TOKEN, cq.id, "⛔ Unauthorized");
         await logUpdate(SETTINGS, update, "unauthorized", `from=${cq.from.id}`, env);
         return;
@@ -227,21 +226,10 @@ async function handleUpdate(update, env) {
     const content = extractContent(update);
     if (!content) return;
 
-    // v0.6.2: Check authorization BEFORE routing media groups
-    // Non-admin users get a format-only response (no AI, no publish)
-    const msgSettings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
-    const isAdmin = env.ADMIN_ID && await isAuthorized(env, content.fromId, SETTINGS);
-
     // Media group handling
     if (content.mediaGroupId) {
-      if (isAdmin) {
-        console.log(`[update] media group: ${content.mediaGroupId}`);
-        await handleMediaGroupUpdate(env, content, update);
-      } else {
-        // v0.6.2: Non-admin users get per-item format-only response
-        // (no buffering, no AI, no channel publish)
-        await handleNonAdminFormat(env, content, update);
-      }
+      console.log(`[update] media group: ${content.mediaGroupId}`);
+      await handleMediaGroupUpdate(env, content, update);
       return;
     }
 
@@ -273,7 +261,6 @@ async function handleUpdate(update, env) {
 
 // ============================================================
 // PRIVATE MESSAGE HANDLER (command router)
-// v0.6.2: Split /start (intro for ALL users) from /menu (admin panel)
 // ============================================================
 async function handlePrivateMessage(env, content, update) {
   const SETTINGS = env.SETTINGS;
@@ -286,37 +273,24 @@ async function handlePrivateMessage(env, content, update) {
     return;
   }
 
+  if (!isAuthorized(env, content.fromId)) {
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `⛔ <b>Unauthorized</b>\n\nYour ID: <code>${content.fromId}</code>\nConfigured ADMIN_ID: <code>${env.ADMIN_ID}</code>`,
+      { parse_mode: "HTML" });
+    await logUpdate(SETTINGS, update, "unauthorized", `from=${content.fromId} expected=${env.ADMIN_ID}`, env);
+    return;
+  }
+
   const text = content.text || "";
 
-  // v0.6.2: /start is available to ALL users (shows bot intro)
-  if (/^\/start\b/i.test(text)) {
-    await handleStart(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
-    await logUpdate(SETTINGS, update, "ok", "/start", env);
-    return;
-  }
-
-  // v0.6.2: Non-admin users — only /start is recognized.
-  // All other messages (commands or text/media) get format-only response.
-  const privSettings = await getSettings(SETTINGS, content.fromId || env.ADMIN_ID);
-  if (!await isAuthorized(env, content.fromId, SETTINGS)) {
-    // Typing indicator
-    if (content.chatId) {
-      await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
-    }
-    await handleNonAdminFormat(env, content, update);
-    return;
-  }
-
-  // ===== ADMIN FLOW (authorized) =====
   // Typing indicator immediately
   if (content.chatId) {
     await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
   }
 
-  // v0.6.2: /menu shows the admin settings panel (replaces old /start behavior)
-  if (/^\/menu\b/i.test(text)) {
-    await handleMenu(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
-    await logUpdate(SETTINGS, update, "ok", "/menu", env);
+  if (/^\/start\b/i.test(text)) {
+    await handleStart(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
+    await logUpdate(SETTINGS, update, "ok", "/start", env);
     return;
   }
 
@@ -329,7 +303,7 @@ async function handlePrivateMessage(env, content, update) {
 
   if (/^\/help\b/i.test(text)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Bot introduction (all users)\n/menu — Admin settings panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with a dummy message\n/help — This message`,
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with a dummy message\n/help — This message`,
       { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "ok", "/help", env);
     return;
@@ -347,104 +321,8 @@ async function handlePrivateMessage(env, content, update) {
     return;
   }
 
-  // v0.6.8: Check if user is in "adding admin" mode
-  const addingAdminFlag = await SETTINGS.get(`admin:adding:${content.fromId}`);
-  if (addingAdminFlag) {
-    // User should send a Telegram user ID
-    const newAdminId = text.trim().replace(/\s/g, "");
-    if (!/^\d+$/.test(newAdminId)) {
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `❌ Invalid ID. Please send a numeric Telegram user ID.\n\n<i>Example: 123456789</i>`,
-        { parse_mode: "HTML" });
-      return;
-    }
-    
-    // Get current admin list
-    const adminSettings = await getSettings(SETTINGS, content.fromId);
-    const currentList = adminSettings.admin_list || [];
-    
-    // Check if already exists
-    if (currentList.includes(newAdminId) || currentList.includes(Number(newAdminId))) {
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `⚠️ User <code>${newAdminId}</code> is already an admin.`,
-        { parse_mode: "HTML" });
-      await SETTINGS.delete(`admin:adding:${content.fromId}`);
-      return;
-    }
-    
-    // Don't allow adding the owner
-    if (String(newAdminId) === String(env.ADMIN_ID)) {
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `⚠️ This user is already the owner.`,
-        { parse_mode: "HTML" });
-      await SETTINGS.delete(`admin:adding:${content.fromId}`);
-      return;
-    }
-    
-    // Add to list
-    const newList = [...currentList, newAdminId];
-    await updateSetting(SETTINGS, content.fromId, "admin_list", newList);
-    await SETTINGS.delete(`admin:adding:${content.fromId}`);
-    
-    await sendMessage(env.BOT_TOKEN, content.chatId,
-      `✅ <b>Admin added!</b>\n\nUser <code>${newAdminId}</code> can now use the bot.\n\nThey can send /menu to access settings.`,
-      { parse_mode: "HTML", disable_web_page_preview: true });
-    await logUpdate(SETTINGS, update, "ok", `admin added: ${newAdminId}`, env);
-    return;
-  }
-
   // Content pipeline
   await runPipeline(env, content, content.chatId, update);
-}
-
-// ============================================================
-// v0.6.2: NON-ADMIN FORMAT-ONLY RESPONSE
-// ============================================================
-// For non-admin users: clean → format → send back to user's PV.
-// NO AI rewrite, NO channel publish, NO scheduling.
-// Works for both text-only and media-attached messages.
-// ============================================================
-async function handleNonAdminFormat(env, content, update) {
-  const SETTINGS = env.SETTINGS;
-  const rawText = content.text || "";
-
-  // Skip empty messages (no text AND no media)
-  if (!rawText && !content.mediaFileId) {
-    await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<i>برای پردازش، متنی را ارسال کنید.</i>`,
-      { parse_mode: "HTML" }).catch(() => {});
-    return;
-  }
-
-  // Clean + format with default settings (intensity: 60, emojiLevel: 20)
-  const cleanedText = cleanContent(rawText);
-  const { text: formattedText, parseMode } = formatPost(cleanedText || "", {
-    footer: null,
-    engineName: "html",
-    intensity: 60,
-    emojiLevel: 20,
-  });
-
-  // Send back to user (with media if attached)
-  if (content.mediaFileId) {
-    await publishToChannel(env.BOT_TOKEN, content.chatId, {
-      text: formattedText || "",
-      mediaType: content.mediaType,
-      mediaFileId: content.mediaFileId,
-      extra: { parse_mode: parseMode, disable_web_page_preview: true },
-    }).catch(() => ({ ok: false }));
-  } else if (formattedText && formattedText.trim()) {
-    await sendMessage(env.BOT_TOKEN, content.chatId, formattedText, {
-      parse_mode: parseMode,
-      disable_web_page_preview: true,
-    }).catch(() => {});
-  } else {
-    await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<i>پست شما خالی است یا قابل پردازش نیست.</i>`,
-      { parse_mode: "HTML" }).catch(() => {});
-  }
-
-  await logUpdate(SETTINGS, update, "ok", "format-only (non-admin)", env);
 }
 
 // ============================================================

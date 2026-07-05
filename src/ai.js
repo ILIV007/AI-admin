@@ -19,24 +19,21 @@ import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // ============================================================
-// DEFAULT FREE MODELS — v0.6.4 (latest ranked models)
+// DEFAULT FREE MODELS on OpenRouter
 // ============================================================
-
-const GEMINI_MODELS = [
-  "gemini-3-flash-preview",
-  "gemini-2.5-flash",
-  "gemini-3.1-flash-lite-preview",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
-];
-
 const DEFAULT_OPENROUTER_MODELS = [
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "nvidia/nemotron-3-nano-30b-a3b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
   "google/gemma-4-31b-it:free",
-  "openai/gpt-oss-120b:free",
-  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "openai/gpt-oss-20b:free",
+  "google/gemma-4-26b-a4b-it:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "openrouter/free",
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "poolside/laguna-m.1:free",
 ];
 
 // ============================================================
@@ -202,13 +199,16 @@ export async function aiComplete(env, settings, params) {
   const geminiProviders = [];
   const openRouterProviders = [];
 
-  // 1. Gemini models — use GEMINI_MODELS list, put env override first
+  // 1. Gemini models
   if (env.GEMINI_API_KEY) {
-    const userModel = env.GEMINI_MODEL;
-    const geminiModels = userModel && !GEMINI_MODELS.includes(userModel)
-      ? [userModel, ...GEMINI_MODELS]
-      : GEMINI_MODELS;
-    for (const model of geminiModels) {
+    const geminiModels = [
+      env.GEMINI_MODEL || "gemini-2.5-flash",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.0-flash",
+    ];
+    const uniqueGeminiModels = [...new Set(geminiModels)];
+    for (const model of uniqueGeminiModels) {
       geminiProviders.push({
         name: "gemini",
         model: model,
@@ -227,16 +227,11 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // v0.6.4: Smart fallback — preferred provider's TOP 2 models first,
-  // then the OTHER provider's models, then the rest of preferred provider's models.
+  // Order providers — preferred FIRST, then fallback
   if (preferred === "gemini") {
-    const topGemini = geminiProviders.slice(0, 2);
-    const restGemini = geminiProviders.slice(2);
-    providers.push(...topGemini, ...openRouterProviders, ...restGemini);
+    providers.push(...geminiProviders, ...openRouterProviders);
   } else if (preferred === "openrouter") {
-    const topOR = openRouterProviders.slice(0, 2);
-    const restOR = openRouterProviders.slice(2);
-    providers.push(...topOR, ...geminiProviders, ...restOR);
+    providers.push(...openRouterProviders, ...geminiProviders);
   } else {
     providers.push(...geminiProviders, ...openRouterProviders);
   }
@@ -314,8 +309,6 @@ export async function aiComplete(env, settings, params) {
 // ============================================================
 const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
 
-CRITICAL RULE: You are EDITING an existing post. Output ONLY the edited version. Do NOT write new content, do NOT answer questions, do NOT respond to the post. Your output must be the SAME post, just improved.
-
 RULES:
 - Keep input language. NEVER translate.
 - PRESERVE: GitHub links, docs, APIs, commands, code blocks, filenames, version numbers.
@@ -323,12 +316,9 @@ RULES:
 - PRESERVE functional emojis (📚🛠️⚡💡🔒🌐📦). Remove decorative (🔥😍😱🎉🤣).
 - PRESERVE number emojis (1️⃣2️⃣3️⃣).
 - Preserve the author's emotional tone. Don't flatten excitement or urgency.
-- PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
 - Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`code blocks\`\`\`).
 - Do NOT add footer. Do NOT add explanations. Do NOT add HTML tags.
-- Write each URL on its OWN line.
-- NEVER start your response with "Here is" or "Sure" or "I'll" — just output the edited post directly.
-- CRITICAL: PRESERVE the paragraph structure and blank lines between sections. Do NOT merge paragraphs or remove blank lines that separate list items. Keep the same line breaks and spacing as the original.`;
+- Write each URL on its OWN line.`;
 
 const COMPACT_SUMMARIZE_PROMPT = `You are a Telegram channel content editor. The post is too long for Telegram. TRIM it (don't summarize into bullet points).
 
