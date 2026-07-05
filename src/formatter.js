@@ -1,6 +1,6 @@
 /**
- * src/formatter.js — v0.6.0
- *
+ * src/formatter.js — v0.4.9
+ * 
  * FIXES:
  *   - <a href> tags no longer escaped (protected before escape)
  *   - Plain URLs → <a href> with shortened label (not blockquote)
@@ -85,25 +85,11 @@ const htmlEngine = {
       return ` §IC${inlineCodes.length - 1}§ `;
     });
 
-    // 3. Prompt blocks — v0.5.20: Two detection methods:
-    //    A) §PROMPT_START§...§PROMPT_END§ markers (from restorePrompts — no label needed)
-    //    B) Traditional label-based: "Prompt:", "System:", "🎨 AI Prompt:", etc.
+    // 3. Prompt blocks (System: ..., Prompt: ..., User: ... followed by multi-line content)
     const promptBlocks = [];
-
-    // v0.5.20: Method A — detect marker-wrapped prompts (no label shown to user)
-    work = work.replace(/§PROMPT_START§([\s\S]*?)§PROMPT_END§/g, (_, content) => {
-      if (content.trim().length > 20) {
-        promptBlocks.push({ label: "", content: content.trim() }); // Empty label = no label shown
-        return ` §P${promptBlocks.length - 1}§ `;
-      }
-      return content;
-    });
-
-    // Method B — traditional label-based detection
-    // Catches: "### Prompt:", "**Prompt:**", "Prompt:", "🎨 AI Prompt:", Persian keywords
-    work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(🎨\s*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|AI Prompt|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, emoji, label, content) => {
-      if (content.trim().length > 20) {
-        promptBlocks.push({ label: (label || "Prompt").trim(), content: content.trim() });
+    work = work.replace(/(?:^|\n)(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE):\s*\n([\s\S]*?)(?=\n\n|\n#|$)/gi, (_, label, content) => {
+      if (content.trim().length > 30) { // Only treat as prompt if content is substantial
+        promptBlocks.push({ label: label.trim(), content: content.trim() });
         return ` §P${promptBlocks.length - 1}§ `;
       }
       return _;
@@ -153,18 +139,6 @@ const htmlEngine = {
       return `<a href="${link.url}">${this.escape(link.text)}</a>`;
     });
 
-    // v0.5.24: Standalone links (on their own line, between paragraphs) → wrap in blockquote
-    // Only wraps links that are ALONE on their line (not inline with other text)
-    work = work.split("\n").map((line) => {
-      const trimmed = line.trim();
-      // Check if the line is ONLY a link (nothing else except whitespace)
-      const linkMatch = trimmed.match(/^<a\s+href="[^"]+">[^<]*<\/a>$/i);
-      if (linkMatch) {
-        return `<blockquote>${trimmed}</blockquote>`;
-      }
-      return line;
-    }).join("\n");
-
     // 9. Restore protected HTML tags (after escape — they're real HTML)
     work = work.replace(/§H(\d+)§/g, (_, i) => htmlTags[Number(i)] || "");
 
@@ -197,81 +171,116 @@ const htmlEngine = {
       work = out.join("\n");
     }
 
+    // 10.5. v0.6.2: Quote list items — numbered items with dash, راه‌حل: lines,
+    //       and HTML-wrapped headings ending with `:`. Collects heading +
+    //       following description lines (until blank line OR next numbered item)
+    //       into a blockquote.
+    //
+    //       Patterns detected (using INNER text after stripping HTML tags):
+    //       1. `^\d+\s*[–\-—]\s+`  — numbered items with dash (e.g., "400 – Bad Request")
+    //       2. `^راه[\-\s]?حل\s*[:：]`  — Persian "Solution:" lines
+    //       3. HTML-wrapped headings ending with `:` (e.g., "<b>عکاسی و ویدیو:</b>")
+    //
+    //       Bug fix: previously, lines starting with `<` were skipped in step 11,
+    //       but after markdown transforms, headings like `<b>...</b>` start with
+    //       `<` and weren't detected. We now check the INNER text by stripping HTML.
+    if (intensity >= 30) {
+      const stripTags = (s) => s.replace(/<[^>]+>/g, "");
+
+      // Numbered item with dash (e.g., "400 –", "401 -", "402 —")
+      const isNumberedDashItem = (line) => {
+        const t = line.trim();
+        if (!t) return false;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) return false;
+        if (t.startsWith("§")) return false;
+        const inner = stripTags(t).trim();
+        return /^\d+\s*[–\-—]\s+/.test(inner);
+      };
+
+      // راه‌حل: line OR HTML-wrapped heading ending with `:`
+      const isRaholOrColonHeading = (line) => {
+        const t = line.trim();
+        if (!t) return false;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) return false;
+        if (t.startsWith("§")) return false;
+        const inner = stripTags(t).trim();
+        if (!inner) return false;
+        // Persian "Solution:" lines (راه‌حل:, راه حل:, راهحل:, راه-حل:)
+        // Note: \u200C = ZWNJ (Zero Width Non-Joiner) — used in "راه‌حل"
+        if (/^راه[\-\s\u200C]?حل\s*[:：]/.test(inner)) return true;
+        // HTML-wrapped heading ending with `:` (only if line contains HTML tags,
+        // to avoid quoting every plain-text line that happens to end with `:`)
+        if (/<[^>]+>/.test(t) && (inner.endsWith(":") || inner.endsWith("："))) return true;
+        return false;
+      };
+
+      const isListHeading = (line) => isNumberedDashItem(line) || isRaholOrColonHeading(line);
+
+      const lines = work.split("\n");
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (isListHeading(lines[i])) {
+          const startsNumbered = isNumberedDashItem(lines[i]);
+          const block = [lines[i]];
+          i++;
+          while (i < lines.length) {
+            const t = lines[i].trim();
+            if (t === "") break;  // blank line ends the block
+            // Next numbered item ALWAYS ends the block
+            if (isNumberedDashItem(lines[i])) break;
+            if (startsNumbered) {
+              // Inside a numbered-item block: راه‌حل: and colon headings are
+              // treated as description (do NOT terminate the block)
+              block.push(lines[i]);
+              i++;
+            } else {
+              // Inside a راه‌حل/colon block: another راه‌حل/colon heading ends it
+              if (isRaholOrColonHeading(lines[i])) break;
+              block.push(lines[i]);
+              i++;
+            }
+          }
+          out.push(`<blockquote>${block.join("\n")}</blockquote>`);
+        } else {
+          out.push(lines[i]);
+          i++;
+        }
+      }
+      work = out.join("\n");
+    }
+
     // 11. Quote long paragraphs — TWO-PASS (skip first eligible)
+    //     v0.6.2: Fixed bug where HTML-wrapped headings (e.g., "<b>title</b>")
+    //     were skipped because they start with `<`. Now checks INNER text by
+    //     stripping HTML tags. Already-quoted blockquote lines are still skipped.
     if (intensity >= 30) {
       const minLen = intensity >= 80 ? 80 : 120;
+      const stripTags = (s) => s.replace(/<[^>]+>/g, "");
       const lines = work.split("\n");
       let firstIdx = -1;
       for (let i = 0; i < lines.length; i++) {
         const t = lines[i].trim();
-        if (!t || t.startsWith("<") || t.startsWith("§")) continue;
-        if (t.length < minLen) continue;
-        if (/^[•\-\*\d]/.test(t)) continue;
-        if ((t.match(/[.!?؟!]/g) || []).length < 2) continue;
+        if (!t || t.startsWith("§")) continue;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) continue;
+        // v0.6.2: Check inner text (strip HTML tags) instead of raw line
+        const inner = stripTags(t).trim();
+        if (inner.length < minLen) continue;
+        if (/^[•\-\*\d]/.test(inner)) continue;
+        if ((inner.match(/[.!?؟!]/g) || []).length < 2) continue;
         firstIdx = i; break;
       }
       work = lines.map((line, i) => {
         const t = line.trim();
-        if (!t || t.startsWith("<") || t.startsWith("§")) return line;
-        if (t.length < minLen) return line;
-        if (/^[•\-\*\d]/.test(t)) return line;
-        if ((t.match(/[.!?؟!]/g) || []).length < 2) return line;
+        if (!t || t.startsWith("§")) return line;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) return line;
+        const inner = stripTags(t).trim();
+        if (inner.length < minLen) return line;
+        if (/^[•\-\*\d]/.test(inner)) return line;
+        if ((inner.match(/[.!?؟!]/g) || []).length < 2) return line;
         if (i === firstIdx) return line;
-        return `<blockquote expandable="true">${t}</blockquote>`;
+        return `<blockquote>${t}</blockquote>`;
       }).join("\n");
-    }
-
-    // v0.6.1: Quote list items that follow a heading (line ending with ":")
-    // Groups consecutive non-heading lines after a heading into a blockquote
-    if (intensity >= 20) {
-      const lines = work.split("\n");
-      const result = [];
-      let inListSection = false;
-      let listBuffer = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        const t = lines[i].trim();
-        const isHeading = t.length > 3 && t.length < 100 && /[:：]\s*$/.test(t) && !t.startsWith("<");
-
-        if (isHeading) {
-          if (listBuffer.length > 0) {
-            result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
-            listBuffer = [];
-          }
-          result.push(lines[i]);
-          inListSection = true;
-          continue;
-        }
-
-        if (inListSection) {
-          if (t && !t.startsWith("<") && !t.startsWith("§") && !/[:：]\s*$/.test(t) && t.length > 5 && t.length < 500) {
-            listBuffer.push(t);
-            const nextLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
-            const nextIsEmpty = !nextLine;
-            const nextIsHeading = nextLine.length > 3 && nextLine.length < 100 && /[:：]\s*$/.test(nextLine);
-            if (nextIsEmpty || nextIsHeading) {
-              if (listBuffer.length > 0) {
-                result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
-                listBuffer = [];
-              }
-              inListSection = nextIsHeading;
-            }
-          } else {
-            if (listBuffer.length > 0) {
-              result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
-              listBuffer = [];
-            }
-            inListSection = false;
-            result.push(lines[i]);
-          }
-        } else {
-          result.push(lines[i]);
-        }
-      }
-      if (listBuffer.length > 0) {
-        result.push(`<blockquote>${listBuffer.join("\n")}</blockquote>`);
-      }
-      work = result.join("\n");
     }
 
     // === PHASE 4: RESTORE PROTECTED CONTENT ===
@@ -279,37 +288,13 @@ const htmlEngine = {
     work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
-      if (!p) return ''; // Safety check
-      // v0.5.20: Only show label if it's non-empty (marker-based prompts have empty label)
-      const labelHtml = p.label ? `<b>${this.escape(p.label)}:</b>\n` : "";
-      return `${labelHtml}<blockquote expandable="true"><code>${this.escape(p.content)}</code></blockquote>`;
+      return `<b>${this.escape(p.label)}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
     });
 
     // === PHASE 5: POLISH ===
     if (emojiLevel > 0 && intensity >= 40) {
       work = this.addEmojisToHeadings(work, emojiLevel);
     }
-
-    // v0.5.19: RTL fix — if a line starts with English/Latin chars but contains Persian,
-    // prepend U+200F (Right-to-Left Mark) to force correct bidirectional rendering.
-    // This prevents the "English word at start → entire line goes LTR" bug.
-    work = work.split("\n").map((line) => {
-      // Skip empty lines, HTML tags, or placeholders
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("<") || trimmed.startsWith("§")) return line;
-
-      // Check if line starts with Latin chars and contains Persian/Arabic
-      const startsWithLatin = /^[A-Za-z0-9\-_/.]/.test(trimmed);
-      const hasPersian = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(line);
-      const hasLatin = /[A-Za-z]/.test(line);
-
-      // If line has both Persian and Latin, and starts with Latin → needs RTL mark
-      if (startsWithLatin && hasPersian && hasLatin) {
-        return "\u200F" + line;
-      }
-      return line;
-    }).join("\n");
-
     work = work.replace(/\n{3,}/g, "\n\n");
     if (footer) work = `${work}\n\n<blockquote>${footer}</blockquote>`;
 

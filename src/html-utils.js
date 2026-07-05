@@ -1,6 +1,6 @@
 /**
  * src/html-utils.js
- * Safe HTML truncation utilities — v0.6.0
+ * Safe HTML truncation utilities — v0.5.9
  *
  * Provides closeOpenTags() which robustly closes unclosed HTML tags
  * after truncation. Uses a stack-based approach that handles:
@@ -141,20 +141,6 @@ export function truncateHtml(html, maxLen, suffix = "\n\n<i>…</i>") {
   if (lastLT > lastGT) {
     // We're inside a tag — cut before the opening <
     cutPoint = lastLT - 1;
-  }
-
-  // v0.5.14: NEVER cut inside a word — walk backwards to nearest space
-  // This prevents words like "photorealistic" from becoming "photoreali…"
-  if (cutPoint < html.length) {
-    const charAtCut = html[cutPoint];
-    const charBeforeCut = html[cutPoint - 1];
-    // If we're in the middle of a word (both sides are non-space, non-newline)
-    if (charAtCut && charBeforeCut && charAtCut !== " " && charAtCut !== "\n" && charBeforeCut !== " " && charBeforeCut !== "\n") {
-      const lastSpace = html.lastIndexOf(" ", cutPoint);
-      if (lastSpace > cutPoint - 50 && lastSpace > 100) {
-        cutPoint = lastSpace;
-      }
-    }
   }
 
   // Safety: ensure cutPoint is reasonable

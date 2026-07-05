@@ -33,9 +33,6 @@ function mainMenuKeyboard(settings) {
   const schedLabel = settings?.scheduling_enabled
     ? "📅 Schedule: ON ✅"
     : "📅 Schedule: OFF";
-  const approveLabel = settings?.approve_enabled
-    ? "🔐 Approve: ON"
-    : "🔓 Approve: OFF";
   return {
     inline_keyboard: [
       [
@@ -60,7 +57,6 @@ function mainMenuKeyboard(settings) {
       ],
       [
         { text: channelEditLabel, callback_data: "toggle:channeledit" },
-        { text: approveLabel, callback_data: "toggle:approve" },
       ],
     ],
   };
@@ -182,7 +178,6 @@ function profileMenuText(currentProfile) {
 
 function scheduleKeyboard(s) {
   const enabled = s?.scheduling_enabled;
-  const cronEnabled = s?.cron_fallback_enabled !== false; // Default true (undefined = on)
   const delay = s?.schedule_delay_hours ?? 24;
   const interval = s?.schedule_interval_minutes ?? 30;
   const ppd = s?.schedule_posts_per_day ?? 0;
@@ -207,8 +202,6 @@ function scheduleKeyboard(s) {
         { text: `${ppd > 0 ? ppd : "∞"}`, callback_data: "ignore" },
         { text: "+", callback_data: "set:sched:posts:inc" },
       ],
-      // v0.5.15: Cron fallback toggle
-      [{ text: `${cronEnabled ? "🟢" : "🔴"} Cron Fallback: ${cronEnabled ? "ON" : "OFF"}`, callback_data: "set:sched:cron:toggle" }],
       [{ text: "← Back", callback_data: "menu:main" }],
     ],
   };
@@ -216,7 +209,6 @@ function scheduleKeyboard(s) {
 
 function scheduleMenuText(s) {
   const enabled = s?.scheduling_enabled;
-  const cronEnabled = s?.cron_fallback_enabled !== false;
   const delay = s?.schedule_delay_hours ?? 24;
   const interval = s?.schedule_interval_minutes ?? 30;
   const ppd = s?.schedule_posts_per_day ?? 0;
@@ -228,15 +220,12 @@ function scheduleMenuText(s) {
     `Delay: <b>${delay} hours</b>`,
     `Spacing: <b>${interval} minutes</b>`,
     `Posts/day: <b>${ppdText}</b>`,
-    `Cron Fallback: <b>${cronEnabled ? "🟢 ON" : "🔴 OFF"}</b>`,
     ``,
     `<i>How it works:</i>`,
     `• Posts are delayed by ${delay}h`,
     `• Multiple posts are spaced by ${ppd > 0 ? Math.floor(1440/ppd) : interval}m`,
     `• You still receive immediate feedback`,
     `• Channel edits are NOT scheduled`,
-    ``,
-    `<i>💡 Cron Fallback: When Telegram ignores schedule_date, posts are queued and sent by cron at the scheduled time.</i>`,
   ].join("\n");
 }
 
@@ -261,7 +250,6 @@ function mainMenuText(settings) {
     `🤖 AI Provider: <code>${settings.ai_provider}</code>`,
     `📢 Footer: <code>${settings.footer_text}</code>`,
     `📺 Channel Edit: <code>${settings.channel_editing_enabled ? "ON" : "OFF"}</code>`,
-    `✅ Approve: <code>${settings.approve_enabled ? "ON" : "OFF"}</code>`,
     ``,
     `<i>Send any post to this bot to process and publish it.</i>`,
   ].join("\n");
@@ -375,9 +363,42 @@ async function statsMenuText(SETTINGS, settings) {
 }
 
 // ============================================================
-// COMMAND: /start
+// v0.6.2: COMMAND: /start — Full bot introduction (ALL users, not just admins)
 // ============================================================
+const INTRO_TEXT = [
+  `🤖 <b>AI Admin — ربات هوشمند پردازش محتوا</b>`,
+  ``,
+  `رباتی قدرتمند برای پردازش، ویرایش و انتشار هوشمند پست‌ها در کانال‌های تلگرام.`,
+  ``,
+  `✨ <b>امکانات:</b>`,
+  `<blockquote>`,
+  `• ویرایش هوشمند با AI (Gemini + OpenRouter)`,
+  `• تشخیص و حفاظت از پرامپت‌های AI (Midjourney, Stable Diffusion)`,
+  `• زمان‌بندی هوشمند پست‌ها`,
+  `• حالت تأیید قبل از انتشار`,
+  `• پشتیبانی از RTL فارسی`,
+  `• مدیریت گروه‌های رسانه‌ای`,
+  `• داشبورد دیباگ`,
+  `</blockquote>`,
+  ``,
+  `🌀 <b>کانال سازنده:</b> @ILIVIR3`,
+  ``,
+  `برای دسترسی به تنظیمات ادمین، دستور /menu را ارسال کنید.`,
+  `برای پردازش پست، کافیست پست خود را ارسال کنید.`,
+].join("\n");
+
 export async function handleStart(env, SETTINGS, msg) {
+  await sendMessage(env.BOT_TOKEN, msg.chat.id, INTRO_TEXT, {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+  });
+}
+
+// ============================================================
+// v0.6.2: COMMAND: /menu — Admin settings panel (admin only)
+// (Previously /start — renamed in v0.6.2 to split intro from admin panel)
+// ============================================================
+export async function handleMenu(env, SETTINGS, msg) {
   const settings = await getSettings(SETTINGS, msg.from.id);
   await sendMessage(env.BOT_TOKEN, msg.chat.id, mainMenuText(settings), {
     parse_mode: "HTML",
@@ -488,83 +509,6 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
     newKb = mainMenuKeyboard(updated);
     toast = newVal ? "✅ Channel editing ON" : "✅ Channel editing OFF";
   }
-  // v0.5.24: Approve toggle
-  else if (data === "toggle:approve") {
-    const newVal = !settings.approve_enabled;
-    const updated = await updateSetting(SETTINGS, userId, "approve_enabled", newVal);
-    newText = mainMenuText(updated);
-    newKb = mainMenuKeyboard(updated);
-    toast = newVal ? "✅ Approve mode ON — posts need approval" : "✅ Approve mode OFF — auto publish";
-  }
-  // v0.5.24: Approve post callback (when user clicks "✅ Publish" button)
-  else if (data.startsWith("approve:publish:")) {
-    // Data format: "approve:publish:<chatId>:<messageId>"
-    // The post data was stored in KV when the preview was sent
-    const parts = data.split(":");
-    const previewMsgId = parts[3];
-
-    // Retrieve stored post data from KV
-    const storageKey = `approve:${previewMsgId}`;
-    const storedRaw = await SETTINGS.get(storageKey);
-    if (!storedRaw) {
-      await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post data expired. Please resend.");
-      return;
-    }
-
-    let postData;
-    try { postData = JSON.parse(storedRaw); } catch { await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Invalid post data"); return; }
-
-    // Publish to channel
-    const { publishToChannel } = await import("./telegram.js");
-    const pubRes = await publishToChannel(env.BOT_TOKEN, postData.targetChannel, {
-      text: postData.text,
-      mediaType: postData.mediaType,
-      mediaFileId: postData.mediaFileId,
-      extra: { parse_mode: postData.parseMode, disable_web_page_preview: false },
-    });
-
-    if (pubRes.ok) {
-      // Send extra parts if any
-      if (postData.extraParts && postData.extraParts.length > 0) {
-        const firstMsgId = pubRes.result?.message_id;
-        for (let i = 0; i < postData.extraParts.length; i++) {
-          const isLast = i === postData.extraParts.length - 1;
-          const partFooter = isLast ? (postData.footerHtml || "") : "";
-          await publishToChannel(env.BOT_TOKEN, postData.targetChannel, {
-            text: postData.extraParts[i] + partFooter, mediaType: null, mediaFileId: null,
-            extra: { parse_mode: postData.parseMode, reply_to_message_id: firstMsgId },
-          }).catch(() => {});
-          if (!isLast) await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-
-      // Toast notification (preview message is left untouched)
-      await answerCallbackQuery(env.BOT_TOKEN, cq.id, "✅ Published to channel!");
-      // Send result as a NEW separate message (do not edit the preview)
-      await sendMessage(env.BOT_TOKEN, chatId,
-        `✅ <b>Published!</b>\n📍 <code>${postData.targetChannel}</code>`,
-        { parse_mode: "HTML" }).catch(() => {});
-    } else {
-      await answerCallbackQuery(env.BOT_TOKEN, cq.id, `❌ Failed: ${pubRes.description}`);
-    }
-
-    // Clean up stored data
-    await SETTINGS.delete(storageKey);
-    return;
-  }
-  // v0.5.24: Reject post callback
-  else if (data.startsWith("approve:reject:")) {
-    const parts = data.split(":");
-    const previewMsgId = parts[3];
-    // Toast notification (preview message is left untouched)
-    await answerCallbackQuery(env.BOT_TOKEN, cq.id, "❌ Post rejected");
-    // Send result as a NEW separate message (do not edit the preview)
-    await sendMessage(env.BOT_TOKEN, chatId,
-      `❌ <b>Rejected</b>`, { parse_mode: "HTML" }).catch(() => {});
-    // Clean up stored data
-    await SETTINGS.delete(`approve:${previewMsgId}`);
-    return;
-  }
   // ----- Setting changes -----
   else if (data.startsWith("set:")) {
     const [, scope, ...rest] = data.split(":");
@@ -625,13 +569,6 @@ export async function handleCallbackQuery(env, SETTINGS, cq) {
         newText = scheduleMenuText(updated);
         newKb = scheduleKeyboard(updated);
         toast = updated.scheduling_enabled ? "✅ Scheduling ON" : "✅ Scheduling OFF";
-      } else if (value === "cron:toggle") {
-        // v0.5.15: Toggle cron fallback
-        const currentCron = settings.cron_fallback_enabled !== false;
-        const updated = await updateSetting(SETTINGS, userId, "cron_fallback_enabled", !currentCron);
-        newText = scheduleMenuText(updated);
-        newKb = scheduleKeyboard(updated);
-        toast = !currentCron ? "✅ Cron Fallback ON" : "✅ Cron Fallback OFF";
       } else if (value === "delay:inc") {
         const newDelay = Math.min(168, (settings.schedule_delay_hours ?? 24) + 1);
         const updated = await updateSetting(SETTINGS, userId, "schedule_delay_hours", newDelay);

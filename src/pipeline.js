@@ -1,6 +1,6 @@
 /**
  * src/pipeline.js
- * Content processing pipelines — v0.6.0
+ * Content processing pipelines — v0.5.9 (TASK 7 refactor)
  *
  * Moved from src/index.js to keep index.js focused on routing/dispatch.
  *
@@ -10,6 +10,12 @@
  *   - runMediaGroupPipeline (album processing)
  *   - runChannelEditPipeline (edit existing channel posts)
  *   - handleMediaGroupUpdate (buffer + leader election)
+ *
+ * v0.5.9 changes:
+ *   - TASK 1: Removed ALL cron-based scheduling fallback. Native only.
+ *   - TASK 5: Media group wait increased to 4000ms + safety re-check.
+ *   - TASK 6: Uses closeOpenTags() / truncateHtml() from html-utils.js.
+ *   - TASK 2: Detailed scheduling logs.
  */
 
 import {
@@ -33,13 +39,12 @@ import {
   deleteMediaGroup,
   getLastScheduledTime,
   setLastScheduledTime,
-  enqueueScheduled,
 } from "./kv.js";
 import { classify } from "./classifier.js";
-import { cleanContent, detectLanguage, protectPrompts, restorePrompts } from "./cleaner.js";
+import { cleanContent, detectLanguage } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
-import { truncateHtml } from "./html-utils.js";
+import { closeOpenTags, truncateHtml } from "./html-utils.js";
 import { logUpdate, logError } from "./debug.js";
 
 // ============================================================
@@ -178,15 +183,19 @@ export async function runMediaGroupPipeline(env, items, update) {
   let aiError = null;
 
   const effectiveRewriteMode = settings.rewrite_mode || "normal";
-  // v0.5.21: No auto-summary for media groups either. Only use rewrite_mode setting.
-  // If caption is too long, truncateHtml will handle it (not AI summary).
+  const MG_CAPTION_LIMIT = 800;
   let shouldRewrite = effectiveRewriteMode !== "none" && cleanedText.length > 0;
+
+  if (cleanedText.length > MG_CAPTION_LIMIT) {
+    shouldRewrite = true;
+    console.log(`[mg-pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${MG_CAPTION_LIMIT} [MEDIA])`);
+  }
 
   if (shouldRewrite) {
     try {
-      const mode = effectiveRewriteMode; // v0.5.21: Never force "summary" — use user's setting
+      const mode = cleanedText.length > MG_CAPTION_LIMIT ? "summary" : effectiveRewriteMode;
+      const targetCharLimit = MG_CAPTION_LIMIT - 100;
       if (mode === "summary") {
-        const targetCharLimit = 800; // MG caption limit
         const res = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
         if (res.ok && res.text) {
           finalText = res.text;
@@ -215,58 +224,16 @@ export async function runMediaGroupPipeline(env, items, update) {
     footer: null, engineName: "html", intensity: settings.edit_intensity ?? 60, emojiLevel: settings.emoji_level ?? 20,
   });
 
-  // v0.5.23: For media posts, captions are limited to 1024 chars by Telegram.
-  // If the caption is too long, we CANNOT split it into multiple messages
-  // (the photo is attached to the first message). So we MUST use AI summary.
-  const MG_LIMIT = 1024; // v0.5.23: Actual Telegram caption limit (was 900)
+  // v0.5.9 TASK 6: Use safe truncateHtml for media group captions
+  const MG_LIMIT = 900;
   const footerHtml = settings.footer_text ? `\n\n<blockquote>${settings.footer_text}</blockquote>` : "";
-  let maxBodyLen = MG_LIMIT - footerHtml.length - 10; // v0.5.23: Minimal margin
-  let effectiveFooterHtml = footerHtml;
-  if (maxBodyLen < 200) {
-    console.warn(`[mg-pipeline] ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
-    effectiveFooterHtml = "";
-    maxBodyLen = MG_LIMIT - 10;
-  }
-
+  const maxBodyLen = MG_LIMIT - footerHtml.length - 30;
   let safeBody = formattedBody;
-
-  // v0.5.23: If caption too long, use AI summary (NOT truncation with …)
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[mg-pipeline] caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
-    try {
-      const targetCharLimit = maxBodyLen - 50;
-      const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
-      if (summaryRes.ok && summaryRes.text) {
-        let summaryText = summaryRes.text;
-        // Restore prompts in summary
-        // (prompts weren't protected in media group pipeline, so just use as-is)
-
-        const { text: summaryFormatted } = formatPost(summaryText, {
-          footer: null, engineName: "html", intensity: 40, emojiLevel: 10,
-        });
-
-        if (summaryFormatted.length > 0 && summaryFormatted.length < formattedBody.length) {
-          safeBody = summaryFormatted;
-          wasRewritten = true;
-          aiProvider = summaryRes.provider;
-          console.log(`[mg-pipeline] AI summary OK: ${formattedBody.length}→${safeBody.length} chars (${summaryRes.provider})`);
-        } else {
-          // AI summary failed or made it longer — last resort: truncate WITHOUT …
-          console.warn(`[mg-pipeline] AI summary didn't help, truncating without …`);
-          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-        }
-      } else {
-        // AI failed — truncate WITHOUT …
-        console.warn(`[mg-pipeline] AI summary failed, truncating without …`);
-        safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-      }
-    } catch (e) {
-      console.error(`[mg-pipeline] AI summary exception: ${e.message}`);
-      safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-    }
+    console.warn(`[mg-pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
+    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
   }
-
-  const formattedText = safeBody + effectiveFooterHtml;
+  const formattedText = safeBody + footerHtml;
 
   const mediaItems = items.map((it, i) => ({
     type: it.type, fileId: it.fileId,
@@ -278,6 +245,7 @@ export async function runMediaGroupPipeline(env, items, update) {
   let wasScheduled = false;
   let scheduledTime = null;
   let scheduleError = null;
+  let lastMgError = null;  // v0.6.2: track sendMediaGroup error for retry detection
 
   if (feedbackChatId) {
     await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, { parse_mode: parseMode });
@@ -337,52 +305,52 @@ export async function runMediaGroupPipeline(env, items, update) {
           console.log(`[mg-sched] Step 4: Telegram response:`, JSON.stringify(schedRes).slice(0, 600));
 
           const verification = verifyScheduled(schedRes, scheduleDateUnix);
+          // v0.5.9 TASK 2: Log verification details
           console.log(`[mg-sched] Verification: scheduled=${verification.scheduled}, reason=${verification.reason}, diffSeconds=${verification.diffSeconds || 0}`);
+          publishOk = schedRes.ok && verification.scheduled;
 
-          // v0.5.14: SILENT CRON FALLBACK for media groups
-          if (schedRes.ok && verification.scheduled) {
-            publishOk = true;
-            wasScheduled = true;
-            console.log(`[mg-sched] ✓ Native scheduling VERIFIED`);
+          // v0.5.9 TASK 1: NO cron fallback — just show error
+          if (!publishOk) {
+            scheduleError = verification.description || schedRes.description || "unknown scheduling failure";
+            console.error(`[mg-sched] ✗ Scheduling FAILED: ${scheduleError}`);
           } else {
-            // v0.5.15: Respect cron_fallback_enabled setting
-            const cronEnabled = settings.cron_fallback_enabled !== false;
-            if (!cronEnabled) {
-              console.warn(`[mg-sched] ⚠️ Native failed and cron fallback is OFF. Showing error.`);
-              scheduleError = verification.description || "Scheduling failed (cron disabled)";
-              publishOk = false;
-            } else {
-              // Native failed — silently enqueue to KV cron queue
-              console.warn(`[mg-sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
-              const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-              await enqueueScheduled(SETTINGS, {
-                id: schedId,
-                scheduledTime,
-                chatId: resolvedChannel, // Use numeric chatId
-                mediaGroupItems: mediaItems,
-                parseMode,
-                adminId,
-                notifyChatId: feedbackChatId,
-                createdAt: Date.now(),
-              });
-              publishOk = true;
-              wasScheduled = true;
-              console.log(`[mg-sched] ✓ Enqueued for cron fallback`);
-            }
+            wasScheduled = true;
+            console.log(`[mg-sched] ✓ Scheduling VERIFIED — album will appear at ${new Date(scheduledTime).toISOString()}`);
           }
         }
 
-        // Show result message to user (always "Scheduled!" — silent fallback)
+        // Show result message to user
         if (feedbackChatId && processingMsgId) {
-          await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-            [
-              `📅 <b>Album Scheduled!</b>`,
-              `📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
-              `📸 <b>Items:</b> ${items.length}`,
-              ``,
-              `<i>The album will auto-publish at the scheduled time.</i>`,
-            ].join("\n"),
-            { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+          if (wasScheduled) {
+            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+              [
+                `📅 <b>Album Scheduled!</b>`,
+                `📅 <b>Scheduled for:</b> ${new Date(scheduledTime).toLocaleString('en-US', { timeZone: 'UTC', hour12: false })} UTC`,
+                `📸 <b>Items:</b> ${items.length}`,
+                ``,
+                `<b>📋 To review/edit/delete:</b>`,
+                `1. Open the channel <code>${targetChannel}</code>`,
+                `2. Tap the channel name at the top`,
+                `3. Select <b>"Scheduled Messages"</b> (clock icon 🕐)`,
+                ``,
+                `<i>The album will auto-publish at the scheduled time.</i>`,
+              ].join("\n"),
+              { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+          } else {
+            await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+              [
+                `⚠️ <b>Scheduling FAILED</b>`,
+                `❌ <b>Error:</b> <code>${(scheduleError || "").slice(0, 250)}</code>`,
+                ``,
+                `<b>How to fix:</b>`,
+                `• Run <code>/checkperms</code> to verify bot permissions`,
+                `• Bot needs <b>"Post Messages"</b> permission in the channel`,
+                `• Schedule must be between 90s and 7 days from now`,
+                ``,
+                `<i>Your album was NOT published. Fix the issue and resend.</i>`,
+              ].join("\n"),
+              { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+          }
         }
       } catch (e) {
         console.error(`[mg-sched] Exception: ${e.message}`);
@@ -398,9 +366,77 @@ export async function runMediaGroupPipeline(env, items, update) {
       const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
       publishOk = pubRes.ok;
       console.log(`[mg-pipeline] publish: ${publishOk ? "OK" : pubRes.description}`);
+      if (!publishOk) {
+        lastMgError = pubRes.description || "unknown";
+      }
     }
   } else {
     publishOk = true;
+  }
+
+  // v0.6.2: RETRY WITH SUMMARY for media groups — if publish fails with "too long"
+  // error, retry with a shorter caption via aiSummarize.
+  if (!publishOk && targetChannel) {
+    const failMsg = String(scheduleError || lastMgError || "");
+    if (/too long|too_long|TOO_LONG|caption/i.test(failMsg)) {
+      console.log(`[mg-pipeline] v0.6.2 RETRY WITH SUMMARY: publish failed (${failMsg}), retrying with shorter caption...`);
+      try {
+        const MG_RETRY_LIMIT = MG_LIMIT - 200;
+        const retryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, MG_RETRY_LIMIT);
+        if (retryRes.ok && retryRes.text) {
+          const { text: retryBody, parseMode: retryParseMode } = formatPost(retryRes.text, {
+            footer: null, engineName: "html", intensity: settings.edit_intensity ?? 60, emojiLevel: settings.emoji_level ?? 20,
+          });
+          let retrySafeBody = retryBody;
+          if (retryBody.length > maxBodyLen) {
+            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "\n\n<i>…</i>");
+          }
+          const retryText = retrySafeBody + footerHtml;
+          console.log(`[mg-pipeline] retry: original=${formattedText.length} chars, summarized=${retryText.length} chars`);
+
+          // Re-build mediaItems with the new caption
+          const retryMediaItems = items.map((it, i) => ({
+            type: it.type, fileId: it.fileId,
+            caption: i === 0 ? retryText : undefined,
+          }));
+
+          // Re-publish (in the same mode)
+          if (settings.scheduling_enabled) {
+            const retryResolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+            const retrySchedTime = Math.floor((Date.now() + 90 * 1000) / 1000);
+            const retrySchedRes = await sendMediaGroup(env.BOT_TOKEN, retryResolvedChannel, retryMediaItems, {
+              parse_mode: retryParseMode,
+              schedule_date: retrySchedTime,
+            });
+            const retryVer = verifyScheduled(retrySchedRes, retrySchedTime);
+            publishOk = retrySchedRes.ok && retryVer.scheduled;
+            if (publishOk) {
+              wasScheduled = true;
+              scheduledTime = retrySchedTime * 1000;
+              scheduleError = null;
+            } else {
+              scheduleError = retryVer.description || retrySchedRes.description || "retry scheduling failed";
+            }
+          } else {
+            const retryPubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, retryMediaItems, { parse_mode: retryParseMode });
+            publishOk = retryPubRes.ok;
+            console.log(`[mg-pipeline] retry publish: ${publishOk ? "OK" : retryPubRes.description}`);
+          }
+
+          // Send retry version to user too
+          if (feedbackChatId) {
+            await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, retryMediaItems, { parse_mode: retryParseMode }).catch(() => {});
+          }
+
+          finalText = retryRes.text;
+          wasRewritten = true;
+          aiProvider = retryRes.provider || "summary-retry";
+          aiError = null;
+        }
+      } catch (e) {
+        console.error(`[mg-pipeline] retry-with-summary exception: ${e.message}`);
+      }
+    }
   }
 
   if (publishOk) {
@@ -564,30 +600,8 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Clean
   const cleanedText = cleanContent(rawText);
-
-  // v0.5.14: Protect AI image generation prompts from being destroyed by AI
-  // Detects long blocks with prompt keywords (photorealistic, --ar, etc.)
-  // and replaces them with placeholders before AI rewrite
-  const { text: protectedText, prompts: protectedPrompts } = protectPrompts(cleanedText);
-  if (protectedPrompts.length > 0) {
-    console.log(`[pipeline] protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
-  }
-
-  // v0.5.16: CRITICAL FIX — If protectedText is mostly placeholders (>80%),
-  // the AI has nothing to work with and will return empty/garbage output.
-  // In this case, SKIP AI rewrite entirely and use the original cleanedText.
-  // v0.5.17: Changed threshold — only skip if non-placeholder text is <50 chars
-  // (was 20% of original, which was too aggressive for posts with Persian intro)
-  const placeholderCount = (protectedText.match(/__PROMPT_BLOCK_\d+__/g) || []).length;
-  const nonPlaceholderText = protectedText.replace(/__PROMPT_BLOCK_\d+__/g, "").trim();
-  const isMostlyPlaceholders = nonPlaceholderText.length < 50 && placeholderCount > 0;
-
-  if (isMostlyPlaceholders) {
-    console.log(`[pipeline] ⚠️ Text is mostly prompt placeholders (${placeholderCount} blocks, only ${nonPlaceholderText.length} chars of non-prompt text). Skipping AI rewrite.`);
-  }
-
-  const textForAI = replyContext + protectedText;
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${protectedPrompts.length > 0 ? ` (${protectedPrompts.length} prompts protected${isMostlyPlaceholders ? ", SKIP AI" : ""})` : ""}`);
+  const textForAI = replyContext + cleanedText;
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
 
   // AI rewrite
   let finalText = cleanedText;
@@ -599,47 +613,33 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
-  // v0.5.21: REMOVED auto-summarization trigger.
-  // The bot should NEVER summarize on its own. It should only use "rewrite" mode.
-  // Summarization will happen ONLY if the formatted text exceeds Telegram's limit
-  // AND the bot gets an error from Telegram when trying to publish.
-  // (See the retry-with-summary logic in the publish section below.)
-  // v0.5.22: Use ACTUAL Telegram limits (not conservative estimates)
-  // Telegram text limit: 4096 chars, caption limit: 1024 chars
+  // v0.5.9: Better long-post handling
   const hasMedia = !!content.mediaFileId;
-  const TELEGRAM_TEXT_LIMIT = 4096;
-  const TELEGRAM_CAPTION_LIMIT = 1024;
+  const TELEGRAM_TEXT_LIMIT = 4000;
+  const TELEGRAM_CAPTION_LIMIT = 900;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
+  // Lower threshold to trigger summary EARLIER (80% of limit)
+  const SUMMARY_TRIGGER = hasMedia ? 700 : 3000;
   let finalMode = effectiveRewriteMode;
-  // v0.5.21: Do NOT force summary based on text length. Only use the user's rewrite_mode setting.
-  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0 && !isMostlyPlaceholders;
-  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, limit=${effectiveLimit})`);
+  if (cleanedText.length > SUMMARY_TRIGGER) {
+    finalMode = "summary";
+    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${SUMMARY_TRIGGER}${hasMedia ? " [MEDIA]" : ""}, limit=${effectiveLimit})`);
+  }
+  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
+  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, trigger=${SUMMARY_TRIGGER})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
       if (finalMode === "summary") {
+        // v0.5.9: Pass target character limit to AI so output fits within Telegram's limit
         const targetCharLimit = effectiveLimit - 150;
         const res = await aiSummarize(env, settings, textForAI, effectiveLang, targetCharLimit);
         if (res.ok && res.text) {
-          // v0.5.14: AI OVER-SUMMARIZATION GUARD
-          // Free AI models are terrible at character counting and may shrink
-          // a 3900-char post to 1000 chars. If AI output is less than 60% of
-          // the original, REJECT it and use the original text instead.
-          // truncateHtml will handle the slight overflow safely.
-          const aiOutputLen = res.text.length;
-          const originalLen = cleanedText.length;
-          if (aiOutputLen < originalLen * 0.60 && originalLen <= 4500) {
-            console.warn(`[pipeline] ⚠️ AI over-summarized: ${aiOutputLen} chars (was ${originalLen}). Rejecting AI output, using original.`);
-            finalText = cleanedText; // Revert to original
-            wasRewritten = false;
-            traceStep("ai_summarize_rejected", true, `AI shrunk ${originalLen}→${aiOutputLen} (>40% loss), using original`);
-          } else {
-            finalText = res.text;
-            wasRewritten = true;
-            aiProvider = res.provider;
-            traceStep("ai_summarize", true, `provider=${res.provider} ${res.text.length}chars (target=${targetCharLimit})`);
-          }
+          finalText = res.text;
+          wasRewritten = true;
+          aiProvider = res.provider;
+          traceStep("ai_summarize", true, `provider=${res.provider} ${res.text.length}chars (target=${targetCharLimit})`);
         } else {
           aiError = res.error;
           traceStep("ai_summarize", false, res.error || "unknown");
@@ -664,13 +664,6 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     traceStep("ai_skip", true, `mode=${finalMode}`);
   }
 
-  // v0.5.14: Restore protected AI prompt blocks AFTER AI rewrite
-  // This ensures prompts are preserved exactly as-is in the final output
-  if (protectedPrompts.length > 0) {
-    finalText = restorePrompts(finalText, protectedPrompts);
-    console.log(`[pipeline] restored ${protectedPrompts.length} AI prompt block(s) after AI rewrite`);
-  }
-
   // Format WITHOUT footer first, then truncate, then add footer.
   // Step 1: Format the body text (no footer yet)
   const { text: formattedBody, parseMode } = formatPost(finalText, {
@@ -686,132 +679,19 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
-  let maxBodyLen = effectiveLimit - footerLen - 10; // v0.5.22: Minimal margin (was 50)
+  const maxBodyLen = effectiveLimit - footerLen - 50;
 
-  // v0.5.17: If maxBodyLen is too small, skip footer
-  let effectiveFooterHtml = footerHtml;
-  let effectiveFooterLen = footerLen;
-  if (maxBodyLen < 200) {
-    console.warn(`[pipeline] ⚠️ maxBodyLen too small (${maxBodyLen})! Skipping footer.`);
-    effectiveFooterHtml = "";
-    effectiveFooterLen = 0;
-    maxBodyLen = effectiveLimit - 10;
-  }
-
-  // Step 3: v0.5.24 — Handle long posts:
-  //   - Media posts: AI summary (can't split photo+caption)
-  //   - Text posts: Try to SPLIT into balanced parts. If 2nd part is too small (<200 chars),
-  //     use AI summary instead. Split parts reply to each other.
+  // Step 3: v0.5.9 TASK 6 — Use safe truncateHtml() instead of brittle regex
   let safeBody = formattedBody;
-  let extraParts = []; // Additional parts to send after the main post
-
   if (formattedBody.length > maxBodyLen) {
-    if (hasMedia) {
-      // v0.5.23: Media posts — use AI summary
-      console.warn(`[pipeline] caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
-      try {
-        const targetCharLimit = maxBodyLen - 50;
-        const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
-        if (summaryRes.ok && summaryRes.text) {
-          let summaryText = summaryRes.text;
-          if (protectedPrompts.length > 0) {
-            summaryText = restorePrompts(summaryText, protectedPrompts);
-          }
-          const { text: summaryFormatted } = formatPost(summaryText, {
-            footer: null, engineName: "html", intensity: 40, emojiLevel: 10,
-          });
-          if (summaryFormatted.length > 0 && summaryFormatted.length < formattedBody.length) {
-            safeBody = summaryFormatted;
-            wasRewritten = true;
-            aiProvider = summaryRes.provider;
-            console.log(`[pipeline] AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
-          } else {
-            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-          }
-        } else {
-          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-        }
-      } catch (e) {
-        console.error(`[pipeline] AI summary exception: ${e.message}`);
-        safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-      }
-    } else {
-      // v0.5.24: Text posts — try balanced split first
-      console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen})`);
-
-      // Try to split into 2 balanced parts
-      const halfPoint = Math.floor(formattedBody.length / 2);
-      // Find best split point near the middle (paragraph > newline > sentence > space)
-      let bestSplit = formattedBody.lastIndexOf("\n\n", halfPoint);
-      if (bestSplit < halfPoint * 0.4) bestSplit = formattedBody.lastIndexOf("\n", halfPoint);
-      if (bestSplit < halfPoint * 0.4) {
-        bestSplit = Math.max(
-          formattedBody.lastIndexOf(". ", halfPoint),
-          formattedBody.lastIndexOf("! ", halfPoint),
-          formattedBody.lastIndexOf("? ", halfPoint),
-          formattedBody.lastIndexOf("۔ ", halfPoint),
-        );
-      }
-      if (bestSplit < halfPoint * 0.3) bestSplit = formattedBody.lastIndexOf(" ", halfPoint);
-      if (bestSplit < 100) bestSplit = halfPoint;
-
-      const part1 = formattedBody.slice(0, bestSplit).trim();
-      const part2 = formattedBody.slice(bestSplit).trim();
-
-      // v0.5.24: If part2 is too small (<200 chars), use AI summary instead of split
-      if (part2.length < 200 || part1.length > maxBodyLen) {
-        console.warn(`[pipeline] split would be unbalanced (p1=${part1.length}, p2=${part2.length}). Using AI summary...`);
-        try {
-          const targetCharLimit = maxBodyLen - 50;
-          const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
-          if (summaryRes.ok && summaryRes.text) {
-            let summaryText = summaryRes.text;
-            if (protectedPrompts.length > 0) {
-              summaryText = restorePrompts(summaryText, protectedPrompts);
-            }
-            const { text: summaryFormatted } = formatPost(summaryText, {
-              footer: null, engineName: "html", intensity: 40, emojiLevel: 10,
-            });
-            if (summaryFormatted.length > 0 && summaryFormatted.length <= maxBodyLen) {
-              safeBody = summaryFormatted;
-              wasRewritten = true;
-              aiProvider = summaryRes.provider;
-              console.log(`[pipeline] AI summary OK: ${formattedBody.length}→${safeBody.length} chars`);
-            } else {
-              safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-            }
-          } else {
-            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-          }
-        } catch (e) {
-          console.error(`[pipeline] AI summary exception: ${e.message}`);
-          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
-        }
-      } else {
-        // Split is balanced — use it
-        safeBody = part1;
-        extraParts.push(part2);
-        console.log(`[pipeline] balanced split: p1=${part1.length}, p2=${part2.length}`);
-        traceStep("split_post", true, `${formattedBody.length} chars → 2 parts (balanced)`);
-      }
-    }
+    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
+    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
+    traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
   }
 
-  // Step 4: Append footer (may be empty if maxBodyLen was too small)
-  let safeFormattedText = safeBody + effectiveFooterHtml;
-  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${effectiveFooterLen})`);
-
-  // v0.5.16: CRITICAL SAFETY CHECK — Never send empty output
-  // If formatting produced empty/near-empty text, fall back to cleanedText
-  if (!safeFormattedText.trim() || safeFormattedText.trim().length < 10) {
-    console.error(`[pipeline] ⚠️ formatted text is empty (${safeFormattedText.length} chars)! Falling back to cleanedText.`);
-    const fallbackFormatted = formatPost(cleanedText, {
-      footer: settings.footer_text, engineName: "html", intensity: 40, emojiLevel: 10,
-    });
-    safeBody = fallbackFormatted.text || cleanedText.slice(0, effectiveLimit - footerLen - 50);
-    safeFormattedText = safeBody + footerHtml;
-    traceStep("format_fallback", true, `fallback to cleanedText: ${safeFormattedText.length} chars`);
-  }
+  // Step 4: Append footer
+  const safeFormattedText = safeBody + footerHtml;
+  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;
@@ -823,101 +703,6 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Send to user
   if (feedbackChatId) {
-    // v0.5.24: If approve mode is ON, send preview with approve/reject buttons
-    if (settings.approve_enabled && !settings.scheduling_enabled) {
-      console.log(`[pipeline] approve mode ON — sending preview with buttons`);
-
-      // Send preview to user
-      const previewRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
-        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-        extra: {
-          parse_mode: parseMode,
-          disable_web_page_preview: false,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:PREVIEW_ID` },
-                { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:PREVIEW_ID` },
-              ],
-            ],
-          },
-        },
-      });
-
-      if (previewRes.ok) {
-        const previewMsgId = previewRes.result?.message_id;
-        // Fix the callback_data with actual message ID
-        // We need to edit the message to update the callback_data
-        // Actually, Telegram doesn't allow editing reply_markup without resending...
-        // Better approach: store the post data in KV with the preview message ID,
-        // and use a generic callback that looks up the data.
-
-        // Store post data in KV
-        const storageKey = `approve:${previewMsgId}`;
-        const postData = {
-          text: safeFormattedText,
-          mediaType: content.mediaType,
-          mediaFileId: content.mediaFileId,
-          parseMode,
-          targetChannel,
-          extraParts,
-          footerHtml: effectiveFooterHtml,
-          createdAt: Date.now(),
-        };
-        await SETTINGS.put(storageKey, JSON.stringify(postData), { expirationTtl: 3600 });
-
-        // Now edit the message to fix the callback_data with real message ID
-        await editMessageText(env.BOT_TOKEN, feedbackChatId, previewMsgId,
-          safeFormattedText + (content.mediaType ? "" : ""), // Can't edit caption of photo message
-          {
-            parse_mode: parseMode,
-            disable_web_page_preview: false,
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
-                  { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
-                ],
-              ],
-            },
-          }
-        ).catch(() => {}); // May fail for media messages (can't edit caption with editMessageText)
-
-        // If it's a media message, we can't edit the caption's reply_markup via editMessageText.
-        // For media messages, we need to use editMessageCaption. But for simplicity,
-        // let's just send a separate message with the buttons.
-        if (content.mediaType) {
-          await sendMessage(env.BOT_TOKEN, feedbackChatId,
-            `<b>👇 Review the post above</b>`,
-            {
-              parse_mode: "HTML",
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
-                    { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
-                  ],
-                ],
-              },
-            }
-          );
-        }
-
-        traceStep("approve_preview", true, `preview msg=${previewMsgId}`);
-      }
-
-      // Skip actual publishing — it will happen when user clicks "Publish"
-      if (feedbackChatId && processingMsgId) {
-        const totalMs = Date.now() - startTime;
-        await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
-          `⏸️ <b>Waiting for approval</b>\n\nReview the preview above and click <b>✅ Publish</b> or <b>❌ Reject</b>.`,
-          { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
-      }
-      return { ok: true, detail: "approve: waiting for user approval" };
-    }
-
-    // Normal: send preview to user
     const userRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
       text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
@@ -928,18 +713,16 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     }
   }
 
-  // v0.5.14: SILENT CRON FALLBACK scheduling
-  // Primary: native Telegram schedule_date
-  // Fallback: if native fails (verifyScheduled returns false), silently enqueue
-  //           to KV cron queue. User sees "📅 Scheduled!" regardless.
+  // v0.5.9 TASK 1: NATIVE-ONLY SCHEDULING (NO cron fallback)
+  // If native scheduling fails, show error to user. Do NOT enqueue to KV.
   let publishRes;
   let scheduledTime = null;
   let wasScheduled = false;
   let scheduleError = null;
-  let usedCronFallback = false;
 
   if (settings.scheduling_enabled) {
     try {
+      // v0.5.9 TASK 2: Detailed logging at every step
       const botId = await getBotId(env);
       console.log(`[sched] Step 1: Checking permissions for ${targetChannel}...`);
       const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
@@ -973,62 +756,43 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         }
 
         const scheduleDateUnix = Math.floor(scheduledTime / 1000);
+        // v0.5.9 TASK 2: Log all scheduling parameters
         console.log(`[sched] Step 2: schedule_date=${scheduleDateUnix} (${new Date(scheduledTime).toISOString()}), now=${Math.floor(now/1000)}, diff=${Math.floor((scheduledTime-now)/1000)}s`);
 
         await setLastScheduledTime(SETTINGS, targetChannel, scheduledTime);
 
-        // v0.5.10: Resolve @username to numeric chat_id
+        // v0.5.10 TASK 1: Resolve @username to numeric chat_id (CRITICAL for scheduling)
+        // Telegram silently ignores schedule_date when chat_id is a @username
         console.log(`[sched] Step 2.5: Resolving channel ${targetChannel} to numeric ID...`);
         const resolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
         console.log(`[sched] Step 2.5: Resolved → ${resolvedChannel}`);
 
-        // v0.5.12: NO disable_web_page_preview with schedule_date
-        console.log(`[sched] Step 3: Calling publishToChannel with schedule_date...`);
+        // v0.5.10 TASK 1: Do NOT send disable_web_page_preview with schedule_date
+        // (causes Telegram to silently ignore schedule_date and send immediately)
+        console.log(`[sched] Step 3: Calling publishToChannel with schedule_date (NO disable_web_page_preview)...`);
         publishRes = await publishToChannel(env.BOT_TOKEN, resolvedChannel, {
           text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
           extra: { parse_mode: parseMode, schedule_date: scheduleDateUnix },
         });
 
+        // v0.5.9 TASK 2: Log the FULL Telegram response
         console.log(`[sched] Step 4: Telegram response:`, JSON.stringify(publishRes).slice(0, 600));
 
         // Verify Telegram actually scheduled it
         const verification = verifyScheduled(publishRes, scheduleDateUnix);
-        console.log(`[sched] Verification: scheduled=${verification.scheduled}, reason=${verification.reason}, diffSeconds=${verification.diffSeconds || 0}`);
+        // v0.5.9 TASK 2: Log verification details
+        console.log(`[sched] Verification: scheduled=${verification.scheduled}, reason=${verification.reason}, actualDate=${verification.actualDate}, expectedDate=${verification.expectedDate || scheduleDateUnix}, diffSeconds=${verification.diffSeconds || 0}`);
 
         if (publishRes.ok && verification.scheduled) {
           wasScheduled = true;
           console.log(`[sched] ✓ Native scheduling VERIFIED`);
         } else {
-          // v0.5.14: SILENT CRON FALLBACK — don't show error, just queue it
-          // v0.5.15: Respect cron_fallback_enabled setting
-          const cronEnabled = settings.cron_fallback_enabled !== false;
-          if (!cronEnabled) {
-            console.warn(`[sched] ⚠️ Native scheduling failed and cron fallback is OFF. Showing error.`);
-            scheduleError = verification.description || publishRes.description || "Scheduling failed (cron fallback disabled)";
-            publishRes.scheduleError = scheduleError;
-            wasScheduled = false;
-          } else {
-            console.warn(`[sched] ⚠️ Native scheduling failed (${verification.reason}). Using SILENT cron fallback.`);
-            usedCronFallback = true;
-
-            const schedId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-            await enqueueScheduled(SETTINGS, {
-              id: schedId,
-              scheduledTime,
-              chatId: resolvedChannel, // Use numeric chatId
-              text: safeFormattedText,
-              mediaType: content.mediaType,
-              mediaFileId: content.mediaFileId,
-              parseMode,
-              adminId,
-              notifyChatId: feedbackChatId,
-              createdAt: Date.now(),
-            });
-            // Tell the user it's scheduled — they don't know it's via cron
-            publishRes = { ok: true, scheduled: true };
-            wasScheduled = true;
-            traceStep("cron_fallback", true, `id=${schedId}`);
-          }
+          // v0.5.9 TASK 1: NO cron fallback — just show error
+          scheduleError = verification.description || publishRes.description || "unknown scheduling failure";
+          console.error(`[sched] ✗ Scheduling FAILED: ${scheduleError}`);
+          console.error(`[sched] (NO fallback — user must fix permissions or schedule time)`);
+          publishRes.scheduleError = scheduleError;
+          wasScheduled = false;
         }
       }
     } catch (e) {
@@ -1042,59 +806,78 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
     });
   }
+  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (wasScheduled ? "scheduled" : "ok") : (publishRes.scheduleError || publishRes.description));
 
-  // v0.5.21: RETRY WITH SUMMARY — if publishing fails because the text is too long,
-  // automatically summarize and retry. This is the ONLY time summarization happens.
-  if (!publishRes.ok && !settings.scheduling_enabled) {
-    const errDesc = (publishRes.description || "").toLowerCase();
-    const isTooLongError = errDesc.includes("too long") || errDesc.includes("message is too long") || errDesc.includes("caption is too long") || errDesc.includes("400");
-
-    if (isTooLongError && !wasRewritten) {
-      console.warn(`[pipeline] ⚠️ Publish failed (too long: ${safeFormattedText.length} chars). Retrying with AI summary...`);
-      traceStep("retry_summary_start", false, `text too long: ${safeFormattedText.length} chars`);
-
+  // v0.6.2: RETRY WITH SUMMARY — if publish fails with "too long" error,
+  // try again with a shorter summarized version. Works regardless of
+  // scheduling_enabled (previously was restricted to non-scheduling path).
+  if (!publishRes.ok) {
+    const errMsg = String(publishRes.description || publishRes.scheduleError || "");
+    if (/too long|too_long|TOO_LONG|caption/i.test(errMsg)) {
+      console.log(`[pipeline] v0.6.2 RETRY WITH SUMMARY: publish failed (${errMsg}), retrying with shorter version...`);
       try {
-        const targetCharLimit = effectiveLimit - 200;
-        const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
-        if (summaryRes.ok && summaryRes.text) {
-          // Restore prompts in the summary too
-          let summaryText = summaryRes.text;
-          if (protectedPrompts.length > 0) {
-            summaryText = restorePrompts(summaryText, protectedPrompts);
-          }
-
-          const { text: summaryFormatted, parseMode: summaryParseMode } = formatPost(summaryText, {
-            footer: settings.footer_text, engineName: "html", intensity: 40, emojiLevel: 10,
+        const retryTargetLimit = effectiveLimit - 300;
+        const retryRes = await aiSummarize(env, settings, textForAI, effectiveLang, retryTargetLimit);
+        if (retryRes.ok && retryRes.text) {
+          const { text: retryBody, parseMode: retryParseMode } = formatPost(retryRes.text, {
+            footer: null, engineName: "html", intensity, emojiLevel,
           });
-
-          // Truncate if still too long
-          let summarySafe = summaryFormatted;
-          if (summaryFormatted.length > effectiveLimit - 50) {
-            summarySafe = truncateHtml(summaryFormatted, effectiveLimit - 50, ""); // v0.5.23: No … marker
+          let retrySafeBody = retryBody;
+          if (retryBody.length > maxBodyLen) {
+            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "\n\n<i>…</i>");
           }
+          const retryText = retrySafeBody + footerHtml;
+          console.log(`[pipeline] retry: original=${safeFormattedText.length} chars, summarized=${retryText.length} chars`);
 
-          console.log(`[pipeline] Summary generated: ${summarySafe.length} chars (was ${safeFormattedText.length})`);
-          publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-            text: summarySafe, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
-            extra: { parse_mode: summaryParseMode, disable_web_page_preview: false },
-          });
-
-          if (publishRes.ok) {
-            wasRewritten = true;
-            aiProvider = summaryRes.provider;
-            traceStep("retry_summary_ok", true, `summarized to ${summarySafe.length} chars`);
+          // Re-publish in the same mode (scheduled or non-scheduled)
+          if (settings.scheduling_enabled) {
+            // Re-resolve channel (cached) and re-attempt scheduling with fresh time
+            const retryResolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+            const retrySchedTime = Math.floor((Date.now() + 90 * 1000) / 1000);
+            publishRes = await publishToChannel(env.BOT_TOKEN, retryResolvedChannel, {
+              text: retryText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+              extra: { parse_mode: retryParseMode, schedule_date: retrySchedTime },
+            });
+            // Re-verify scheduling
+            const retryVer = verifyScheduled(publishRes, retrySchedTime);
+            if (publishRes.ok && retryVer.scheduled) {
+              wasScheduled = true;
+              scheduledTime = retrySchedTime * 1000;
+              scheduleError = null;
+              publishRes.scheduleError = null;
+            } else {
+              scheduleError = retryVer.description || publishRes.description || "retry scheduling failed";
+              publishRes.scheduleError = scheduleError;
+            }
           } else {
-            traceStep("retry_summary_fail", false, publishRes.description || "unknown");
+            publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+              text: retryText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+              extra: { parse_mode: retryParseMode, disable_web_page_preview: false },
+            });
           }
+
+          // Send the retry version to user too (so they see what was actually published)
+          if (feedbackChatId) {
+            await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+              text: retryText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+              extra: { parse_mode: retryParseMode, disable_web_page_preview: false },
+            }).catch(() => {});
+          }
+
+          finalText = retryRes.text;
+          wasRewritten = true;
+          aiProvider = retryRes.provider || "summary-retry";
+          aiError = null;
+          traceStep("retry_summary", publishRes.ok, `retry ${publishRes.ok ? "ok" : "failed"}: ${retryText.length} chars`);
+        } else {
+          traceStep("retry_summary", false, retryRes.error || "summarize failed");
         }
-      } catch (summaryErr) {
-        console.error(`[pipeline] Summary retry failed: ${summaryErr.message}`);
-        traceStep("retry_summary_error", false, summaryErr.message);
+      } catch (e) {
+        traceStep("retry_summary", false, e.message);
+        console.error(`[pipeline] retry-with-summary exception: ${e.message}`);
       }
     }
   }
-
-  traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (wasScheduled ? "scheduled" : "ok") : (publishRes.scheduleError || publishRes.description));
 
   if (publishRes.ok) {
     await bumpStats(SETTINGS, adminId, "processed");
@@ -1150,37 +933,6 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         ].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
-
-    // v0.5.24: Send extra parts (if the post was split)
-    // Part 2 replies to Part 1 for continuity
-    if (extraParts.length > 0 && !settings.scheduling_enabled) {
-      console.log(`[pipeline] sending ${extraParts.length} extra part(s)...`);
-      // Get the message_id of the first post for reply
-      const firstMsgId = publishRes?.result?.message_id;
-      for (let i = 0; i < extraParts.length; i++) {
-        const partText = extraParts[i];
-        const isLast = i === extraParts.length - 1;
-        const partFooter = isLast ? effectiveFooterHtml : "";
-        const partTextWithFooter = partText + partFooter;
-
-        console.log(`[pipeline] sending part ${i + 2}/${extraParts.length + 1} (${partTextWithFooter.length} chars, reply_to=${firstMsgId})`);
-        const partRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
-          text: partTextWithFooter, mediaType: null, mediaFileId: null,
-          extra: {
-            parse_mode: parseMode,
-            disable_web_page_preview: false,
-            reply_to_message_id: firstMsgId, // v0.5.24: Reply to first part
-          },
-        }).catch((e) => ({ ok: false, description: e.message }));
-
-        if (!partRes.ok) {
-          console.error(`[pipeline] part ${i + 2} failed: ${partRes.description}`);
-        }
-        if (!isLast) await new Promise((r) => setTimeout(r, 500));
-      }
-      traceStep("extra_parts_sent", true, `${extraParts.length} parts (reply chain)`);
-    }
-
     return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };
   } else {
     await bumpStats(SETTINGS, adminId, "failed");

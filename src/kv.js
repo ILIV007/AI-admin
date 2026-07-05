@@ -1,13 +1,12 @@
 /**
  * src/kv.js
- * Cloudflare KV helpers — v0.6.0
+ * Cloudflare KV helpers — v0.5.9
  *
- * Includes:
- *   - Settings storage (per-admin)
- *   - In-memory stats batching (reduces KV writes)
- *   - Media group buffering (per-item keys, no race condition)
- *   - Cron-based scheduling queue (silent fallback when native fails)
- *   - Last scheduled timestamp tracking (for interval calculation)
+ * v0.5.9 changes:
+ *   - REMOVED cron-based scheduling queue (enqueueScheduled, listDueScheduled,
+ *     deleteScheduledItem, SCHED_QUEUE_PREFIX) — user wants native-only scheduling
+ *   - ADDED in-memory stats batching to reduce KV writes (TASK 4)
+ *   - Kept getLastScheduledTime / setLastScheduledTime (still needed for interval tracking)
  */
 
 const KEY_ADMIN = (id) => `admin:${id}`;
@@ -28,10 +27,6 @@ export const DEFAULTS = Object.freeze({
   schedule_delay_hours: 24,
   schedule_interval_minutes: 30,
   schedule_posts_per_day: 0,
-  // v0.5.15: Cron fallback toggle (default ON)
-  cron_fallback_enabled: true,
-  // v0.5.24: Approve mode — bot shows approve button before publishing
-  approve_enabled: false,
   stats: { processed: 0, rewritten: 0, failed: 0 },
 });
 
@@ -84,7 +79,7 @@ export async function updateSetting(SETTINGS, adminId, key, value) {
 }
 
 // ============================================================
-// BATCHED STATS — reduces KV writes drastically
+// v0.5.9 TASK 4: BATCHED STATS — reduces KV writes drastically
 // ============================================================
 // Problem: Free tier = 1,000 KV writes/day. Old code did Read+Write
 // on EVERY pipeline run (bumpStats + bumpGlobalStats = 4 writes per post).
@@ -258,65 +253,6 @@ export async function deleteMediaGroup(SETTINGS, groupId) {
   }
 }
 
-// ============================================================
-// CRON-BASED SCHEDULING QUEUE (SILENT FALLBACK)
-// ============================================================
-// Telegram silently drops schedule_date for some channels/bots, returning
-// ok:true but sending immediately. Since we can't rely on native scheduling,
-// we use the KV Cron Queue as a SILENT FALLBACK.
-//
-// When native scheduling fails (verifyScheduled returns false), we silently
-// enqueue the message here. The cron trigger (every 1 minute) picks up due
-// messages and sends them via regular sendMessage.
-//
-// The user sees "📅 Scheduled!" — they don't know it's via cron.
-// ============================================================
-const SCHED_QUEUE_PREFIX = "sched:queue:";
-
-export async function enqueueScheduled(SETTINGS, item) {
-  if (!SETTINGS || !item || !item.scheduledTime || !item.id) return;
-  try {
-    const key = `${SCHED_QUEUE_PREFIX}${item.scheduledTime}:${item.id}`;
-    await SETTINGS.put(key, JSON.stringify(item), { expirationTtl: 7 * 24 * 3600 });
-    console.log(`[kv] silent cron fallback: enqueued ${key} → ${new Date(item.scheduledTime).toISOString()}`);
-  } catch (e) {
-    console.error("[kv] enqueueScheduled failed:", e.message);
-  }
-}
-
-export async function listDueScheduled(SETTINGS) {
-  if (!SETTINGS) return [];
-  try {
-    const now = Date.now();
-    const list = await SETTINGS.list({ prefix: SCHED_QUEUE_PREFIX, limit: 100 });
-    const due = [];
-    for (const key of list.keys) {
-      const parts = key.name.split(":");
-      const ts = parseInt(parts[2], 10);
-      if (ts <= now) {
-        const raw = await SETTINGS.get(key.name);
-        if (raw) {
-          try {
-            const item = JSON.parse(raw);
-            item._kvKey = key.name;
-            due.push(item);
-          } catch {}
-        }
-      }
-    }
-    due.sort((a, b) => a.scheduledTime - b.scheduledTime);
-    return due;
-  } catch (e) {
-    console.error("[kv] listDueScheduled failed:", e.message);
-    return [];
-  }
-}
-
-export async function deleteScheduledItem(SETTINGS, kvKey) {
-  if (!SETTINGS || !kvKey) return;
-  try {
-    await SETTINGS.delete(kvKey);
-  } catch (e) {
-    console.error("[kv] deleteScheduledItem failed:", e.message);
-  }
-}
+// NOTE: v0.5.9 — Cron-based scheduling queue functions REMOVED per user request.
+// Only native Telegram schedule_date is used now. If native fails, the bot
+// shows an error to the user (no KV-based fallback).

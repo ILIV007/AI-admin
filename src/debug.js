@@ -1,12 +1,14 @@
 /**
  * src/debug.js
- * Debug dashboard + logging utilities for AI Admin — v0.6.0
+ * Debug dashboard + logging utilities for AI Admin — v0.5.11
  *
- * Conditional KV writes: logUpdate / logError / logRawRequest only write
- * to KV if env.DEBUG_MODE === "true". Otherwise they just console.log.
- * This drastically reduces KV writes on the free tier (1,000/day limit).
- * When DEBUG_MODE is on, logs overwrite a single key with the latest 30
- * entries (no append → still 1 write per event, but bounded).
+ * v0.5.9 (TASK 4): Conditional KV writes.
+ *   - logUpdate / logError / logRawRequest now only write to KV if
+ *     env.DEBUG_MODE === "true". Otherwise they just console.log.
+ *   - This drastically reduces KV writes on the free tier (1,000/day limit).
+ *   - When DEBUG_MODE is on, logs overwrite a single key with the latest 30
+ *     entries (no append → still 1 write per event, but bounded).
+ * v0.5.11: Debug dashboard updated to show version + scheduling info.
  */
 
 const DEBUG_MAX_ENTRIES = 30;
@@ -15,7 +17,7 @@ const KEY_DEBUG_ERRORS = "debug:errors";
 const KEY_DEBUG_RAW = "debug:raw_requests";
 
 // ============================================================
-// Helper — should we write debug logs to KV?
+// v0.5.9: Helper — should we write debug logs to KV?
 // ============================================================
 // DEBUG_MODE is read from env at call time. We pass `env` into every
 // log function so we don't need a global. When DEBUG_MODE is falsy,
@@ -26,12 +28,12 @@ function debugModeEnabled(env) {
 }
 
 // ============================================================
-// LOGGING — Conditional on env.DEBUG_MODE
+// LOGGING — v0.5.9: Conditional on env.DEBUG_MODE
 // ============================================================
 
 /**
  * Log an update to the debug log.
- * Only writes to KV if env.DEBUG_MODE === "true".
+ * v0.5.9: Only writes to KV if env.DEBUG_MODE === "true".
  * Always writes to console.log regardless.
  */
 export async function logUpdate(SETTINGS, update, status, detail = "", env = null) {
@@ -63,7 +65,7 @@ export async function logUpdate(SETTINGS, update, status, detail = "", env = nul
 
 /**
  * Log an error to the debug log.
- * Only writes to KV if env.DEBUG_MODE === "true".
+ * v0.5.9: Only writes to KV if env.DEBUG_MODE === "true".
  * Errors are ALWAYS console.error'd regardless (so they show in CF dashboard).
  */
 export async function logError(SETTINGS, error, context = "", env = null) {
@@ -91,7 +93,7 @@ export async function logError(SETTINGS, error, context = "", env = null) {
 
 /**
  * Log a raw webhook request to the debug log.
- * Only writes to KV if env.DEBUG_MODE === "true".
+ * v0.5.9: Only writes to KV if env.DEBUG_MODE === "true".
  */
 export async function logRawRequest(SETTINGS, info, env = null) {
   // Light console.log always
@@ -450,7 +452,7 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
 <body>
 <div class="container">
   <div class="header">
-    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.6.1 — List Quotes + Prompt Detection + Approve Fix</div></div>
+    <div><h1>🔧 AI Admin — Debug</h1><div class="subtitle">v0.6.3 — AI Preserves Paragraph Structure + Anti-Hallucination</div></div>
     <button class="refresh-btn" onclick="loadStatus()">↻ Refresh</button>
   </div>
   <div id="issues" class="section" style="display:none;"><h2>⚠️ Issues</h2><ul class="issues" id="issues-list"></ul></div>
@@ -461,43 +463,19 @@ th { color: #8b949e; text-transform: uppercase; font-size: 0.8em; }
     <button class="btn" onclick="runTest('ai')">🤖 Test AI</button>
     <button class="btn btn-danger" onclick="clearLogs()">🗑️ Clear Logs</button>
   </div><div id="action-result" class="result"></div></div>
-  <div class="section"><h2>🔧 Pipeline Tests</h2><div class="actions">
-    <button class="btn" onclick="runPipelineTest('cron')">⏰ Test Cron Queue</button>
-    <button class="btn" onclick="runPipelineTest('ai_rewrite')">✍️ Test AI Rewrite</button>
-    <button class="btn" onclick="runPipelineTest('format')">📝 Test Formatter</button>
-    <button class="btn" onclick="runPipelineTest('clean')">🧹 Test Prompt Protection</button>
-    <button class="btn" onclick="runPipelineTest('scheduling')">📅 Test Scheduling</button>
-  </div><div id="pipeline-result" class="result"></div></div>
-  <div class="section"><h2>💬 Bot Commands (run in PV)</h2><div style="font-size:0.9em; line-height:2;">
-    <div><code>/start</code> — Admin panel (scheduling, AI, footer settings)</div>
-    <div><code>/checkperms</code> — Check bot permissions in channel</div>
-    <div><code>/debug_schedule</code> — Test scheduling (5 tests: HTML, Plain, Minimal, Raw API, Private Chat)</div>
-    <div><code>/test_cron</code> — Manually trigger cron queue processing</div>
-    <div><code>/test_ai</code> — Test AI rewrite with a sample post</div>
-    <div><code>/test_format</code> — Test formatter (collapsible quotes, prompts)</div>
-    <div><code>/test_clean</code> — Test prompt protection (Midjourney/SD detection)</div>
-    <div><code>/footer &lt;text&gt;</code> — Change footer text</div>
-    <div><code>/help</code> — Show all commands</div>
-  </div></div>
-  <div class="section"><h2>📅 Scheduling Info</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
-    <div><strong>Scheduling Methods:</strong></div>
+  <div class="section"><h2>📅 Scheduling Info (v0.5.12)</h2><div id="sched-info" style="font-size:0.9em; line-height:1.8;">
+    <div><strong>Commands:</strong> <code>/checkperms</code> — Check bot permissions | <code>/debug_schedule</code> — Test scheduling with 4 messages</div>
+    <div><strong>v0.5.12 Fixes (TRIPLE FIX):</strong></div>
     <ul style="margin-left:20px; margin-top:4px;">
-      <li><strong>Primary:</strong> Native Telegram <code>schedule_date</code> (posts in Scheduled Messages view)</li>
-      <li><strong>Fallback:</strong> KV Cron Queue (when Telegram silently drops schedule_date)</li>
+      <li>✅ Removed <code>parse_mode ?? "HTML"</code> default — was ALWAYS sending parse_mode with schedule_date</li>
+      <li>✅ Removed <code>disable_web_page_preview ?? false</code> default — was conflicting with schedule_date</li>
+      <li>✅ Cast <code>schedule_date</code> to <code>Number()</code> — prevents String/Float issues</li>
+      <li>✅ Added <code>invalidateChatIdCache()</code> — fresh resolution before scheduling</li>
+      <li>✅ <code>/debug_schedule</code> now runs 4 tests: HTML, Plain, Minimal, Raw API</li>
+      <li>✅ <code>tgCall</code> logs payload for all scheduling calls (for debugging)</li>
     </ul>
-    <div><strong>Features:</strong></div>
-    <ul style="margin-left:20px; margin-top:4px;">
-      <li>✅ <strong>Cron Fallback Toggle</strong> — Turn on/off from admin panel → Schedule Manager</li>
-      <li>✅ <strong>Test Commands</strong> — <code>/test_cron</code>, <code>/test_ai</code>, <code>/test_format</code>, <code>/test_clean</code></li>
-      <li>✅ <strong>Collapsible + Monospace Quotes</strong> — Prompts use <code>&lt;blockquote expandable="true"&gt;&lt;pre&gt;&lt;code&gt;</code></li>
-      <li>✅ <strong>Improved Prompt Detection</strong> — Lower threshold (150 chars), catches more formats</li>
-      <li>✅ <strong>Silent Cron Fallback</strong> — Auto-queues when native fails</li>
-      <li>✅ <strong>AI Over-Summarization Guard</strong> — Reject if shrunk &gt;40%</li>
-      <li>✅ <strong>Prompt Protection</strong> — via placeholders</li>
-      <li>✅ <strong>Word-safe truncation</strong></li>
-    </ul>
-    <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #3fb950;">
-      <strong>✅ Scheduling works!</strong> Even if Telegram drops <code>schedule_date</code>, cron fallback sends at the right time. Toggle it in <code>/start</code> → Schedule Manager.
+    <div style="margin-top:8px; padding:8px; background:#0d1117; border-radius:4px; border-left:3px solid #1f6feb;">
+      <strong>Key insight:</strong> If Test D (Raw API) also fails, it's a <strong>Telegram-side issue</strong> — not a code bug. The bot may need to be removed and re-added as admin.
     </div>
   </div></div>
   <div class="section"><h2>📡 Raw Requests</h2><div id="raw-table"><div class="empty">Loading...</div></div></div>
@@ -572,21 +550,6 @@ async function clearLogs() {
   try { const res = await fetch(BASE + "/debug/api/clear" + QS, { method: "POST" }); const data = await res.json(); r.innerHTML = JSON.stringify(data, null, 2); }
   catch (e) { r.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>'; }
   setTimeout(loadStatus, 500);
-}
-// Pipeline test functions — run from dashboard
-async function runPipelineTest(type) {
-  const r = document.getElementById("pipeline-result");
-  r.classList.add("show");
-  r.innerHTML = '<span class="spinner"></span> Running ' + type + '...';
-  try {
-    const res = await fetch(BASE + "/debug/api/test/" + type + QS, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "This is a test post about Cloudflare Workers. It should be rewritten nicely." })
-    });
-    const data = await res.json();
-    r.innerHTML = JSON.stringify(data, null, 2);
-  } catch (e) { r.innerHTML = '<span class="status-fail">Error: ' + esc(e.message) + '</span>'; }
 }
 loadStatus();
 setInterval(loadStatus, 15000);

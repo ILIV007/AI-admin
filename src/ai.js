@@ -1,64 +1,45 @@
 /**
  * src/ai.js
- * Unified AI client with MULTI-MODEL fallback — v0.6.0
+ * Unified AI client with MULTI-MODEL fallback — v0.5.9
  *
- * Multi-model race with AbortController: when the first provider succeeds,
- * all other in-flight requests are ABORTED. This prevents wasting tokens
- * and CPU on the other models that are still running.
- *
- * Hard rule: ONLY use COMPACT_REWRITE_PROMPT / COMPACT_SUMMARIZE_PROMPT
- * for API calls (under 800 tokens). Never pass buildEditorPrompt() output.
- * aiSummarize accepts targetCharLimit to fit Telegram limits.
- * Always include BOTH providers as fallback (preferred first).
+ * v0.5.9 changes (TASK 3):
+ *   - Added AbortController to aiComplete(): when the first provider succeeds,
+ *     all other in-flight requests are ABORTED. This prevents wasting tokens
+ *     and CPU on the 9 other models that are still running.
+ *   - Hard rule: ONLY use COMPACT_REWRITE_PROMPT / COMPACT_SUMMARIZE_PROMPT
+ *     for API calls (under 800 tokens). Never pass buildEditorPrompt() output.
+ *   - aiSummarize accepts targetCharLimit to fit Telegram limits.
+ *   - Static import of profiles (was dynamic — failed in CF Workers bundler).
+ *   - Always include BOTH providers as fallback (preferred first).
  */
 
-// STATIC import (dynamic import was failing in Cloudflare Workers bundler)
+// v0.5.7: STATIC import (dynamic import was failing in Cloudflare Workers bundler)
 import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // ============================================================
-// DEFAULT FREE MODELS — top 6 per provider
+// DEFAULT FREE MODELS on OpenRouter
 // ============================================================
-// User-provided list (2026-07) — top 6 selected and ranked by quality:
-//
-// Google Studio (Gemini):
-//   1. gemini-3-flash-preview         (newest, best quality)
-//   2. gemini-2.5-flash               (stable, reliable)
-//   3. gemini-3.1-flash-lite-preview  (cheap, fast)
-//   4. gemini-2.5-flash-lite          (cheapest stable)
-//   5. gemini-2.0-flash               (legacy fallback)
-//
-// OpenRouter (top 6 from user's list, ranked):
-//   1. meta-llama/llama-3.3-70b-instruct:free    (best quality, excellent Persian)
-//   2. qwen/qwen3-next-80b-a3b-instruct:free     (80B, strong all-rounder)
-//   3. google/gemma-4-31b-it:free                (fast, balanced, Google-backed)
-//   4. openai/gpt-oss-120b:free                  (120B, high quality)
-//   5. nousresearch/hermes-3-llama-3.1-405b:free (405B, largest model)
-//   6. nvidia/nemotron-3-ultra-550b-a55b:free    (550B, smartest)
-// ============================================================
-
-const GEMINI_MODELS = [
-  "gemini-3-flash-preview",
-  "gemini-2.5-flash",
-  "gemini-3.1-flash-lite-preview",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
-];
-
 const DEFAULT_OPENROUTER_MODELS = [
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "nvidia/nemotron-3-nano-30b-a3b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
   "google/gemma-4-31b-it:free",
-  "openai/gpt-oss-120b:free",
-  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "openai/gpt-oss-20b:free",
+  "google/gemma-4-26b-a4b-it:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "openrouter/free",
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "poolside/laguna-m.1:free",
 ];
 
 // ============================================================
 // SHARED: fetch with AbortController-based timeout
-// Accepts an EXTERNAL signal (for cancellation when another provider wins)
-// and merges it with an internal timeout signal.
+// v0.5.9: Now accepts an EXTERNAL signal (for cancellation when another
+// provider wins) and merges it with an internal timeout signal.
 // ============================================================
 
 /**
@@ -110,7 +91,7 @@ function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS, external
 }
 
 // ============================================================
-// GEMINI complete — accepts externalSignal for cancellation
+// GEMINI complete — v0.5.9: accepts externalSignal for cancellation
 // ============================================================
 async function geminiComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
@@ -145,7 +126,7 @@ async function geminiComplete(apiKey, model, { system, user, jsonMode = false },
 }
 
 // ============================================================
-// OPENROUTER complete — accepts externalSignal for cancellation
+// OPENROUTER complete — v0.5.9: accepts externalSignal for cancellation
 // ============================================================
 async function openRouterComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("OPENROUTER_API_KEY missing");
@@ -202,11 +183,11 @@ function getOpenRouterModels(env) {
 }
 
 // ============================================================
-// UNIFIED complete() — AbortController cancels losers
+// UNIFIED complete() — v0.5.9: AbortController cancels losers
 // ============================================================
-// CRITICAL FIX: Previously, when Promise.any resolved with the first
-// successful response, the other fetch requests kept running in the
-// background — wasting tokens, CPU, and bandwidth. Now we create a
+// CRITICAL FIX (TASK 3): Previously, when Promise.any resolved with the
+// first successful response, the other 9 fetch requests kept running in
+// the background — wasting tokens, CPU, and bandwidth. Now we create a
 // shared AbortController. The moment ANY provider succeeds, we call
 // controller.abort() to cancel all others. Losers get a CANCELLED error
 // which we silently ignore (it's intentional, not a real failure).
@@ -218,17 +199,16 @@ export async function aiComplete(env, settings, params) {
   const geminiProviders = [];
   const openRouterProviders = [];
 
-  // v0.5.19: Use new model lists — preferred provider's TOP 2 models first,
-  // then the OTHER provider's models as fallback.
-
   // 1. Gemini models
   if (env.GEMINI_API_KEY) {
-    // If user set GEMINI_MODEL env, put it first, then the rest of the list
-    const userModel = env.GEMINI_MODEL;
-    const geminiModels = userModel && !GEMINI_MODELS.includes(userModel)
-      ? [userModel, ...GEMINI_MODELS]
-      : GEMINI_MODELS;
-    for (const model of geminiModels) {
+    const geminiModels = [
+      env.GEMINI_MODEL || "gemini-2.5-flash",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.0-flash",
+    ];
+    const uniqueGeminiModels = [...new Set(geminiModels)];
+    for (const model of uniqueGeminiModels) {
       geminiProviders.push({
         name: "gemini",
         model: model,
@@ -247,20 +227,12 @@ export async function aiComplete(env, settings, params) {
     }
   }
 
-  // v0.5.19: Fallback logic — preferred provider's TOP 2 models first,
-  // then the OTHER provider's models, then the rest of preferred provider's models.
-  // This ensures: if preferred's top models fail, we try the other provider
-  // before trying preferred's lower-ranked models.
+  // Order providers — preferred FIRST, then fallback
   if (preferred === "gemini") {
-    const topGemini = geminiProviders.slice(0, 2);    // Top 2 Gemini
-    const restGemini = geminiProviders.slice(2);       // Remaining Gemini
-    providers.push(...topGemini, ...openRouterProviders, ...restGemini);
+    providers.push(...geminiProviders, ...openRouterProviders);
   } else if (preferred === "openrouter") {
-    const topOR = openRouterProviders.slice(0, 2);    // Top 2 OpenRouter
-    const restOR = openRouterProviders.slice(2);       // Remaining OpenRouter
-    providers.push(...topOR, ...geminiProviders, ...restOR);
+    providers.push(...openRouterProviders, ...geminiProviders);
   } else {
-    // "auto" — try both in parallel
     providers.push(...geminiProviders, ...openRouterProviders);
   }
 
@@ -274,10 +246,10 @@ export async function aiComplete(env, settings, params) {
     return { ok: false, error: errMsg };
   }
 
-  console.log(`[AI] racing ${providers.length} providers (preferred=${preferred}):`);
+  console.log(`[AI] v0.5.9 racing ${providers.length} providers (preferred=${preferred}):`);
   providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
 
-  // Shared AbortController — the moment ANY provider wins,
+  // v0.5.9: Shared AbortController — the moment ANY provider wins,
   // abort ALL others to save tokens/CPU/bandwidth.
   const winnerController = new AbortController();
 
@@ -293,7 +265,7 @@ export async function aiComplete(env, settings, params) {
             text = await openRouterComplete(env.OPENROUTER_API_KEY, p.model, params, winnerController.signal);
           }
         } catch (e) {
-          // Silently ignore CANCELLED errors (intentional abort when another provider won)
+          // v0.5.9: Silently ignore CANCELLED errors (intentional abort when another provider won)
           if (e.message === "CANCELLED" || e.message.includes("CANCELLED")) {
             throw new Error("CANCELLED (another provider won)");
           }
@@ -331,8 +303,8 @@ export async function aiComplete(env, settings, params) {
 }
 
 // ============================================================
-// ULTRA-COMPACT PROMPTS — self-contained, under 800 tokens
-// HARD RULE: ONLY these prompts are sent to the API.
+// v0.5.5: ULTRA-COMPACT PROMPTS — self-contained, under 800 tokens
+// v0.5.9 HARD RULE: ONLY these prompts are sent to the API.
 // Never pass buildEditorPrompt() / buildFormatterPrompt() output.
 // ============================================================
 const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
@@ -346,11 +318,12 @@ RULES:
 - PRESERVE functional emojis (📚🛠️⚡💡🔒🌐📦). Remove decorative (🔥😍😱🎉🤣).
 - PRESERVE number emojis (1️⃣2️⃣3️⃣).
 - Preserve the author's emotional tone. Don't flatten excitement or urgency.
-- v0.5.14: PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
+- PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
 - Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`code blocks\`\`\`).
 - Do NOT add footer. Do NOT add explanations. Do NOT add HTML tags.
 - Write each URL on its OWN line.
-- NEVER start your response with "Here is" or "Sure" or "I'll" — just output the edited post directly.`;
+- NEVER start your response with "Here is" or "Sure" or "I'll" — just output the edited post directly.
+- CRITICAL: PRESERVE the paragraph structure and blank lines between sections. Do NOT merge paragraphs or remove blank lines that separate list items. Keep the same line breaks and spacing as the original.`;
 
 const COMPACT_SUMMARIZE_PROMPT = `You are a Telegram channel content editor. The post is too long for Telegram. TRIM it (don't summarize into bullet points).
 
@@ -358,7 +331,6 @@ RULES:
 - Keep input language. NEVER translate.
 - PRESERVE EVERY URL, link, and download link. Do NOT remove ANY.
 - PRESERVE code blocks and commands.
-- v0.5.14: PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
 - Remove only: redundancy, fluff, repetition, filler words.
 - Output should be 80-90% of original length (NOT 30-50%!).
 - Keep original structure and flow.
@@ -369,10 +341,10 @@ function buildCompactPrompt(mode) {
 }
 
 // ============================================================
-// REWRITE — ONLY use compact prompt (never buildEditorPrompt)
+// REWRITE — v0.5.9: ONLY use compact prompt (never buildEditorPrompt)
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
-  // HARD RULE: Only COMPACT_REWRITE_PROMPT (+ optional profile addendum)
+  // v0.5.9 HARD RULE: Only COMPACT_REWRITE_PROMPT (+ optional profile addendum)
   let fullSystemPrompt;
   if (settings.active_profile) {
     // Profile addendum is small (~200 tokens), keeps total under 800
@@ -415,7 +387,7 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 }
 
 // ============================================================
-// SUMMARIZE — accepts targetCharLimit to fit Telegram limits
+// SUMMARIZE — v0.5.9: accepts targetCharLimit to fit Telegram limits
 // ============================================================
 export async function aiSummarize(env, settings, text, language, targetCharLimit = 3500) {
   let fullSystemPrompt;

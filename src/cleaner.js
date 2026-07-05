@@ -12,7 +12,6 @@
  */
 
 const LINK_REGEX = /https?:\/\/[^\s<>"']+/gi;
-const GITHUB_REGEX = /github\.com|gist\.github|raw\.githubusercontent/i;
 // Note: t.me/ links are preserved as URLs (protected by URL safeguard).
 // Promo @usernames are removed separately by the @-handling regex below.
 // We do NOT blanket-remove t.me/ links because some are legitimate resources.
@@ -69,121 +68,59 @@ function isUsernamePartOfUrl(text, matchIndex) {
 }
 
 // ============================================================
-// PROMPT PROTECTION — protect AI image generation prompts
+// v0.6.2: PROMPT PROTECTION (using Persian word "پرامپت")
 // ============================================================
-// Users paste long English AI prompts (Midjourney, Stable Diffusion, etc.)
-// that contain keywords like "photorealistic", "octane render", "--ar", "8k".
-// The AI rewrite step would destroy these by summarizing/translating them.
+// Detects paragraphs that follow the Persian word "پرامپت" (prompt)
+// and protects English-dominant paragraphs from cleaning.
 //
-// We detect these blocks BEFORE cleaning, replace them with placeholders,
-// and restore them AFTER the AI rewrite step (in pipeline.js).
+// Algorithm:
+//   1. Find all occurrences of "پرامپت" in the text
+//   2. For each occurrence, look at the paragraphs that come AFTER it
+//      (within 1-2 paragraphs)
+//   3. If those paragraphs are English-dominant and >80 chars, protect them
+//
+// This helps detect prompts in posts like:
+//   "از این پرامپت استفاده کنید:
+//    Character reference sheet, 4-panel grid layout..."
 // ============================================================
 
-const PROMPT_KEYWORDS = [
-  "photorealistic", "octane render", "masterpiece", "8k", "4k", "ultra detailed",
-  "keep the face", "identical to the reference", "no changes to identity",
-  "--ar", "--v", "--niji", "--seed", "--chaos", "--stylize",
-  "stable diffusion", "midjourney", "dall-e", "sdxl", "controlnet",
-  "negative prompt", "steps:", "cfg scale", "sampler", "denoising",
-  "render", "cinematic lighting", "volumetric lighting", "ray tracing",
-  "unreal engine", "blender", "zbrush", "substance painter",
-  "highly detailed", "intricate details", "sharp focus", "depth of field",
-  "bokeh", "film grain", "color grading", "hdr", "uhd",
-  "prompt:", "system prompt:", "user:", "assistant:", "instruction:",
-  "face identical", "lighting may change", "hairstyle", "facial shape",
-];
-
-/**
- * Prompt detection algorithm.
- *
- * Problem: When a post has Persian text + English prompt + Persian text
- * all in one paragraph (separated by single \n), the entire paragraph was protected.
- * This caused isMostlyPlaceholders=true → AI skipped → Persian text not cleaned.
- *
- * Solution: Instead of protecting whole paragraphs, detect CONTIGUOUS ENGLISH
- * blocks WITHIN paragraphs and protect only those.
- *
- * Algorithm:
- * 1. Split text into lines (by \n)
- * 2. Find contiguous runs of English-dominant lines (>50% ASCII letters)
- * 3. If such a run is >100 chars AND contains prompt keywords, protect it
- * 4. Leave surrounding Persian/non-prompt text for AI to process
- *
- * This way: "متن فارسی\nKeep the face 100% identical...\nمتن فارسی"
- * → Only the English block is protected, Persian text goes to AI.
- */
-export function protectPrompts(text) {
-  if (!text) return { text, prompts: [] };
-
-  const prompts = [];
-
-  // v0.6.1: Split into PARAGRAPHS (separated by blank lines) instead of lines.
-  // This handles multi-paragraph English prompts (like "Character reference sheet"
-  // which has Panel 1, Panel 2, etc. separated by blank lines).
-  const paragraphs = text.split(/\n\s*\n/); // Split on blank lines
-  const result = [];
-
-  for (const para of paragraphs) {
-    const paraTrimmed = para.trim();
-    if (!paraTrimmed) { result.push(para); continue; }
-
-    // Check if this paragraph is English-dominant
-    const asciiLetters = (paraTrimmed.match(/[a-zA-Z]/g) || []).length;
-    const persianChars = (paraTrimmed.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
-    const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 15;
-
-    if (isEnglishDominant) {
-      // Check if this paragraph looks like an AI prompt
-      const paraLower = paraTrimmed.toLowerCase();
-      let keywordCount = 0;
-      for (const kw of PROMPT_KEYWORDS) {
-        if (paraLower.includes(kw)) keywordCount++;
-      }
-      const hasMJParams = /--\w+\s+\S+/.test(paraTrimmed);
-      const startsWithLabel = /^(prompt|system|user|assistant|instruction|role)\s*:/i.test(paraTrimmed);
-
-      // v0.6.1: Also check for common prompt structure words
-      const hasPromptStructure = /\b(panel|reference sheet|grid layout|view|profile|lighting|lens|framing|shot|angle|background|camera|render)\b/i.test(paraTrimmed);
-
-      const shouldProtect = (
-        (paraTrimmed.length > 80 && (keywordCount >= 1 || hasMJParams || startsWithLabel || hasPromptStructure)) ||
-        (paraTrimmed.length > 150 && keywordCount >= 1) ||
-        (paraTrimmed.length > 200 && isEnglishDominant) // Long English paragraph = likely a prompt
-      );
-
-      if (shouldProtect) {
-        const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
-        prompts.push(paraTrimmed);
-        console.log(`[cleaner] protected prompt block ${prompts.length - 1}: ${paraTrimmed.length} chars, ${keywordCount} keywords, structure=${hasPromptStructure}`);
-        result.push(placeholder);
-        continue;
-      }
-    }
-
-    result.push(para);
-  }
-
-  return {
-    text: result.join("\n\n"),
-    prompts,
-  };
+function isEnglishDominant(text) {
+  if (!text) return false;
+  const enChars = (text.match(/[A-Za-z]/g) || []).length;
+  const faChars = (text.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+  return enChars > faChars && enChars > 10;
 }
 
-/**
- * Restore protected AI prompt blocks back into the text.
- * Called AFTER the AI rewrite step.
- *
- * Restored prompts are wrapped with special markers so the formatter can
- * detect them and wrap in a collapsible blockquote.
- */
-export function restorePrompts(text, prompts) {
-  if (!text || !prompts || prompts.length === 0) return text;
-  return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => {
-    const prompt = prompts[Number(i)];
-    if (!prompt) return "";
-    // §PROMPT_START§ and §PROMPT_END§ are converted to §P0§ by the formatter
-    return `\n§PROMPT_START§${prompt}§PROMPT_END§\n`;
-  });
+function protectPrompts(text) {
+  if (!text || !text.includes("پرامپت")) {
+    return { text: text || "", placeholders: [] };
+  }
+
+  // Split into paragraphs by double-newline
+  const paragraphs = text.split(/\n\n+/);
+  const placeholders = [];
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    if (!paragraphs[i].includes("پرامپت")) continue;
+
+    // Look at the next 1-2 paragraphs (within 1-2 paragraphs after "پرامپت")
+    for (let j = i + 1; j < Math.min(i + 3, paragraphs.length); j++) {
+      const para = paragraphs[j].trim();
+      if (!para) continue;
+      // Protect if English-dominant and >80 chars
+      if (isEnglishDominant(para) && para.length > 80) {
+        const placeholder = `__PROMPT_BLOCK_${placeholders.length}__`;
+        placeholders.push(para);
+        paragraphs[j] = placeholder;
+        // Only protect the first eligible paragraph after each "پرامپت"
+        break;
+      }
+      // Stop early if we hit a non-English short paragraph (likely not a prompt)
+      if (!isEnglishDominant(para) && para.length < 40) break;
+    }
+  }
+
+  return { text: paragraphs.join("\n\n"), placeholders };
 }
 
 // ============================================================
@@ -205,6 +142,11 @@ export function cleanContent(rawText) {
     inlineCodes.push(m);
     return `__INLINE_CODE_${inlineCodes.length - 1}__`;
   });
+
+  // v0.6.2: Protect prompt paragraphs (English-dominant paragraphs that follow
+  // the Persian word "پرامپت") from being modified by the cleaner.
+  const { text: textAfterPromptProtect, placeholders: promptPlaceholders } = protectPrompts(text);
+  text = textAfterPromptProtect;
 
   // 2. Protect URLs (GitHub, docs, etc.) — but REMOVE spam links first.
   //    Spam links: Telegram invite links (t.me/joinchat, t.me/+xxx), sticker packs
@@ -267,6 +209,10 @@ export function cleanContent(rawText) {
   // 13. Restore code blocks
   text = text.replace(/__CODE_BLOCK_(\d+)__/g, (_, i) => codeBlocks[Number(i)]);
 
+  // v0.6.2: Restore protected prompt paragraphs (English-dominant paragraphs
+  // that followed the Persian word "پرامپت").
+  text = text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => promptPlaceholders[Number(i)]);
+
   // 14. Clean up extra whitespace
   text = text
     .replace(/[ \t]+\n/g, "\n")      // trailing spaces per line
@@ -305,3 +251,5 @@ export function contentStats(text) {
     hasCodeBlock: /```/.test(text),
   };
 }
+
+const GITHUB_REGEX = /github\.com|gist\.github|raw\.githubusercontent/i;

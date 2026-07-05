@@ -1,10 +1,15 @@
 /**
  * src/index.js
- * AI Admin — Cloudflare Worker entry point — v0.6.0
+ * AI Admin — Cloudflare Worker entry point — v0.5.9
  *
- * SILENT scheduling fallback: When native Telegram schedule_date fails,
- * posts are queued in KV and a cron trigger (every 1 minute) sends due
- * messages. Users see "📅 Scheduled!" regardless of method used.
+ * v0.5.9 (TASK 7 refactor): This file is now SLIM (< 300 lines).
+ *   - Pipeline functions moved to src/pipeline.js
+ *   - Only contains: fetch (routing), handleUpdate (dispatcher),
+ *     handlePrivateMessage (command router)
+ *   - v0.5.9 TASK 1: Removed scheduled() cron handler (native-only scheduling)
+ *   - v0.5.9 TASK 2: Added /debug_schedule command
+ *   - v0.5.9 TASK 4: logUpdate/logError/logRawRequest now receive env for
+ *     conditional DEBUG_MODE writes; stats flushed via ctx.waitUntil
  */
 
 import {
@@ -15,16 +20,16 @@ import {
   sendMessage,
   answerCallbackQuery,
   getMe,
+  editMessageText,
   sendChatAction,
-  sendMediaGroup,
 } from "./telegram.js";
 import {
   getSettings,
   flushAllStats,
-  listDueScheduled,
-  deleteScheduledItem,
 } from "./kv.js";
-import { isAuthorized, handleStart, handleFooterCommand, handleCallbackQuery } from "./admin.js";
+import { isAuthorized, handleStart, handleMenu, handleFooterCommand, handleCallbackQuery } from "./admin.js";
+import { cleanContent } from "./cleaner.js";
+import { formatPost } from "./formatter.js";
 import {
   checkDebugAuth,
   getStatus,
@@ -43,11 +48,8 @@ import {
   runChannelEditPipeline,
   getBotId,
 } from "./pipeline.js";
-import { aiRewrite } from "./ai.js";
-import { formatPost } from "./formatter.js";
-import { protectPrompts, restorePrompts } from "./cleaner.js";
 
-const VERSION = "0.6.1";
+const VERSION = "0.6.3";
 
 // ============================================================
 // MAIN EXPORT
@@ -137,63 +139,9 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 
-  // v0.5.14: CRON HANDLER — Silent scheduling fallback
-  // Runs every 1 minute. Sends messages queued in KV when native scheduling failed.
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(processScheduledQueue(env));
-  },
+  // v0.5.9 TASK 1: NO scheduled() cron handler — removed per user request.
+  // Only native Telegram schedule_date is used.
 };
-
-// ============================================================
-// v0.5.14: SCHEDULED QUEUE PROCESSOR (Silent Cron Fallback)
-// ============================================================
-// Called by cron trigger every minute. Lists due messages from KV
-// and sends them via regular Telegram API (no schedule_date — we're
-// sending them NOW because it's their scheduled time).
-// ============================================================
-async function processScheduledQueue(env) {
-  const SETTINGS = env.SETTINGS;
-  if (!SETTINGS) return;
-
-  console.log(`[cron] Checking for due scheduled messages at ${new Date().toISOString()}`);
-  const due = await listDueScheduled(SETTINGS);
-  if (due.length === 0) return;
-  console.log(`[cron] Found ${due.length} due messages`);
-
-  for (const item of due) {
-    try {
-      console.log(`[cron] Sending scheduled message ${item.id} to ${item.chatId} (was scheduled for ${new Date(item.scheduledTime).toISOString()})`);
-
-      let res;
-      if (item.mediaGroupItems && item.mediaGroupItems.length > 0) {
-        res = await sendMediaGroup(env.BOT_TOKEN, item.chatId, item.mediaGroupItems, {
-          parse_mode: item.parseMode,
-        });
-      } else {
-        res = await publishToChannel(env.BOT_TOKEN, item.chatId, {
-          text: item.text,
-          mediaType: item.mediaType,
-          mediaFileId: item.mediaFileId,
-          extra: { parse_mode: item.parseMode },
-        });
-      }
-
-      if (res.ok) {
-        console.log(`[cron] ✓ Sent message ${item.id}`);
-        await deleteScheduledItem(SETTINGS, item._kvKey);
-      } else {
-        console.error(`[cron] ✗ Failed: ${res.description}`);
-        const permanentErrors = ["chat not found", "bot was blocked", "CHAT_ADMIN_REQUIRED"];
-        const isPermanent = permanentErrors.some((e) => (res.description || "").toLowerCase().includes(e.toLowerCase()));
-        if (isPermanent) {
-          await deleteScheduledItem(SETTINGS, item._kvKey);
-        }
-      }
-    } catch (e) {
-      console.error(`[cron] Exception: ${e.message}`);
-    }
-  }
-}
 
 // ============================================================
 // DEBUG ROUTE HANDLER
@@ -233,133 +181,6 @@ function handleDebugRoute(request, url, env) {
   }
   if (request.method === "POST" && url.pathname === "/debug/api/clear") {
     return clearDebugLogs(SETTINGS).then(() => json({ ok: true }), (e) => json({ ok: false, error: e.message }, 500));
-  }
-
-  // v0.5.16: New debug API endpoints for testing from dashboard
-  if (request.method === "POST" && url.pathname === "/debug/api/test/cron") {
-    return (async () => {
-      try {
-        console.log(`[debug API] Manually triggering cron queue`);
-        await processScheduledQueue(env);
-        return json({ ok: true, message: "Cron queue processed. Check logs for details." });
-      } catch (e) {
-        return json({ ok: false, error: e.message }, 500);
-      }
-    })();
-  }
-
-  if (request.method === "POST" && url.pathname === "/debug/api/test/ai_rewrite") {
-    return (async () => {
-      try {
-        const body = await request.json().catch(() => ({}));
-        const testText = body.text || "This is a test post about Cloudflare Workers. It should be rewritten nicely.";
-        const settings = await getSettings(SETTINGS, env.ADMIN_ID);
-        console.log(`[debug API] Testing AI rewrite with: "${testText.slice(0, 60)}..."`);
-        const result = await aiRewrite(env, settings, testText, "light", "auto", "friendly", 60, 20);
-        return json({
-          ok: result.ok,
-          input: testText,
-          output: result.text || null,
-          provider: result.provider || null,
-          model: result.model || null,
-          error: result.error || null,
-        });
-      } catch (e) {
-        return json({ ok: false, error: e.message }, 500);
-      }
-    })();
-  }
-
-  if (request.method === "POST" && url.pathname === "/debug/api/test/format") {
-    return (async () => {
-      try {
-        const body = await request.json().catch(() => ({}));
-        const testText = body.text || `This is a test post about AI tools.
-
-Prompt:
-Keep the face 100% identical to the reference. Photorealistic mirror selfie. Cinematic lighting. 8k. Ultra detailed. --ar 16:9 --v 6.0
-
-This is another paragraph that is long enough to be quoted. It has multiple sentences.`;
-        console.log(`[debug API] Testing formatter`);
-        const { text: formatted, parseMode } = formatPost(testText, {
-          engineName: "html",
-          intensity: 60,
-          emojiLevel: 20,
-        });
-        return json({
-          ok: true,
-          input: testText,
-          output: formatted,
-          parseMode,
-          inputLength: testText.length,
-          outputLength: formatted.length,
-        });
-      } catch (e) {
-        return json({ ok: false, error: e.message }, 500);
-      }
-    })();
-  }
-
-  if (request.method === "POST" && url.pathname === "/debug/api/test/clean") {
-    return (async () => {
-      try {
-        const body = await request.json().catch(() => ({}));
-        const testText = body.text || `This is a normal post.
-
-Keep the face 100% identical to the reference. Photorealistic mirror selfie. Cinematic lighting. 8k. Ultra detailed. --ar 3:2 --v 6.0. ` + "A".repeat(200);
-        console.log(`[debug API] Testing prompt protection`);
-        const { text: protectedText, prompts } = protectPrompts(testText);
-        const restored = restorePrompts(protectedText, prompts);
-        return json({
-          ok: true,
-          input: testText,
-          protectedText,
-          promptsDetected: prompts.length,
-          prompts: prompts.map((p) => ({ length: p.length, preview: p.slice(0, 100) })),
-          restoreMatchesOriginal: restored === testText,
-        });
-      } catch (e) {
-        return json({ ok: false, error: e.message }, 500);
-      }
-    })();
-  }
-
-  if (request.method === "POST" && url.pathname === "/debug/api/test/scheduling") {
-    return (async () => {
-      try {
-        const targetChannel = env.TARGET_CHANNEL;
-        if (!targetChannel) return json({ ok: false, error: "TARGET_CHANNEL not set" });
-
-        const botId = await getBotId(env);
-        const permCheck = await checkSchedulingPermissions(env.BOT_TOKEN, targetChannel, botId);
-
-        // Try native scheduling with a test message
-        const scheduledTime = Date.now() + 90 * 1000;
-        const scheduleDateUnix = Math.floor(scheduledTime / 1000);
-
-        const { resolveChatId } = await import("./telegram.js");
-        const resolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
-
-        const sendRes = await publishToChannel(env.BOT_TOKEN, resolvedChannel, {
-          text: `🧪 Debug API scheduling test for ${new Date(scheduledTime).toISOString()}`,
-          extra: { schedule_date: scheduleDateUnix },
-        });
-
-        const verification = verifyScheduled(sendRes, scheduleDateUnix);
-
-        return json({
-          ok: true,
-          permissions: permCheck,
-          resolvedChannel,
-          scheduleDateUnix,
-          telegramResponse: sendRes,
-          verification,
-          nativeScheduled: verification.scheduled,
-        });
-      } catch (e) {
-        return json({ ok: false, error: e.message }, 500);
-      }
-    })();
   }
 
   return new Response("Not Found", { status: 404 });
@@ -404,10 +225,20 @@ async function handleUpdate(update, env) {
     const content = extractContent(update);
     if (!content) return;
 
+    // v0.6.2: Check authorization BEFORE routing media groups
+    // Non-admin users get a format-only response (no AI, no publish)
+    const isAdmin = env.ADMIN_ID && isAuthorized(env, content.fromId);
+
     // Media group handling
     if (content.mediaGroupId) {
-      console.log(`[update] media group: ${content.mediaGroupId}`);
-      await handleMediaGroupUpdate(env, content, update);
+      if (isAdmin) {
+        console.log(`[update] media group: ${content.mediaGroupId}`);
+        await handleMediaGroupUpdate(env, content, update);
+      } else {
+        // v0.6.2: Non-admin users get per-item format-only response
+        // (no buffering, no AI, no channel publish)
+        await handleNonAdminFormat(env, content, update);
+      }
       return;
     }
 
@@ -439,6 +270,7 @@ async function handleUpdate(update, env) {
 
 // ============================================================
 // PRIVATE MESSAGE HANDLER (command router)
+// v0.6.2: Split /start (intro for ALL users) from /menu (admin panel)
 // ============================================================
 async function handlePrivateMessage(env, content, update) {
   const SETTINGS = env.SETTINGS;
@@ -451,24 +283,36 @@ async function handlePrivateMessage(env, content, update) {
     return;
   }
 
-  if (!isAuthorized(env, content.fromId)) {
-    await sendMessage(env.BOT_TOKEN, content.chatId,
-      `⛔ <b>Unauthorized</b>\n\nYour ID: <code>${content.fromId}</code>\nConfigured ADMIN_ID: <code>${env.ADMIN_ID}</code>`,
-      { parse_mode: "HTML" });
-    await logUpdate(SETTINGS, update, "unauthorized", `from=${content.fromId} expected=${env.ADMIN_ID}`, env);
+  const text = content.text || "";
+
+  // v0.6.2: /start is available to ALL users (shows bot intro)
+  if (/^\/start\b/i.test(text)) {
+    await handleStart(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
+    await logUpdate(SETTINGS, update, "ok", "/start", env);
     return;
   }
 
-  const text = content.text || "";
+  // v0.6.2: Non-admin users — only /start is recognized.
+  // All other messages (commands or text/media) get format-only response.
+  if (!isAuthorized(env, content.fromId)) {
+    // Typing indicator
+    if (content.chatId) {
+      await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
+    }
+    await handleNonAdminFormat(env, content, update);
+    return;
+  }
 
+  // ===== ADMIN FLOW (authorized) =====
   // Typing indicator immediately
   if (content.chatId) {
     await sendChatAction(env.BOT_TOKEN, content.chatId, "typing").catch(() => {});
   }
 
-  if (/^\/start\b/i.test(text)) {
-    await handleStart(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
-    await logUpdate(SETTINGS, update, "ok", "/start", env);
+  // v0.6.2: /menu shows the admin settings panel (replaces old /start behavior)
+  if (/^\/menu\b/i.test(text)) {
+    await handleMenu(env, SETTINGS, { chat: { id: content.chatId }, from: { id: content.fromId } });
+    await logUpdate(SETTINGS, update, "ok", "/menu", env);
     return;
   }
 
@@ -481,7 +325,7 @@ async function handlePrivateMessage(env, content, update) {
 
   if (/^\/help\b/i.test(text)) {
     await sendMessage(env.BOT_TOKEN, content.chatId,
-      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\n<b>Commands:</b>\n/start — Admin panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions\n/debug_schedule — Test scheduling (5 tests)\n/test_cron — Manually trigger cron queue\n/test_ai — Test AI rewrite\n/test_format — Test formatter\n/test_clean — Test prompt protection\n/help — This message`,
+      `<b>AI Admin — Help</b>\n\nSend me any post and I will process and publish it.\n\nCommands:\n/start — Bot introduction (all users)\n/menu — Admin settings panel\n/footer &lt;text&gt; — Change footer\n/checkperms — Check bot permissions in channel\n/debug_schedule — Test scheduling with a dummy message\n/help — This message`,
       { parse_mode: "HTML" });
     await logUpdate(SETTINGS, update, "ok", "/help", env);
     return;
@@ -499,120 +343,58 @@ async function handlePrivateMessage(env, content, update) {
     return;
   }
 
-  // v0.5.15: /test_cron — manually trigger cron queue processing
-  if (/^\/test_cron\b/i.test(text)) {
-    console.log(`[test_cron] Manually triggering processScheduledQueue`);
-    await sendMessage(env.BOT_TOKEN, content.chatId, `⏳ <b>Running cron test...</b>`, { parse_mode: "HTML" });
-    try {
-      await processScheduledQueue(env);
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `✅ <b>Cron test completed.</b>\nCheck Cloudflare logs for details.`, { parse_mode: "HTML" });
-    } catch (e) {
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `❌ <b>Cron test failed:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
-    }
-    await logUpdate(SETTINGS, update, "ok", "/test_cron", env);
-    return;
-  }
-
-  // v0.5.15: /test_ai — manually test AI
-  if (/^\/test_ai\b/i.test(text)) {
-    console.log(`[test_ai] Manually testing AI`);
-    await sendMessage(env.BOT_TOKEN, content.chatId, `⏳ <b>Testing AI...</b>`, { parse_mode: "HTML" });
-    try {
-      const settings = await getSettings(SETTINGS, content.fromId);
-      const testText = "This is a test post about Cloudflare Workers. It should be rewritten nicely.";
-      const result = await aiRewrite(env, settings, testText, "light", "auto", "friendly", 60, 20);
-
-      if (result.ok) {
-        await sendMessage(env.BOT_TOKEN, content.chatId,
-          [
-            `✅ <b>AI test successful</b>`,
-            ``,
-            `<b>Provider:</b> <code>${result.provider}</code>`,
-            `<b>Model:</b> <code>${result.model}</code>`,
-            ``,
-            `<b>Input:</b> <i>${testText}</i>`,
-            `<b>Output:</b> <i>${result.text.slice(0, 300)}</i>`,
-          ].join("\n"),
-          { parse_mode: "HTML" });
-      } else {
-        await sendMessage(env.BOT_TOKEN, content.chatId,
-          `❌ <b>AI test failed</b>\nError: <code>${result.error}</code>`, { parse_mode: "HTML" });
-      }
-    } catch (e) {
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `❌ <b>AI test exception:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
-    }
-    await logUpdate(SETTINGS, update, "ok", "/test_ai", env);
-    return;
-  }
-
-  // v0.5.15: /test_format — test the formatter
-  if (/^\/test_format\b/i.test(text)) {
-    console.log(`[test_format] Testing formatter`);
-    await sendMessage(env.BOT_TOKEN, content.chatId, `⏳ <b>Testing formatter...</b>`, { parse_mode: "HTML" });
-    try {
-      const testText = `This is a test post about AI tools.
-
-Prompt:
-Keep the face 100% identical to the reference. Photorealistic mirror selfie of a young woman indoors. Cinematic lighting. 8k. Ultra detailed. Octane render. --ar 16:9 --v 6.0
-
-This is another paragraph that is long enough to be quoted. It has multiple sentences. It should be collapsible in Telegram. This makes the post look much cleaner and more professional.`;
-
-      const { text: formatted, parseMode } = formatPost(testText, {
-        engineName: "html",
-        intensity: 60,
-        emojiLevel: 20,
-      });
-
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        [
-          `✅ <b>Format test</b>`,
-          ``,
-          `<b>Parse mode:</b> ${parseMode}`,
-          `<b>Length:</b> ${formatted.length} chars`,
-          `<b>Result:</b>`,
-          formatted,
-        ].join("\n"),
-        { parse_mode: parseMode });
-    } catch (e) {
-      await sendMessage(env.BOT_TOKEN, content.chatId,
-        `❌ <b>Format test failed:</b> <code>${e.message}</code>`, { parse_mode: "HTML" });
-    }
-    await logUpdate(SETTINGS, update, "ok", "/test_format", env);
-    return;
-  }
-
-  // v0.5.15: /test_clean — test prompt protection
-  if (/^\/test_clean\b/i.test(text)) {
-    console.log(`[test_clean] Testing prompt protection`);
-    const testText = `This is a normal post about AI.
-
-Keep the face 100% identical to the reference. Photorealistic mirror selfie. Cinematic lighting. 8k. Ultra detailed. Octane render. --ar 3:2 --v 6.0. ` + "A".repeat(200);
-
-    const { text: protected_, prompts } = protectPrompts(testText);
-    const restored = restorePrompts(protected_, prompts);
-
-    await sendMessage(env.BOT_TOKEN, content.chatId,
-      [
-        `🧪 <b>Prompt Protection Test</b>`,
-        ``,
-        `<b>Original length:</b> ${testText.length} chars`,
-        `<b>Protected text length:</b> ${protected_.length} chars`,
-        `<b>Prompts detected:</b> ${prompts.length}`,
-        `<b>Restore matches original:</b> ${restored === testText ? "✅ YES" : "❌ NO"}`,
-        ``,
-        `<b>Protected text preview:</b>`,
-        `<code>${protected_.slice(0, 200)}...</code>`,
-      ].join("\n"),
-      { parse_mode: "HTML" });
-    await logUpdate(SETTINGS, update, "ok", "/test_clean", env);
-    return;
-  }
-
   // Content pipeline
   await runPipeline(env, content, content.chatId, update);
+}
+
+// ============================================================
+// v0.6.2: NON-ADMIN FORMAT-ONLY RESPONSE
+// ============================================================
+// For non-admin users: clean → format → send back to user's PV.
+// NO AI rewrite, NO channel publish, NO scheduling.
+// Works for both text-only and media-attached messages.
+// ============================================================
+async function handleNonAdminFormat(env, content, update) {
+  const SETTINGS = env.SETTINGS;
+  const rawText = content.text || "";
+
+  // Skip empty messages (no text AND no media)
+  if (!rawText && !content.mediaFileId) {
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `<i>برای پردازش، متنی را ارسال کنید.</i>`,
+      { parse_mode: "HTML" }).catch(() => {});
+    return;
+  }
+
+  // Clean + format with default settings (intensity: 60, emojiLevel: 20)
+  const cleanedText = cleanContent(rawText);
+  const { text: formattedText, parseMode } = formatPost(cleanedText || "", {
+    footer: null,
+    engineName: "html",
+    intensity: 60,
+    emojiLevel: 20,
+  });
+
+  // Send back to user (with media if attached)
+  if (content.mediaFileId) {
+    await publishToChannel(env.BOT_TOKEN, content.chatId, {
+      text: formattedText || "",
+      mediaType: content.mediaType,
+      mediaFileId: content.mediaFileId,
+      extra: { parse_mode: parseMode, disable_web_page_preview: true },
+    }).catch(() => ({ ok: false }));
+  } else if (formattedText && formattedText.trim()) {
+    await sendMessage(env.BOT_TOKEN, content.chatId, formattedText, {
+      parse_mode: parseMode,
+      disable_web_page_preview: true,
+    }).catch(() => {});
+  } else {
+    await sendMessage(env.BOT_TOKEN, content.chatId,
+      `<i>پست شما خالی است یا قابل پردازش نیست.</i>`,
+      { parse_mode: "HTML" }).catch(() => {});
+  }
+
+  await logUpdate(SETTINGS, update, "ok", "format-only (non-admin)", env);
 }
 
 // ============================================================
@@ -795,53 +577,33 @@ async function handleDebugSchedule(env, content, update) {
     log(`  Test D response: ${JSON.stringify(rawData).slice(0, 300)}`);
     log(`  Test D: ok=${rawData.ok}, result.date=${rawData.result?.date}`);
 
-    await new Promise((r) => setTimeout(r, 2000));
-
-    // Test E: Schedule in PRIVATE CHAT (always works — no admin permission needed)
-    // v0.5.13: If this works but channel scheduling fails, it confirms Telegram-side issue
-    log(`  Test E (Private Chat): Scheduling in bot's private chat (always works)...`);
-    const scheduledTimeE = Date.now() + 90 * 1000;
-    const scheduleDateUnixE = Math.floor(scheduledTimeE / 1000);
-    const sendResE = await sendMessage(BOT_TOKEN, chatId, // chatId = admin's private chat
-      `🧪 <b>Test E (Private Chat)</b>\nScheduled for ${new Date(scheduledTimeE).toISOString()}`,
-      { parse_mode: "HTML", schedule_date: scheduleDateUnixE }
-    );
-    log(`  Test E response: ${JSON.stringify(sendResE).slice(0, 300)}`);
-    log(`  Test E: ok=${sendResE.ok}, result.date=${sendResE.result?.date}`);
-
     // Step 5: Verify ALL tests
-    log(`Step 5: Verifying all 5 tests...`);
+    log(`Step 5: Verifying all 4 tests...`);
     const verA = verifyScheduled(sendResA, scheduleDateUnixA);
     const verB = verifyScheduled(sendResB, scheduleDateUnixB);
     const verC = verifyScheduled(sendResC, scheduleDateUnixC);
     const verD = verifyScheduled(rawData, scheduleDateUnixD);
-    const verE = verifyScheduled(sendResE, scheduleDateUnixE);
     log(`  Test A: scheduled=${verA.scheduled}, reason=${verA.reason}, diffSeconds=${verA.diffSeconds || 0}`);
     log(`  Test B: scheduled=${verB.scheduled}, reason=${verB.reason}, diffSeconds=${verB.diffSeconds || 0}`);
     log(`  Test C: scheduled=${verC.scheduled}, reason=${verC.reason}, diffSeconds=${verC.diffSeconds || 0}`);
     log(`  Test D: scheduled=${verD.scheduled}, reason=${verD.reason}, diffSeconds=${verD.diffSeconds || 0}`);
-    log(`  Test E: scheduled=${verE.scheduled}, reason=${verE.reason}, diffSeconds=${verE.diffSeconds || 0}`);
 
     // Step 6: Conclusion based on which test succeeded
-    // v0.5.13: Added Test E (private chat) to distinguish Telegram-side issues
     let conclusion;
-    if (verE.scheduled && !verD.scheduled) {
-      // v0.5.13: Private chat works but channel doesn't — 100% Telegram-side issue
-      conclusion = `⚠️ Private chat scheduling (Test E) WORKS but channel scheduling (Test D) FAILS. This is a Telegram-side issue — NOT a code bug. The bot needs to be: (1) removed from the channel, (2) re-added as admin with 'Post Messages' permission ON, (3) 'Add New Admins' permission should be OFF.`;
-    } else if (!verE.scheduled) {
-      // Even private chat scheduling failed — Telegram API issue
-      conclusion = `❌ Even private chat scheduling (Test E) FAILED. This is a Telegram API issue. Try: (1) check bot token is valid, (2) recreate the bot via @BotFather, (3) check Telegram status.`;
-    } else if (verD.scheduled) {
-      // Channel scheduling works!
+    if (verD.scheduled) {
+      // Raw API works — scheduling IS possible
       if (verA.scheduled && verB.scheduled && verC.scheduled) {
-        conclusion = `✅ ALL 5 tests SUCCEEDED! Scheduling works correctly in all modes (channel + private chat).`;
+        conclusion = `✅ ALL 4 tests SUCCEEDED! Scheduling works correctly in all modes.`;
       } else if (!verA.scheduled) {
-        conclusion = `⚠️ Channel scheduling works (Test D) but Test A (HTML) failed. parse_mode=HTML is conflicting with schedule_date in the wrapper.`;
+        conclusion = `⚠️ Raw API works but Test A (HTML) failed. parse_mode=HTML is conflicting with schedule_date in the wrapper.`;
       } else if (!verB.scheduled || !verC.scheduled) {
-        conclusion = `⚠️ Channel scheduling works (Test D) but wrapper tests failed. Something in the wrapper is conflicting.`;
+        conclusion = `⚠️ Raw API works but wrapper tests failed. Something in the wrapper is conflicting.`;
       } else {
-        conclusion = `✅ Scheduling works! All channel tests + private chat succeeded.`;
+        conclusion = `✅ Raw API + some wrapper tests succeeded. Scheduling works.`;
       }
+    } else if (!verD.scheduled) {
+      // Raw API ALSO failed — this is a Telegram-side issue
+      conclusion = `❌ ALL tests FAILED (including Raw API Test D). This is NOT a code bug — it's a Telegram-side issue. The bot may need to be: (1) removed and re-added as admin, (2) given 'Post Messages' permission explicitly, or (3) the channel may need to be a supergroup instead of a broadcast channel. Also check: is the bot's admin permission 'Add New Admins' OFF and 'Post Messages' ON?`;
     } else {
       conclusion = `❌ Scheduling FAILED — see logs above.`;
     }
@@ -851,7 +613,7 @@ async function handleDebugSchedule(env, content, update) {
     const logText = logs.map((l, i) => `${i + 1}. ${l}`).join("\n");
     await sendMessage(BOT_TOKEN, chatId,
       [
-        `🧪 <b>Scheduling Debug Results</b>`,
+        `🧪 <b>Scheduling Debug Results (v0.5.12)</b>`,
         ``,
         `<blockquote>${logText}</blockquote>`,
         ``,
@@ -859,7 +621,7 @@ async function handleDebugSchedule(env, content, update) {
       ].join("\n"),
       { parse_mode: "HTML", disable_web_page_preview: true });
 
-    const anySuccess = verA.scheduled || verB.scheduled || verC.scheduled || verD.scheduled || verE.scheduled;
+    const anySuccess = verA.scheduled || verB.scheduled || verC.scheduled || verD.scheduled;
     await logUpdate(SETTINGS, update, "ok", `/debug_schedule: ${anySuccess ? "OK" : "FAIL"}`, env);
   } catch (e) {
     console.error("[debug_schedule] exception:", e.message);
