@@ -117,11 +117,21 @@ export function protectPrompts(text) {
     const paraTrimmed = para.trim();
     if (!paraTrimmed) { result.push(para); continue; }
 
-    const asciiLetters = (paraTrimmed.match(/[a-zA-Z]/g) || []).length;
-    const persianChars = (paraTrimmed.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+    // v0.6.10: Strip URLs and markdown links before counting ASCII letters
+    // This prevents link-heavy paragraphs from being detected as English prompts
+    const paraNoUrls = paraTrimmed
+      .replace(/\[([^\]]*)\]\([^)]+\)/g, "$1")  // [text](url) → text
+      .replace(/https?:\/\/[^\s]+/g, "");          // plain URLs → removed
+    const asciiLetters = (paraNoUrls.match(/[a-zA-Z]/g) || []).length;
+    const persianChars = (paraNoUrls.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
     const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 15;
 
-    if (isEnglishDominant) {
+    // v0.6.10: Skip if paragraph is mostly URLs/links (not real prompt content)
+    const urlCount = (paraTrimmed.match(/https?:\/\/[^\s]+/g) || []).length;
+    const markdownLinkCount = (paraTrimmed.match(/\[([^\]]*)\]\([^)]+\)/g) || []).length;
+    const isLinkHeavy = (urlCount + markdownLinkCount) >= 2 && paraNoUrls.trim().length < 100;
+
+    if (isEnglishDominant && !isLinkHeavy) {
       const paraLower = paraTrimmed.toLowerCase();
       let keywordCount = 0;
       for (const kw of PROMPT_KEYWORDS) {

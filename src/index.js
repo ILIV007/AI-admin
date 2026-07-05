@@ -50,7 +50,7 @@ import {
   getBotId,
 } from "./pipeline.js";
 
-const VERSION = "0.6.9";
+const VERSION = "0.6.10";
 
 // ============================================================
 // MAIN EXPORT

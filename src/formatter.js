@@ -173,19 +173,39 @@ const htmlEngine = {
     if (intensity >= 20) work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
 
     // 10. Numbered steps — GROUP into ONE blockquote
+    //     v0.6.10: Also convert Persian numbers to English when title is English
     if (intensity >= 30) {
       const lines = work.split("\n");
       const out = [];
       let group = [];
       for (const line of lines) {
-        const m = line.match(/^(\d+)[.)]\s+(.+)$/);
-        if (m) {
-          const n = parseInt(m[1]);
-          const emoji = (n >= 0 && n <= 10) ? NUMBER_EMOJIS[n] : `${n}.`;
-          group.push(`${emoji} ${m[2]}`);
+        // v0.6.10: Check for Persian number + English content → convert to English number
+        const persianMatch = line.match(/^([۰-۹]+)[.)]\s+(.+)$/);
+        if (persianMatch) {
+          const persianToEnglish = (s) => s.replace(/[۰-۹]/g, d => "۰۱۲۳۴۵۶۷۸۹".indexOf(d));
+          const num = parseInt(persianToEnglish(persianMatch[1]));
+          const content = persianMatch[2];
+          // Check if content is English-dominant
+          const enChars = (content.match(/[a-zA-Z]/g) || []).length;
+          const faChars = (content.match(/[\u0600-\u06FF]/g) || []).length;
+          if (enChars > faChars) {
+            // English content → use English number
+            const emoji = (num >= 0 && num <= 10) ? NUMBER_EMOJIS[num] : `${num}.`;
+            group.push(`${emoji} ${content}`);
+          } else {
+            // Persian content → keep Persian number
+            group.push(line);
+          }
         } else {
-          if (group.length > 0) { out.push(`<blockquote>${group.join("\n")}</blockquote>`); group = []; }
-          out.push(line);
+          const m = line.match(/^(\d+)[.)]\s+(.+)$/);
+          if (m) {
+            const n = parseInt(m[1]);
+            const emoji = (n >= 0 && n <= 10) ? NUMBER_EMOJIS[n] : `${n}.`;
+            group.push(`${emoji} ${m[2]}`);
+          } else {
+            if (group.length > 0) { out.push(`<blockquote>${group.join("\n")}</blockquote>`); group = []; }
+            out.push(line);
+          }
         }
       }
       if (group.length > 0) out.push(`<blockquote>${group.join("\n")}</blockquote>`);
