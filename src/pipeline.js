@@ -41,7 +41,7 @@ import {
   setLastScheduledTime,
 } from "./kv.js";
 import { classify } from "./classifier.js";
-import { cleanContent, detectLanguage } from "./cleaner.js";
+import { cleanContent, detectLanguage, protectPrompts, restorePrompts } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
 import { closeOpenTags, truncateHtml } from "./html-utils.js";
@@ -231,7 +231,7 @@ export async function runMediaGroupPipeline(env, items, update) {
   let safeBody = formattedBody;
   if (formattedBody.length > maxBodyLen) {
     console.warn(`[mg-pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
-    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
+    safeBody = truncateHtml(formattedBody, maxBodyLen, "");
   }
   const formattedText = safeBody + footerHtml;
 
@@ -389,7 +389,7 @@ export async function runMediaGroupPipeline(env, items, update) {
           });
           let retrySafeBody = retryBody;
           if (retryBody.length > maxBodyLen) {
-            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "\n\n<i>…</i>");
+            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "");
           }
           const retryText = retrySafeBody + footerHtml;
           console.log(`[mg-pipeline] retry: original=${formattedText.length} chars, summarized=${retryText.length} chars`);
@@ -600,8 +600,23 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Clean
   const cleanedText = cleanContent(rawText);
-  const textForAI = replyContext + cleanedText;
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
+
+  // v0.6.4: Protect AI prompts from being destroyed by AI rewrite
+  const { text: protectedText, prompts: protectedPrompts } = protectPrompts(cleanedText);
+  if (protectedPrompts.length > 0) {
+    console.log(`[pipeline] protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
+  }
+
+  // v0.6.4: If text is mostly placeholders, skip AI
+  const placeholderCount = (protectedText.match(/__PROMPT_BLOCK_\d+__/g) || []).length;
+  const nonPlaceholderText = protectedText.replace(/__PROMPT_BLOCK_\d+__/g, "").trim();
+  const isMostlyPlaceholders = nonPlaceholderText.length < 50 && placeholderCount > 0;
+  if (isMostlyPlaceholders) {
+    console.log(`[pipeline] Text is mostly prompt placeholders. Skipping AI rewrite.`);
+  }
+
+  const textForAI = replyContext + protectedText;
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${protectedPrompts.length > 0 ? ` (${protectedPrompts.length} prompts protected)` : ""}`);
 
   // AI rewrite
   let finalText = cleanedText;
@@ -613,21 +628,17 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
-  // v0.5.9: Better long-post handling
+  // v0.6.4: NO auto-summarization. Use actual Telegram limits.
+  // Only summarize if publish fails with "too long" (retry-with-summary).
   const hasMedia = !!content.mediaFileId;
-  const TELEGRAM_TEXT_LIMIT = 4000;
-  const TELEGRAM_CAPTION_LIMIT = 900;
+  const TELEGRAM_TEXT_LIMIT = 4096;
+  const TELEGRAM_CAPTION_LIMIT = 1024;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
-  // Lower threshold to trigger summary EARLIER (80% of limit)
-  const SUMMARY_TRIGGER = hasMedia ? 700 : 3000;
   let finalMode = effectiveRewriteMode;
-  if (cleanedText.length > SUMMARY_TRIGGER) {
-    finalMode = "summary";
-    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${SUMMARY_TRIGGER}${hasMedia ? " [MEDIA]" : ""}, limit=${effectiveLimit})`);
-  }
-  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, trigger=${SUMMARY_TRIGGER})`);
+  // Do NOT force summary based on text length
+  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0 && !isMostlyPlaceholders;
+  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, limit=${effectiveLimit})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
@@ -658,10 +669,16 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
       }
     } catch (e) {
       aiError = e.message;
-      traceStep("ai_exception", false, e.message);
+    traceStep("ai_exception", false, e.message);
     }
   } else {
     traceStep("ai_skip", true, `mode=${finalMode}`);
+  }
+
+  // v0.6.4: Restore protected AI prompt blocks AFTER AI rewrite
+  if (protectedPrompts.length > 0) {
+    finalText = restorePrompts(finalText, protectedPrompts);
+    console.log(`[pipeline] restored ${protectedPrompts.length} AI prompt block(s) after AI rewrite`);
   }
 
   // Format WITHOUT footer first, then truncate, then add footer.
@@ -679,19 +696,92 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
-  const maxBodyLen = effectiveLimit - footerLen - 50;
+  let maxBodyLen = effectiveLimit - footerLen - 10;
 
-  // Step 3: v0.5.9 TASK 6 — Use safe truncateHtml() instead of brittle regex
+  let effectiveFooterHtml = footerHtml;
+  let effectiveFooterLen = footerLen;
+  if (maxBodyLen < 200) {
+    effectiveFooterHtml = "";
+    effectiveFooterLen = 0;
+    maxBodyLen = effectiveLimit - 10;
+  }
+
+  // v0.6.4: Handle long posts — split for text, AI summary for media
   let safeBody = formattedBody;
+  let extraParts = [];
+
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
-    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
-    traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
+    if (hasMedia) {
+      // Media posts — use AI summary
+      console.warn(`[pipeline] caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
+      try {
+        const targetCharLimit = maxBodyLen - 50;
+        const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+        if (summaryRes.ok && summaryRes.text) {
+          let summaryText = summaryRes.text;
+          if (protectedPrompts.length > 0) summaryText = restorePrompts(summaryText, protectedPrompts);
+          const { text: summaryFormatted } = formatPost(summaryText, { footer: null, engineName: "html", intensity: 40, emojiLevel: 10 });
+          if (summaryFormatted.length > 0 && summaryFormatted.length < formattedBody.length) {
+            safeBody = summaryFormatted;
+            wasRewritten = true;
+            aiProvider = summaryRes.provider;
+          } else {
+            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+          }
+        } else {
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+        }
+      } catch (e) {
+        safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+      }
+    } else {
+      // Text posts — try balanced split
+      const halfPoint = Math.floor(formattedBody.length / 2);
+      let bestSplit = formattedBody.lastIndexOf("\n\n", halfPoint);
+      if (bestSplit < halfPoint * 0.4) bestSplit = formattedBody.lastIndexOf("\n", halfPoint);
+      if (bestSplit < halfPoint * 0.4) {
+        bestSplit = Math.max(formattedBody.lastIndexOf(". ", halfPoint), formattedBody.lastIndexOf("! ", halfPoint), formattedBody.lastIndexOf("? ", halfPoint), formattedBody.lastIndexOf("۔ ", halfPoint));
+      }
+      if (bestSplit < halfPoint * 0.3) bestSplit = formattedBody.lastIndexOf(" ", halfPoint);
+      if (bestSplit < 100) bestSplit = halfPoint;
+
+      const part1 = formattedBody.slice(0, bestSplit).trim();
+      const part2 = formattedBody.slice(bestSplit).trim();
+
+      if (part2.length < 200 || part1.length > maxBodyLen) {
+        // Unbalanced — use AI summary
+        console.warn(`[pipeline] split unbalanced (p1=${part1.length}, p2=${part2.length}). Using AI summary...`);
+        try {
+          const targetCharLimit = maxBodyLen - 50;
+          const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+          if (summaryRes.ok && summaryRes.text) {
+            let summaryText = summaryRes.text;
+            if (protectedPrompts.length > 0) summaryText = restorePrompts(summaryText, protectedPrompts);
+            const { text: summaryFormatted } = formatPost(summaryText, { footer: null, engineName: "html", intensity: 40, emojiLevel: 10 });
+            if (summaryFormatted.length > 0 && summaryFormatted.length <= maxBodyLen) {
+              safeBody = summaryFormatted;
+              wasRewritten = true;
+              aiProvider = summaryRes.provider;
+            } else {
+              safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+            }
+          } else {
+            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+          }
+        } catch (e) {
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+        }
+      } else {
+        safeBody = part1;
+        extraParts.push(part2);
+        console.log(`[pipeline] balanced split: p1=${part1.length}, p2=${part2.length}`);
+      }
+    }
   }
 
   // Step 4: Append footer
-  const safeFormattedText = safeBody + footerHtml;
-  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
+  const safeFormattedText = safeBody + effectiveFooterHtml;
+  traceStep("format_final", true, `${safeFormattedText.length} chars`);
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;
@@ -824,7 +914,7 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
           });
           let retrySafeBody = retryBody;
           if (retryBody.length > maxBodyLen) {
-            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "\n\n<i>…</i>");
+            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "");
           }
           const retryText = retrySafeBody + footerHtml;
           console.log(`[pipeline] retry: original=${safeFormattedText.length} chars, summarized=${retryText.length} chars`);
@@ -933,6 +1023,21 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         ].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
+
+    // v0.6.4: Send extra parts (if the post was split)
+    if (extraParts.length > 0) {
+      const firstMsgId = publishRes?.result?.message_id;
+      for (let i = 0; i < extraParts.length; i++) {
+        const isLast = i === extraParts.length - 1;
+        const partFooter = isLast ? effectiveFooterHtml : "";
+        await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: extraParts[i] + partFooter, mediaType: null, mediaFileId: null,
+          extra: { parse_mode: parseMode, disable_web_page_preview: false, reply_to_message_id: firstMsgId },
+        }).catch(() => {});
+        if (!isLast) await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
     return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
