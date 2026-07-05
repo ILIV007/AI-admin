@@ -43,15 +43,23 @@ function trimUrlPunctuation(url) { return url.replace(/[.,);:!?}\]]+$/, ""); }
 
 function validateAndFixHtml(html) {
   let r = html;
+  // v0.6.7: Fix <blockquote expandable="true"> tags — they need special handling
   const tags = ["blockquote", "a", "b", "i", "code", "pre", "s", "u"];
   for (const tag of tags) {
-    const open = tag === "a" ? (r.match(/<a\s/g) || []).length : (r.match(new RegExp(`<${tag}>`, "g")) || []).length;
+    // Count both <tag> and <tag ...> (with attributes like expandable)
+    const openRegex = tag === "a" ? /<a\s/g : new RegExp(`<${tag}(?:\\s[^>]*)?>`, "g");
+    const open = (r.match(openRegex) || []).length;
     const close = (r.match(new RegExp(`</${tag}>`, "g")) || []).length;
     if (open > close) r += `</${tag}>`.repeat(open - close);
   }
-  // Remove nested blockquotes
+  // Remove nested blockquotes (but not expandable ones)
   r = r.replace(/<blockquote>([^<]*?)<blockquote>/g, "$1");
   r = r.replace(/<\/blockquote>([^<]*?)<\/blockquote>/g, "$1</blockquote>");
+  // v0.6.7: Fix common HTML issues that cause "can't parse entities" errors
+  // Remove empty tags
+  r = r.replace(/<b>\s*<\/b>/g, "");
+  r = r.replace(/<i>\s*<\/i>/g, "");
+  r = r.replace(/<code>\s*<\/code>/g, "");
   return r;
 }
 
@@ -85,11 +93,24 @@ const htmlEngine = {
       return ` §IC${inlineCodes.length - 1}§ `;
     });
 
-    // 3. Prompt blocks (System: ..., Prompt: ..., User: ... followed by multi-line content)
+    // 3. Prompt blocks — TWO detection methods:
+    //    A) §PROMPT_START§...§PROMPT_END§ markers (from restorePrompts — no label needed)
+    //    B) Traditional label-based: "Prompt:", "System:", etc.
     const promptBlocks = [];
-    work = work.replace(/(?:^|\n)(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE):\s*\n([\s\S]*?)(?=\n\n|\n#|$)/gi, (_, label, content) => {
-      if (content.trim().length > 30) { // Only treat as prompt if content is substantial
-        promptBlocks.push({ label: label.trim(), content: content.trim() });
+
+    // Method A — detect marker-wrapped prompts (no label shown to user)
+    work = work.replace(/§PROMPT_START§([\s\S]*?)§PROMPT_END§/g, (_, content) => {
+      if (content.trim().length > 20) {
+        promptBlocks.push({ label: "", content: content.trim() });
+        return ` §P${promptBlocks.length - 1}§ `;
+      }
+      return content;
+    });
+
+    // Method B — traditional label-based detection
+    work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(🎨\s*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|AI Prompt|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, emoji, label, content) => {
+      if (content.trim().length > 20) {
+        promptBlocks.push({ label: (label || "Prompt").trim(), content: content.trim() });
         return ` §P${promptBlocks.length - 1}§ `;
       }
       return _;
@@ -152,44 +173,153 @@ const htmlEngine = {
     if (intensity >= 20) work = work.replace(/^[\s]*[-•*]\s+(.+)$/gm, "• $1");
 
     // 10. Numbered steps — GROUP into ONE blockquote
+    //     v0.6.10: Also convert Persian numbers to English when title is English
     if (intensity >= 30) {
       const lines = work.split("\n");
       const out = [];
       let group = [];
       for (const line of lines) {
-        const m = line.match(/^(\d+)[.)]\s+(.+)$/);
-        if (m) {
-          const n = parseInt(m[1]);
-          const emoji = (n >= 0 && n <= 10) ? NUMBER_EMOJIS[n] : `${n}.`;
-          group.push(`${emoji} ${m[2]}`);
+        // v0.6.10: Check for Persian number + English content → convert to English number
+        const persianMatch = line.match(/^([۰-۹]+)[.)]\s+(.+)$/);
+        if (persianMatch) {
+          const persianToEnglish = (s) => s.replace(/[۰-۹]/g, d => "۰۱۲۳۴۵۶۷۸۹".indexOf(d));
+          const num = parseInt(persianToEnglish(persianMatch[1]));
+          const content = persianMatch[2];
+          // Check if content is English-dominant
+          const enChars = (content.match(/[a-zA-Z]/g) || []).length;
+          const faChars = (content.match(/[\u0600-\u06FF]/g) || []).length;
+          if (enChars > faChars) {
+            // English content → use English number
+            const emoji = (num >= 0 && num <= 10) ? NUMBER_EMOJIS[num] : `${num}.`;
+            group.push(`${emoji} ${content}`);
+          } else {
+            // Persian content → keep Persian number
+            group.push(line);
+          }
         } else {
-          if (group.length > 0) { out.push(`<blockquote>${group.join("\n")}</blockquote>`); group = []; }
-          out.push(line);
+          const m = line.match(/^(\d+)[.)]\s+(.+)$/);
+          if (m) {
+            const n = parseInt(m[1]);
+            const emoji = (n >= 0 && n <= 10) ? NUMBER_EMOJIS[n] : `${n}.`;
+            group.push(`${emoji} ${m[2]}`);
+          } else {
+            if (group.length > 0) { out.push(`<blockquote>${group.join("\n")}</blockquote>`); group = []; }
+            out.push(line);
+          }
         }
       }
       if (group.length > 0) out.push(`<blockquote>${group.join("\n")}</blockquote>`);
       work = out.join("\n");
     }
 
+    // 10.5. v0.6.2: Quote list items — numbered items with dash, راه‌حل: lines,
+    //       and HTML-wrapped headings ending with `:`. Collects heading +
+    //       following description lines (until blank line OR next numbered item)
+    //       into a blockquote.
+    //
+    //       Patterns detected (using INNER text after stripping HTML tags):
+    //       1. `^\d+\s*[–\-—]\s+`  — numbered items with dash (e.g., "400 – Bad Request")
+    //       2. `^راه[\-\s]?حل\s*[:：]`  — Persian "Solution:" lines
+    //       3. HTML-wrapped headings ending with `:` (e.g., "<b>عکاسی و ویدیو:</b>")
+    //
+    //       Bug fix: previously, lines starting with `<` were skipped in step 11,
+    //       but after markdown transforms, headings like `<b>...</b>` start with
+    //       `<` and weren't detected. We now check the INNER text by stripping HTML.
+    if (intensity >= 20) {
+      const stripTags = (s) => s.replace(/<[^>]+>/g, "");
+
+      // Numbered item with dash (e.g., "400 –", "401 -", "402 —")
+      const isNumberedDashItem = (line) => {
+        const t = line.trim();
+        if (!t) return false;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) return false;
+        if (t.startsWith("§")) return false;
+        const inner = stripTags(t).trim();
+        return /^\d+\s*[–\-—]\s+/.test(inner);
+      };
+
+      // v0.6.6: Also detect emoji-numbered items (1️⃣, 2️⃣, etc.) and Persian numbers (۱., ۲.)
+      const isEmojiNumberedItem = (line) => {
+        const t = line.trim();
+        if (!t || t.startsWith("<") || t.startsWith("§")) return false;
+        const inner = stripTags(t).trim();
+        // Emoji numbers: 1️⃣ 2️⃣ 3️⃣ etc.
+        if (/^[0-9]️⃣\s+/.test(inner)) return true;
+        // Persian numbers: ۱. ۲. ۳. etc.
+        if (/^[۰-۹]+\s*[.)]\s+/.test(inner)) return true;
+        return false;
+      };
+
+      // Heading ending with ":" (Persian or English)
+      const isColonHeading = (line) => {
+        const t = line.trim();
+        if (!t || t.startsWith("<blockquote>") || t.startsWith("§")) return false;
+        const inner = stripTags(t).trim();
+        if (!inner) return false;
+        // Persian "Solution:" lines
+        if (/^راه[\-\s\u200C]?حل\s*[:：]/.test(inner)) return true;
+        // Any line ending with : or ： (heading)
+        if (inner.length > 3 && inner.length < 150 && /[:：]\s*$/.test(inner)) return true;
+        return false;
+      };
+
+      const isListHeading = (line) => isNumberedDashItem(line) || isEmojiNumberedItem(line) || isColonHeading(line);
+
+      const lines = work.split("\n");
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (isListHeading(lines[i])) {
+          // v0.6.5: Heading stays OUTSIDE blockquote, only description goes inside
+          out.push(lines[i]); // Heading line — NOT quoted
+          i++;
+          const block = [];
+          while (i < lines.length) {
+            const t = lines[i].trim();
+            if (t === "") break;
+            if (isListHeading(lines[i])) break;
+            block.push(lines[i]);
+            i++;
+          }
+          if (block.length > 0) {
+            out.push(`<blockquote>${block.join("\n")}</blockquote>`);
+          }
+        } else {
+          out.push(lines[i]);
+          i++;
+        }
+      }
+      work = out.join("\n");
+    }
+
     // 11. Quote long paragraphs — TWO-PASS (skip first eligible)
+    //     v0.6.2: Fixed bug where HTML-wrapped headings (e.g., "<b>title</b>")
+    //     were skipped because they start with `<`. Now checks INNER text by
+    //     stripping HTML tags. Already-quoted blockquote lines are still skipped.
     if (intensity >= 30) {
       const minLen = intensity >= 80 ? 80 : 120;
+      const stripTags = (s) => s.replace(/<[^>]+>/g, "");
       const lines = work.split("\n");
       let firstIdx = -1;
       for (let i = 0; i < lines.length; i++) {
         const t = lines[i].trim();
-        if (!t || t.startsWith("<") || t.startsWith("§")) continue;
-        if (t.length < minLen) continue;
-        if (/^[•\-\*\d]/.test(t)) continue;
-        if ((t.match(/[.!?؟!]/g) || []).length < 2) continue;
+        if (!t || t.startsWith("§")) continue;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) continue;
+        // v0.6.2: Check inner text (strip HTML tags) instead of raw line
+        const inner = stripTags(t).trim();
+        if (inner.length < minLen) continue;
+        if (/^[•\-\*\d]/.test(inner)) continue;
+        if ((inner.match(/[.!?؟!]/g) || []).length < 2) continue;
         firstIdx = i; break;
       }
       work = lines.map((line, i) => {
         const t = line.trim();
-        if (!t || t.startsWith("<") || t.startsWith("§")) return line;
-        if (t.length < minLen) return line;
-        if (/^[•\-\*\d]/.test(t)) return line;
-        if ((t.match(/[.!?؟!]/g) || []).length < 2) return line;
+        if (!t || t.startsWith("§")) return line;
+        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) return line;
+        const inner = stripTags(t).trim();
+        if (inner.length < minLen) return line;
+        if (/^[•\-\*\d]/.test(inner)) return line;
+        if ((inner.match(/[.!?؟!]/g) || []).length < 2) return line;
         if (i === firstIdx) return line;
         return `<blockquote>${t}</blockquote>`;
       }).join("\n");
@@ -200,13 +330,17 @@ const htmlEngine = {
     work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
-      return `<b>${this.escape(p.label)}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
+      if (!p) return '';
+      const labelHtml = p.label ? `<b>${this.escape(p.label)}:</b>\n` : "";
+      return `${labelHtml}<blockquote expandable="true"><code>${this.escape(p.content)}</code></blockquote>`;
     });
 
     // === PHASE 5: POLISH ===
-    if (emojiLevel > 0 && intensity >= 40) {
-      work = this.addEmojisToHeadings(work, emojiLevel);
-    }
+    // v0.6.7: DISABLED auto emoji addition to headings — was adding random emojis
+    // that confused users. The AI prompt already handles emoji preservation.
+    // if (emojiLevel > 0 && intensity >= 40) {
+    //   work = this.addEmojisToHeadings(work, emojiLevel);
+    // }
     work = work.replace(/\n{3,}/g, "\n\n");
     if (footer) work = `${work}\n\n<blockquote>${footer}</blockquote>`;
 

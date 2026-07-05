@@ -68,6 +68,111 @@ function isUsernamePartOfUrl(text, matchIndex) {
 }
 
 // ============================================================
+// v0.6.2: PROMPT PROTECTION (using Persian word "پرامپت")
+// ============================================================
+// Detects paragraphs that follow the Persian word "پرامپت" (prompt)
+// and protects English-dominant paragraphs from cleaning.
+//
+// Algorithm:
+//   1. Find all occurrences of "پرامپت" in the text
+//   2. For each occurrence, look at the paragraphs that come AFTER it
+//      (within 1-2 paragraphs)
+//   3. If those paragraphs are English-dominant and >80 chars, protect them
+//
+// This helps detect prompts in posts like:
+//   "از این پرامپت استفاده کنید:
+//    Character reference sheet, 4-panel grid layout..."
+// ============================================================
+
+function isEnglishDominant(text) {
+  if (!text) return false;
+  const enChars = (text.match(/[A-Za-z]/g) || []).length;
+  const faChars = (text.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+  return enChars > faChars && enChars > 10;
+}
+
+const PROMPT_KEYWORDS = [
+  "photorealistic", "octane render", "masterpiece", "8k", "4k", "ultra detailed",
+  "keep the face", "identical to the reference", "no changes to identity",
+  "--ar", "--v", "--niji", "--seed", "--chaos", "--stylize",
+  "stable diffusion", "midjourney", "dall-e", "sdxl", "controlnet",
+  "negative prompt", "steps:", "cfg scale", "sampler", "denoising",
+  "render", "cinematic lighting", "volumetric lighting", "ray tracing",
+  "unreal engine", "blender", "zbrush", "substance painter",
+  "highly detailed", "intricate details", "sharp focus", "depth of field",
+  "bokeh", "film grain", "color grading", "hdr", "uhd",
+  "prompt:", "system prompt:", "user:", "assistant:", "instruction:",
+  "face identical", "lighting may change", "hairstyle", "facial shape",
+  "panel", "reference sheet", "grid layout", "lens", "framing", "shot", "angle",
+  "background", "camera", "pure white", "studio",
+];
+
+export function protectPrompts(text) {
+  if (!text) return { text, prompts: [] };
+  const prompts = [];
+  const paragraphs = text.split(/\n\s*\n/);
+  const result = [];
+
+  for (const para of paragraphs) {
+    const paraTrimmed = para.trim();
+    if (!paraTrimmed) { result.push(para); continue; }
+
+    // v0.6.10: Strip URLs and markdown links before counting ASCII letters
+    // This prevents link-heavy paragraphs from being detected as English prompts
+    const paraNoUrls = paraTrimmed
+      .replace(/\[([^\]]*)\]\([^)]+\)/g, "$1")  // [text](url) → text
+      .replace(/https?:\/\/[^\s]+/g, "");          // plain URLs → removed
+    const asciiLetters = (paraNoUrls.match(/[a-zA-Z]/g) || []).length;
+    const persianChars = (paraNoUrls.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+    const isEnglishDominant = asciiLetters > persianChars && asciiLetters > 15;
+
+    // v0.6.10: Skip if paragraph is mostly URLs/links (not real prompt content)
+    const urlCount = (paraTrimmed.match(/https?:\/\/[^\s]+/g) || []).length;
+    const markdownLinkCount = (paraTrimmed.match(/\[([^\]]*)\]\([^)]+\)/g) || []).length;
+    const isLinkHeavy = (urlCount + markdownLinkCount) >= 2 && paraNoUrls.trim().length < 100;
+
+    if (isEnglishDominant && !isLinkHeavy) {
+      const paraLower = paraTrimmed.toLowerCase();
+      let keywordCount = 0;
+      for (const kw of PROMPT_KEYWORDS) {
+        if (paraLower.includes(kw)) keywordCount++;
+      }
+      const hasMJParams = /--\w+\s+\S+/.test(paraTrimmed);
+      const startsWithLabel = /^(prompt|system|user|assistant|instruction|role)\s*:/i.test(paraTrimmed);
+      const hasPromptStructure = /\b(panel|reference sheet|grid layout|view|profile|lighting|lens|framing|shot|angle|background|camera|render)\b/i.test(paraTrimmed);
+      // Also check if the word "پرامپت" appears in nearby text (previous paragraph)
+      const prevPara = result.length > 0 ? result[result.length - 1] : "";
+      const hasNearbyPromptWord = prevPara.includes("پرامپت") || paraTrimmed.includes("پرامپت");
+
+      const shouldProtect = (
+        (paraTrimmed.length > 80 && (keywordCount >= 1 || hasMJParams || startsWithLabel || hasPromptStructure || hasNearbyPromptWord)) ||
+        (paraTrimmed.length > 200 && isEnglishDominant)
+      );
+
+      if (shouldProtect) {
+        const placeholder = `__PROMPT_BLOCK_${prompts.length}__`;
+        prompts.push(paraTrimmed);
+        console.log(`[cleaner] protected prompt block ${prompts.length - 1}: ${paraTrimmed.length} chars, ${keywordCount} keywords`);
+        result.push(placeholder);
+        continue;
+      }
+    }
+    result.push(para);
+  }
+
+  return { text: result.join("\n\n"), prompts };
+}
+
+export function restorePrompts(text, prompts) {
+  if (!text || !prompts || prompts.length === 0) return text;
+  return text.replace(/__PROMPT_BLOCK_(\d+)__/g, (_, i) => {
+    const prompt = prompts[Number(i)];
+    if (!prompt) return "";
+    return `\n§PROMPT_START§${prompt}§PROMPT_END§\n`;
+  });
+}
+
+// ============================================================
 // MAIN CLEAN FUNCTION
 // ============================================================
 
@@ -108,18 +213,50 @@ export function cleanContent(rawText) {
   text = text.replace(/\bsource\s*:\s*@[\w_]+\b/gi, "");
 
   // 5. Remove "@DevTwitter | <Author>" style attribution lines (signature at end of post)
-  //    IMPORTANT: use [^\n]* (single-line) NOT [^]* — otherwise we'd delete all content
-  //    after the attribution line, causing data loss.
   text = text.replace(/\n\s*@\w+\s*\|[^\n]*$/gim, "");
   text = text.replace(/\n\s*@\w+\s*[—–-]\s*[^\n]*$/gim, "");
 
-  // 6. Remove standalone @channel_username lines that are pure promo
-  //    BUT keep usernames that appear inside a URL or as part of code/tech content
+  // v0.6.11: Remove promotional footer PATTERNS
+  text = text.split("\n").map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (trimmed.includes("🌀 @ILIVIR3")) return line;
+
+    // Check if line starts with an emoji (non-ASCII, non-Persian, non-letter)
+    const startsWithEmoji = /^[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(trimmed);
+
+    // Remove: emoji + @username (e.g. "🆔 @ShahrSakhtAfzar", "🎮 @GamotionArt")
+    if (startsWithEmoji && /@\w+/.test(trimmed) && trimmed.length < 80) return "";
+    // Remove: @username | description
+    if (/^@\w+\s*[|•·]\s*[^\n]{0,60}$/.test(trimmed)) return "";
+    // Remove: @username • description
+    if (/^@\w+\s*•/.test(trimmed)) return "";
+    // Remove: standalone @username
+    if (/^@\w+$/.test(trimmed)) return "";
+    // Remove: dots/separators
+    if (/^[.·•─—–-]{3,}$/.test(trimmed)) return "";
+    return line;
+  }).join("\n");
+
+  // 6. Remove @channel_username inline (but not URLs or bot footer)
   text = text.replace(/(^|\s)@([A-Za-z][A-Za-z0-9_]{3,})\b/g, (match, prefix, username, offset) => {
     if (isUsernamePartOfUrl(text, offset + prefix.length)) return match;
-    // Keep if username is at the start of a quoted reply context
+    if (username === "ILIVIR3") return match;
     return prefix;
   });
+
+  // v0.6.11: Clean up leftover lines (standalone emoji or emoji + separator + short text)
+  text = text.split("\n").map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (trimmed.includes("🌀 @ILIVIR3")) return line;
+    // Remove: standalone non-alphanumeric line (leftover emoji)
+    if (/^[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]+$/.test(trimmed) && trimmed.length < 5) return "";
+    // Remove: emoji + separator + short text (leftover from @channel | desc)
+    const startsWithEmoji = /^[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(trimmed);
+    if (startsWithEmoji && /[|•·-]/.test(trimmed) && trimmed.length < 60) return "";
+    return line;
+  }).join("\n");
 
   // 7. Remove "Join / Follow / Subscribe" lines
   text = text.replace(/^\s*(join|subscribe|follow|don't miss out|click here to)\b[^\n]*$/gim, "");
@@ -128,15 +265,13 @@ export function cleanContent(rawText) {
   // 8. Remove "for more: @channel" / "more: t.me/xxx"
   text = text.replace(/\b(for more|more info|more details?)\s*[:：]\s*@?[\w/.\-]+/gi, "");
 
-  // 9. Collapse spam hashtag blocks (5+ consecutive hashtags → keep first 2)
-  //    Use [ \t]* instead of \s* so we DON'T consume the trailing newline
-  //    (otherwise the next line gets glued onto the hashtags).
+  // 9. Collapse spam hashtag blocks
   text = text.replace(/((?:#\w+[ \t]*){5,})/g, (block) => {
     const tags = block.trim().split(/[ \t]+/);
     return tags.slice(0, 2).join(" ");
   });
 
-  // 10. Remove promotional footers like "📡 @channel | 💬 @chat | 🌐 site"
+  // 10. Remove promotional footers (already handled above, but keep as fallback)
   text = text.replace(/\n\s*[📡💬🌐🚀📢]*\s*@[A-Za-z]\w+(?:\s*\|\s*[@🌐][^\n]+)*\s*$/i, "");
 
   // 11. Restore URLs

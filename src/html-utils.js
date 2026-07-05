@@ -100,10 +100,10 @@ export function closeOpenTags(html) {
  *
  * @param {string} html - The HTML string to truncate
  * @param {number} maxLen - Maximum length of the result (including suffix)
- * @param {string} [suffix="\n\n<i>…</i>"] - Suffix to append when truncated
+ * @param {string} [suffix=""] - Suffix to append when truncated
  * @returns {string} Truncated HTML with all tags closed
  */
-export function truncateHtml(html, maxLen, suffix = "\n\n<i>…</i>") {
+export function truncateHtml(html, maxLen, suffix = "") {
   if (!html || html.length <= maxLen) return html || "";
   if (maxLen < 50) return html.slice(0, maxLen); // too small to be smart
 

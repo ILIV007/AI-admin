@@ -41,7 +41,7 @@ import {
   setLastScheduledTime,
 } from "./kv.js";
 import { classify } from "./classifier.js";
-import { cleanContent, detectLanguage } from "./cleaner.js";
+import { cleanContent, detectLanguage, protectPrompts, restorePrompts } from "./cleaner.js";
 import { formatPost } from "./formatter.js";
 import { aiRewrite, aiSummarize } from "./ai.js";
 import { closeOpenTags, truncateHtml } from "./html-utils.js";
@@ -231,7 +231,7 @@ export async function runMediaGroupPipeline(env, items, update) {
   let safeBody = formattedBody;
   if (formattedBody.length > maxBodyLen) {
     console.warn(`[mg-pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
-    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
+    safeBody = truncateHtml(formattedBody, maxBodyLen, "");
   }
   const formattedText = safeBody + footerHtml;
 
@@ -245,6 +245,7 @@ export async function runMediaGroupPipeline(env, items, update) {
   let wasScheduled = false;
   let scheduledTime = null;
   let scheduleError = null;
+  let lastMgError = null;  // v0.6.2: track sendMediaGroup error for retry detection
 
   if (feedbackChatId) {
     await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, mediaItems, { parse_mode: parseMode });
@@ -365,9 +366,77 @@ export async function runMediaGroupPipeline(env, items, update) {
       const pubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, mediaItems, { parse_mode: parseMode });
       publishOk = pubRes.ok;
       console.log(`[mg-pipeline] publish: ${publishOk ? "OK" : pubRes.description}`);
+      if (!publishOk) {
+        lastMgError = pubRes.description || "unknown";
+      }
     }
   } else {
     publishOk = true;
+  }
+
+  // v0.6.2: RETRY WITH SUMMARY for media groups — if publish fails with "too long"
+  // error, retry with a shorter caption via aiSummarize.
+  if (!publishOk && targetChannel) {
+    const failMsg = String(scheduleError || lastMgError || "");
+    if (/too long|too_long|TOO_LONG|caption/i.test(failMsg)) {
+      console.log(`[mg-pipeline] v0.6.2 RETRY WITH SUMMARY: publish failed (${failMsg}), retrying with shorter caption...`);
+      try {
+        const MG_RETRY_LIMIT = MG_LIMIT - 200;
+        const retryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, MG_RETRY_LIMIT);
+        if (retryRes.ok && retryRes.text) {
+          const { text: retryBody, parseMode: retryParseMode } = formatPost(retryRes.text, {
+            footer: null, engineName: "html", intensity: settings.edit_intensity ?? 60, emojiLevel: settings.emoji_level ?? 20,
+          });
+          let retrySafeBody = retryBody;
+          if (retryBody.length > maxBodyLen) {
+            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "");
+          }
+          const retryText = retrySafeBody + footerHtml;
+          console.log(`[mg-pipeline] retry: original=${formattedText.length} chars, summarized=${retryText.length} chars`);
+
+          // Re-build mediaItems with the new caption
+          const retryMediaItems = items.map((it, i) => ({
+            type: it.type, fileId: it.fileId,
+            caption: i === 0 ? retryText : undefined,
+          }));
+
+          // Re-publish (in the same mode)
+          if (settings.scheduling_enabled) {
+            const retryResolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+            const retrySchedTime = Math.floor((Date.now() + 90 * 1000) / 1000);
+            const retrySchedRes = await sendMediaGroup(env.BOT_TOKEN, retryResolvedChannel, retryMediaItems, {
+              parse_mode: retryParseMode,
+              schedule_date: retrySchedTime,
+            });
+            const retryVer = verifyScheduled(retrySchedRes, retrySchedTime);
+            publishOk = retrySchedRes.ok && retryVer.scheduled;
+            if (publishOk) {
+              wasScheduled = true;
+              scheduledTime = retrySchedTime * 1000;
+              scheduleError = null;
+            } else {
+              scheduleError = retryVer.description || retrySchedRes.description || "retry scheduling failed";
+            }
+          } else {
+            const retryPubRes = await sendMediaGroup(env.BOT_TOKEN, targetChannel, retryMediaItems, { parse_mode: retryParseMode });
+            publishOk = retryPubRes.ok;
+            console.log(`[mg-pipeline] retry publish: ${publishOk ? "OK" : retryPubRes.description}`);
+          }
+
+          // Send retry version to user too
+          if (feedbackChatId) {
+            await sendMediaGroup(env.BOT_TOKEN, feedbackChatId, retryMediaItems, { parse_mode: retryParseMode }).catch(() => {});
+          }
+
+          finalText = retryRes.text;
+          wasRewritten = true;
+          aiProvider = retryRes.provider || "summary-retry";
+          aiError = null;
+        }
+      } catch (e) {
+        console.error(`[mg-pipeline] retry-with-summary exception: ${e.message}`);
+      }
+    }
   }
 
   if (publishOk) {
@@ -531,8 +600,23 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Clean
   const cleanedText = cleanContent(rawText);
-  const textForAI = replyContext + cleanedText;
-  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars`);
+
+  // v0.6.4: Protect AI prompts from being destroyed by AI rewrite
+  const { text: protectedText, prompts: protectedPrompts } = protectPrompts(cleanedText);
+  if (protectedPrompts.length > 0) {
+    console.log(`[pipeline] protected ${protectedPrompts.length} AI prompt block(s) from AI rewrite`);
+  }
+
+  // v0.6.4: If text is mostly placeholders, skip AI
+  const placeholderCount = (protectedText.match(/__PROMPT_BLOCK_\d+__/g) || []).length;
+  const nonPlaceholderText = protectedText.replace(/__PROMPT_BLOCK_\d+__/g, "").trim();
+  const isMostlyPlaceholders = nonPlaceholderText.length < 50 && placeholderCount > 0;
+  if (isMostlyPlaceholders) {
+    console.log(`[pipeline] Text is mostly prompt placeholders. Skipping AI rewrite.`);
+  }
+
+  const textForAI = replyContext + protectedText;
+  traceStep("clean", true, `${rawText.length}→${cleanedText.length} chars${protectedPrompts.length > 0 ? ` (${protectedPrompts.length} prompts protected)` : ""}`);
 
   // AI rewrite
   let finalText = cleanedText;
@@ -544,21 +628,17 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   const intensity = settings.edit_intensity ?? 60;
   const emojiLevel = settings.emoji_level ?? 20;
 
-  // v0.5.9: Better long-post handling
+  // v0.6.4: NO auto-summarization. Use actual Telegram limits.
+  // Only summarize if publish fails with "too long" (retry-with-summary).
   const hasMedia = !!content.mediaFileId;
-  const TELEGRAM_TEXT_LIMIT = 4000;
-  const TELEGRAM_CAPTION_LIMIT = 900;
+  const TELEGRAM_TEXT_LIMIT = 4096;
+  const TELEGRAM_CAPTION_LIMIT = 1024;
   const effectiveLimit = hasMedia ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT;
 
-  // Lower threshold to trigger summary EARLIER (80% of limit)
-  const SUMMARY_TRIGGER = hasMedia ? 700 : 3000;
   let finalMode = effectiveRewriteMode;
-  if (cleanedText.length > SUMMARY_TRIGGER) {
-    finalMode = "summary";
-    console.log(`[pipeline] AUTO SUMMARY FORCED (input ${cleanedText.length} > ${SUMMARY_TRIGGER}${hasMedia ? " [MEDIA]" : ""}, limit=${effectiveLimit})`);
-  }
-  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0;
-  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, trigger=${SUMMARY_TRIGGER})`);
+  // Do NOT force summary based on text length
+  const shouldRewrite = finalMode !== "none" && cleanedText.length > 0 && !isMostlyPlaceholders;
+  console.log(`[pipeline] rewrite: mode=${finalMode} (settings: ${effectiveRewriteMode}) intensity=${intensity}% should=${shouldRewrite} (input ${cleanedText.length} chars, limit=${effectiveLimit})`);
 
   if (shouldRewrite && decision.needs_rewrite !== false) {
     try {
@@ -589,10 +669,16 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
       }
     } catch (e) {
       aiError = e.message;
-      traceStep("ai_exception", false, e.message);
+    traceStep("ai_exception", false, e.message);
     }
   } else {
     traceStep("ai_skip", true, `mode=${finalMode}`);
+  }
+
+  // v0.6.4: Restore protected AI prompt blocks AFTER AI rewrite
+  if (protectedPrompts.length > 0) {
+    finalText = restorePrompts(finalText, protectedPrompts);
+    console.log(`[pipeline] restored ${protectedPrompts.length} AI prompt block(s) after AI rewrite`);
   }
 
   // Format WITHOUT footer first, then truncate, then add footer.
@@ -610,19 +696,92 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
     ? `\n\n<blockquote>${settings.footer_text}</blockquote>`
     : "";
   const footerLen = footerHtml.length;
-  const maxBodyLen = effectiveLimit - footerLen - 50;
+  let maxBodyLen = effectiveLimit - footerLen - 10;
 
-  // Step 3: v0.5.9 TASK 6 — Use safe truncateHtml() instead of brittle regex
+  let effectiveFooterHtml = footerHtml;
+  let effectiveFooterLen = footerLen;
+  if (maxBodyLen < 200) {
+    effectiveFooterHtml = "";
+    effectiveFooterLen = 0;
+    maxBodyLen = effectiveLimit - 10;
+  }
+
+  // v0.6.4: Handle long posts — split for text, AI summary for media
   let safeBody = formattedBody;
+  let extraParts = [];
+
   if (formattedBody.length > maxBodyLen) {
-    console.warn(`[pipeline] body too long (${formattedBody.length} > ${maxBodyLen}), safe truncating`);
-    safeBody = truncateHtml(formattedBody, maxBodyLen, "\n\n<i>…</i>");
-    traceStep("truncate_body", true, `${formattedBody.length}→${safeBody.length} chars`);
+    if (hasMedia) {
+      // Media posts — use AI summary
+      console.warn(`[pipeline] caption too long (${formattedBody.length} > ${maxBodyLen}), using AI summary...`);
+      try {
+        const targetCharLimit = maxBodyLen - 50;
+        const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+        if (summaryRes.ok && summaryRes.text) {
+          let summaryText = summaryRes.text;
+          if (protectedPrompts.length > 0) summaryText = restorePrompts(summaryText, protectedPrompts);
+          const { text: summaryFormatted } = formatPost(summaryText, { footer: null, engineName: "html", intensity: 40, emojiLevel: 10 });
+          if (summaryFormatted.length > 0 && summaryFormatted.length < formattedBody.length) {
+            safeBody = summaryFormatted;
+            wasRewritten = true;
+            aiProvider = summaryRes.provider;
+          } else {
+            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+          }
+        } else {
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+        }
+      } catch (e) {
+        safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+      }
+    } else {
+      // Text posts — try balanced split
+      const halfPoint = Math.floor(formattedBody.length / 2);
+      let bestSplit = formattedBody.lastIndexOf("\n\n", halfPoint);
+      if (bestSplit < halfPoint * 0.4) bestSplit = formattedBody.lastIndexOf("\n", halfPoint);
+      if (bestSplit < halfPoint * 0.4) {
+        bestSplit = Math.max(formattedBody.lastIndexOf(". ", halfPoint), formattedBody.lastIndexOf("! ", halfPoint), formattedBody.lastIndexOf("? ", halfPoint), formattedBody.lastIndexOf("۔ ", halfPoint));
+      }
+      if (bestSplit < halfPoint * 0.3) bestSplit = formattedBody.lastIndexOf(" ", halfPoint);
+      if (bestSplit < 100) bestSplit = halfPoint;
+
+      const part1 = formattedBody.slice(0, bestSplit).trim();
+      const part2 = formattedBody.slice(bestSplit).trim();
+
+      if (part2.length < 200 || part1.length > maxBodyLen) {
+        // Unbalanced — use AI summary
+        console.warn(`[pipeline] split unbalanced (p1=${part1.length}, p2=${part2.length}). Using AI summary...`);
+        try {
+          const targetCharLimit = maxBodyLen - 50;
+          const summaryRes = await aiSummarize(env, settings, cleanedText, effectiveLang, targetCharLimit);
+          if (summaryRes.ok && summaryRes.text) {
+            let summaryText = summaryRes.text;
+            if (protectedPrompts.length > 0) summaryText = restorePrompts(summaryText, protectedPrompts);
+            const { text: summaryFormatted } = formatPost(summaryText, { footer: null, engineName: "html", intensity: 40, emojiLevel: 10 });
+            if (summaryFormatted.length > 0 && summaryFormatted.length <= maxBodyLen) {
+              safeBody = summaryFormatted;
+              wasRewritten = true;
+              aiProvider = summaryRes.provider;
+            } else {
+              safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+            }
+          } else {
+            safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+          }
+        } catch (e) {
+          safeBody = truncateHtml(formattedBody, maxBodyLen, "");
+        }
+      } else {
+        safeBody = part1;
+        extraParts.push(part2);
+        console.log(`[pipeline] balanced split: p1=${part1.length}, p2=${part2.length}`);
+      }
+    }
   }
 
   // Step 4: Append footer
-  const safeFormattedText = safeBody + footerHtml;
-  traceStep("format_final", true, `${safeFormattedText.length} chars (body=${safeBody.length} + footer=${footerLen})`);
+  const safeFormattedText = safeBody + effectiveFooterHtml;
+  traceStep("format_final", true, `${safeFormattedText.length} chars`);
 
   // Publish
   const targetChannel = env.TARGET_CHANNEL;
@@ -634,6 +793,54 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
 
   // Send to user
   if (feedbackChatId) {
+    // v0.6.8: If approve mode is ON, send preview with approve/reject buttons
+    if (settings.approve_enabled && !settings.scheduling_enabled) {
+      console.log(`[pipeline] approve mode ON — sending preview with buttons`);
+      const previewRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+        text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+        extra: {
+          parse_mode: parseMode,
+          disable_web_page_preview: false,
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:PREVIEW_ID` },
+              { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:PREVIEW_ID` },
+            ]],
+          },
+        },
+      });
+      if (previewRes.ok) {
+        const previewMsgId = previewRes.result?.message_id;
+        const storageKey = `approve:${previewMsgId}`;
+        await SETTINGS.put(storageKey, JSON.stringify({
+          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+          parseMode, targetChannel, extraParts, footerHtml: effectiveFooterHtml, createdAt: Date.now(),
+        }), { expirationTtl: 3600 });
+        // Fix callback_data with real message ID
+        await editMessageText(env.BOT_TOKEN, feedbackChatId, previewMsgId, safeFormattedText, {
+          parse_mode: parseMode, disable_web_page_preview: false,
+          reply_markup: { inline_keyboard: [[
+            { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
+            { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
+          ]] },
+        }).catch(() => {});
+        if (content.mediaType) {
+          await sendMessage(env.BOT_TOKEN, feedbackChatId, `<b>👇 Review the post above</b>`,
+            { parse_mode: "HTML", disable_web_page_preview: true,
+              reply_markup: { inline_keyboard: [[
+                { text: "✅ Publish", callback_data: `approve:publish:${feedbackChatId}:${previewMsgId}` },
+                { text: "❌ Reject", callback_data: `approve:reject:${feedbackChatId}:${previewMsgId}` },
+              ]] },
+            });
+        }
+      }
+      if (feedbackChatId && processingMsgId) {
+        await editMessageText(env.BOT_TOKEN, feedbackChatId, processingMsgId,
+          `⏸️ <b>Waiting for approval</b>\n\nReview the preview above and click <b>✅ Publish</b> or <b>❌ Reject</b>.`,
+          { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+      }
+      return { ok: true, detail: "approve: waiting for user approval" };
+    }
     const userRes = await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
       text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
       extra: { parse_mode: parseMode, disable_web_page_preview: false },
@@ -739,6 +946,95 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
   }
   traceStep("publish_to_channel", publishRes.ok, publishRes.ok ? (wasScheduled ? "scheduled" : "ok") : (publishRes.scheduleError || publishRes.description));
 
+  // v0.6.7: RETRY WITH SUMMARY — if publish fails with "too long" OR "can't parse" error,
+  // try again with a shorter summarized version.
+  if (!publishRes.ok) {
+    const errMsg = String(publishRes.description || publishRes.scheduleError || "");
+    // v0.6.7: Also catch "can't parse entities" (HTML parsing errors)
+    if (/too long|too_long|TOO_LONG|caption|can.t parse|parse entities|Unexpected end tag/i.test(errMsg)) {
+      console.log(`[pipeline] RETRY WITH SUMMARY: publish failed (${errMsg}), retrying...`);
+
+      // v0.6.7: If it's a parse error (not length), try sending as plain text first
+      if (/can.t parse|parse entities|Unexpected end tag/i.test(errMsg)) {
+        console.log(`[pipeline] HTML parse error detected, trying plain text...`);
+        publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: safeFormattedText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+          // No parse_mode = plain text
+          extra: { disable_web_page_preview: false },
+        });
+        if (publishRes.ok) {
+          console.log(`[pipeline] Plain text retry succeeded!`);
+          traceStep("retry_plaintext", true, "sent as plain text");
+        }
+      }
+
+      // If still failed, try with AI summary
+      if (!publishRes.ok) {
+      try {
+        const retryTargetLimit = effectiveLimit - 300;
+        const retryRes = await aiSummarize(env, settings, textForAI, effectiveLang, retryTargetLimit);
+        if (retryRes.ok && retryRes.text) {
+          const { text: retryBody, parseMode: retryParseMode } = formatPost(retryRes.text, {
+            footer: null, engineName: "html", intensity, emojiLevel,
+          });
+          let retrySafeBody = retryBody;
+          if (retryBody.length > maxBodyLen) {
+            retrySafeBody = truncateHtml(retryBody, maxBodyLen, "");
+          }
+          const retryText = retrySafeBody + footerHtml;
+          console.log(`[pipeline] retry: original=${safeFormattedText.length} chars, summarized=${retryText.length} chars`);
+
+          // Re-publish in the same mode (scheduled or non-scheduled)
+          if (settings.scheduling_enabled) {
+            // Re-resolve channel (cached) and re-attempt scheduling with fresh time
+            const retryResolvedChannel = await resolveChatId(env.BOT_TOKEN, targetChannel);
+            const retrySchedTime = Math.floor((Date.now() + 90 * 1000) / 1000);
+            publishRes = await publishToChannel(env.BOT_TOKEN, retryResolvedChannel, {
+              text: retryText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+              extra: { parse_mode: retryParseMode, schedule_date: retrySchedTime },
+            });
+            // Re-verify scheduling
+            const retryVer = verifyScheduled(publishRes, retrySchedTime);
+            if (publishRes.ok && retryVer.scheduled) {
+              wasScheduled = true;
+              scheduledTime = retrySchedTime * 1000;
+              scheduleError = null;
+              publishRes.scheduleError = null;
+            } else {
+              scheduleError = retryVer.description || publishRes.description || "retry scheduling failed";
+              publishRes.scheduleError = scheduleError;
+            }
+          } else {
+            publishRes = await publishToChannel(env.BOT_TOKEN, targetChannel, {
+              text: retryText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+              extra: { parse_mode: retryParseMode, disable_web_page_preview: false },
+            });
+          }
+
+          // Send the retry version to user too (so they see what was actually published)
+          if (feedbackChatId) {
+            await publishToChannel(env.BOT_TOKEN, feedbackChatId, {
+              text: retryText, mediaType: content.mediaType, mediaFileId: content.mediaFileId,
+              extra: { parse_mode: retryParseMode, disable_web_page_preview: false },
+            }).catch(() => {});
+          }
+
+          finalText = retryRes.text;
+          wasRewritten = true;
+          aiProvider = retryRes.provider || "summary-retry";
+          aiError = null;
+          traceStep("retry_summary", publishRes.ok, `retry ${publishRes.ok ? "ok" : "failed"}: ${retryText.length} chars`);
+        } else {
+          traceStep("retry_summary", false, retryRes.error || "summarize failed");
+        }
+      } catch (e) {
+        traceStep("retry_summary", false, e.message);
+        console.error(`[pipeline] retry-with-summary exception: ${e.message}`);
+      }
+      } // end if (!publishRes.ok) after plain text attempt
+    }
+  }
+
   if (publishRes.ok) {
     await bumpStats(SETTINGS, adminId, "processed");
     await bumpGlobalStats(SETTINGS, "processed");
@@ -793,6 +1089,21 @@ export async function runPipelineInner(env, content, settings, rawText, feedback
         ].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
     }
+
+    // v0.6.4: Send extra parts (if the post was split)
+    if (extraParts.length > 0) {
+      const firstMsgId = publishRes?.result?.message_id;
+      for (let i = 0; i < extraParts.length; i++) {
+        const isLast = i === extraParts.length - 1;
+        const partFooter = isLast ? effectiveFooterHtml : "";
+        await publishToChannel(env.BOT_TOKEN, targetChannel, {
+          text: extraParts[i] + partFooter, mediaType: null, mediaFileId: null,
+          extra: { parse_mode: parseMode, disable_web_page_preview: false, reply_to_message_id: firstMsgId },
+        }).catch(() => {});
+        if (!isLast) await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
     return { ok: true, detail: `published: ${decision.content_type}/${effectiveRewriteMode}` };
   } else {
     await bumpStats(SETTINGS, adminId, "failed");
