@@ -1,19 +1,23 @@
 /**
  * src/ai.js
- * Unified AI client with MULTI-MODEL fallback — v0.7.1 (token optimization)
+ * Unified AI client with MULTI-MODEL fallback — v0.7.3
  *
- * v0.7.1 changes (token optimization — NO behavior changes):
- *   - REDUCED maxOutputTokens / max_tokens from 3096 → 2048
- *     (Telegram hard limit is 4096 chars; 2048 tokens ≈ 8000 chars is plenty)
- *   - LIMITED parallel providers to TOP 4 (was up to 11)
- *     Old: top 2 preferred + ALL of other provider + rest of preferred = ~11 racing
- *     New: top 2 preferred + top 2 of other provider = 4 racing
- *     Saves tokens: 7 models no longer consume input tokens before being aborted
- *   - ADDED input truncation: text > 8000 chars → trim to 8000 with marker
- *     Avoids sending massive inputs that produce massive outputs (saves output tokens too)
- *   - TIGHTENED prompts: removed redundant rules, kept all critical ones
- *     Saves ~80 tokens per request on system prompt
- *   - PRESERVED: AbortController (cancels losers), profile support, smart fallback
+ * v0.7.3 changes (very conservative token optimization on Prime v0.6.11):
+ *   - REDUCED maxOutputTokens / max_tokens from 3096 → 2500
+ *     (still enough for long posts: 2500 tokens ≈ 10,000 chars, well above
+ *     Telegram's 4096-char limit, so summarize still works)
+ *   - ADDED explicit warnings when API keys are missing (helps diagnose
+ *     "format-only fallback" issues quickly — no behavior change)
+ *   - PRESERVED all v0.5.9 / v0.6.x logic EXACTLY:
+ *     * AbortController cancels losers (saves tokens on cancelled providers)
+ *     * Smart fallback ordering (preferred top 2 → other → rest)
+ *     * Promise.any races ALL available providers (no limit on parallelism)
+ *     * COMPACT_REWRITE_PROMPT / COMPACT_SUMMARIZE_PROMPT unchanged
+ *     * aiSummarize accepts targetCharLimit
+ *     * Profile support
+ *   - NO truncateInput (would break long-post summarize — input truncation
+ *     loses content the AI needs to summarize)
+ *   - NO prompt tightening (would risk quality regression)
  *
  * v0.5.9 changes (kept):
  *   - AbortController: when first provider succeeds, all others are ABORTED
@@ -21,10 +25,6 @@
  *   - aiSummarize accepts targetCharLimit to fit Telegram limits
  *   - Static import of profiles (was dynamic — failed in CF Workers bundler)
  *   - Always include BOTH providers as fallback (preferred first)
- *
- * v0.6.4 changes (kept):
- *   - Smart fallback ordering (preferred top 2 → other provider → rest)
- *   - Updated model lists (Gemini 3, Llama 3.3, etc.)
  */
 
 // v0.5.7: STATIC import (dynamic import was failing in Cloudflare Workers bundler)
@@ -32,17 +32,9 @@ import { buildProfileEditorPrompt, getProfile } from "../ai/profiles/index.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-// v0.7.1: Reduced from 3096 → 2048 (still 2x the typical Telegram post size)
-const MAX_OUTPUT_TOKENS = 2048;
-
-// v0.7.1: Max parallel providers racing (was unlimited = up to 11)
-// Top 2 of preferred + top 2 of other provider = 4 racing max.
-// Losers get aborted when winner succeeds, but they still consume input tokens
-// before being aborted. Limiting to 4 cuts input token cost by ~60%.
-const MAX_PARALLEL_PROVIDERS = 4;
-
-// v0.7.1: Truncate input text to avoid sending massive prompts
-const MAX_INPUT_CHARS = 8000;
+// v0.7.3: Reduced from 3096 → 2500 (still 2x the typical Telegram post size).
+// Telegram hard limit is 4096 chars ≈ ~1500 tokens, so 2500 tokens is plenty.
+const MAX_OUTPUT_TOKENS = 2500;
 
 // ============================================================
 // DEFAULT FREE MODELS — v0.6.4 (latest ranked models)
@@ -121,7 +113,6 @@ function fetchWithTimeout(url, options, timeoutMs = REQUEST_TIMEOUT_MS, external
 
 // ============================================================
 // GEMINI complete — v0.5.9: accepts externalSignal for cancellation
-// v0.7.1: maxOutputTokens reduced to 2048
 // ============================================================
 async function geminiComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
@@ -157,7 +148,6 @@ async function geminiComplete(apiKey, model, { system, user, jsonMode = false },
 
 // ============================================================
 // OPENROUTER complete — v0.5.9: accepts externalSignal for cancellation
-// v0.7.1: max_tokens reduced to 2048
 // ============================================================
 async function openRouterComplete(apiKey, model, { system, user, jsonMode = false }, externalSignal = null) {
   if (!apiKey) throw new Error("OPENROUTER_API_KEY missing");
@@ -214,47 +204,85 @@ function getOpenRouterModels(env) {
 }
 
 // ============================================================
-// v0.7.1: Truncate input text if too long
+// UNIFIED complete() — v0.5.9: AbortController cancels losers
 // ============================================================
-function truncateInput(text, maxChars = MAX_INPUT_CHARS) {
-  if (!text || text.length <= maxChars) return text;
-  // Truncate at paragraph boundary if possible
-  const cut = text.slice(0, maxChars);
-  const lastPara = cut.lastIndexOf("\n\n");
-  const safeCut = lastPara > maxChars * 0.7 ? lastPara : maxChars;
-  return text.slice(0, safeCut) + "\n\n[... content truncated for length ...]";
-}
+// CRITICAL FIX (TASK 3): Previously, when Promise.any resolved with the
+// first successful response, the other 9 fetch requests kept running in
+// the background — wasting tokens, CPU, and bandwidth. Now we create a
+// shared AbortController. The moment ANY provider succeeds, we call
+// controller.abort() to cancel all others. Losers get a CANCELLED error
+// which we silently ignore (it's intentional, not a real failure).
+// ============================================================
+export async function aiComplete(env, settings, params) {
+  const providers = [];
+  const preferred = settings?.ai_provider || env.DEFAULT_AI_PROVIDER || "openrouter";
 
-// ============================================================
-// UNIFIED complete() — v0.7.2: TWO-WAVE fallback
-// ============================================================
-// v0.5.9: AbortController cancels losers when winner succeeds.
-//
-// v0.7.1 bug: limited to 4 racing providers — if ALL 4 failed
-// (e.g. Gemini rate-limited AND top 2 OpenRouter models failed),
-// there was NO fallback to the remaining 7 providers. Bot ended up
-// format-only even though OpenRouter had 4 more models available.
-//
-// v0.7.2 fix: TWO-WAVE strategy.
-//   Wave 1: Race top 2 preferred + top 2 other = 4 providers (fast, token-efficient).
-//   Wave 2: ONLY if Wave 1 all fail, race ALL remaining providers (robust fallback).
-// Most requests succeed in Wave 1 (cheap). Only when Wave 1 fails do we
-// spend tokens on Wave 2. This preserves v0.7.1's token savings while
-// restoring v0.6.11's robust fallback behavior.
-//
-// Also: explicit warnings when API keys are missing, so the user can
-// diagnose "format-only fallback" quickly.
-// ============================================================
+  const geminiProviders = [];
+  const openRouterProviders = [];
 
-/**
- * Race a list of providers with Promise.any + shared AbortController.
- * Returns { ok, text, provider, model, ms } on success, or { ok:false, errors } on failure.
- */
-async function raceProviders(providers, env, params, label = "wave") {
-  if (providers.length === 0) {
-    return { ok: false, errors: [], empty: true };
+  // 1. Gemini models — use GEMINI_MODELS list, put env override first
+  if (env.GEMINI_API_KEY) {
+    const userModel = env.GEMINI_MODEL;
+    const geminiModels = userModel && !GEMINI_MODELS.includes(userModel)
+      ? [userModel, ...GEMINI_MODELS]
+      : GEMINI_MODELS;
+    for (const model of geminiModels) {
+      geminiProviders.push({
+        name: "gemini",
+        model: model,
+      });
+    }
   }
 
+  // 2. OpenRouter models
+  if (env.OPENROUTER_API_KEY) {
+    const models = getOpenRouterModels(env);
+    for (const model of models) {
+      openRouterProviders.push({
+        name: "openrouter",
+        model: model,
+      });
+    }
+  }
+
+  // v0.6.4: Smart fallback — preferred provider's TOP 2 models first,
+  // then the OTHER provider's models, then the rest of preferred provider's models.
+  if (preferred === "gemini") {
+    const topGemini = geminiProviders.slice(0, 2);
+    const restGemini = geminiProviders.slice(2);
+    providers.push(...topGemini, ...openRouterProviders, ...restGemini);
+  } else if (preferred === "openrouter") {
+    const topOR = openRouterProviders.slice(0, 2);
+    const restOR = openRouterProviders.slice(2);
+    providers.push(...topOR, ...geminiProviders, ...restOR);
+  } else {
+    providers.push(...geminiProviders, ...openRouterProviders);
+  }
+
+  if (providers.length === 0) {
+    const errMsg = !env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY
+      ? "No AI providers configured (need GEMINI_API_KEY or OPENROUTER_API_KEY)"
+      : !env.OPENROUTER_API_KEY
+        ? `OPENROUTER_API_KEY is missing (preferred=${preferred}). Set it as a secret in Cloudflare dashboard. If Gemini rate-limits, bot will use format-only.`
+        : `GEMINI_API_KEY is missing (preferred=${preferred}). Set it as a secret in Cloudflare dashboard.`;
+    console.error(`[AI] NO PROVIDERS AVAILABLE: ${errMsg}`);
+    return { ok: false, error: errMsg };
+  }
+
+  // v0.7.3: Explicit warnings when one provider is missing
+  // (helps user diagnose "format-only fallback" quickly)
+  if (!env.OPENROUTER_API_KEY) {
+    console.warn(`[AI] ⚠️ OPENROUTER_API_KEY not set — OpenRouter fallback disabled. If Gemini rate-limits, bot will use format-only.`);
+  }
+  if (!env.GEMINI_API_KEY) {
+    console.warn(`[AI] ⚠️ GEMINI_API_KEY not set — Gemini disabled. Using OpenRouter only.`);
+  }
+
+  console.log(`[AI] v0.7.3 racing ${providers.length} providers (preferred=${preferred}):`);
+  providers.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
+
+  // v0.5.9: Shared AbortController — the moment ANY provider wins,
+  // abort ALL others to save tokens/CPU/bandwidth.
   const winnerController = new AbortController();
 
   try {
@@ -269,162 +297,76 @@ async function raceProviders(providers, env, params, label = "wave") {
             text = await openRouterComplete(env.OPENROUTER_API_KEY, p.model, params, winnerController.signal);
           }
         } catch (e) {
+          // v0.5.9: Silently ignore CANCELLED errors (intentional abort when another provider won)
           if (e.message === "CANCELLED" || e.message.includes("CANCELLED")) {
             throw new Error("CANCELLED (another provider won)");
           }
           throw e;
         }
         const ms = Date.now() - start;
-        console.log(`[AI] ✓ [${label}] ${p.name}/${p.model} OK in ${ms}ms (${text.length} chars) — aborting others`);
+        console.log(`[AI] ✓ ${p.name}/${p.model} OK in ${ms}ms (${text.length} chars) — aborting others`);
+        // CRITICAL: Abort all other in-flight requests to save tokens
         winnerController.abort();
         return { ok: true, text, provider: p.name, model: p.model, ms };
       })
     );
-    console.log(`[AI] WINNER [${label}]: ${result.provider}/${result.model}`);
+    console.log(`[AI] WINNER: ${result.provider}/${result.model}`);
     return result;
   } catch (aggErr) {
+    // All providers failed (or were cancelled). Collect real errors only.
     const errors = providers.map((p, i) => {
       const errMsg = aggErr.errors?.[i]?.message || "unknown";
-      if (errMsg.includes("CANCELLED")) return { provider: p.name, model: p.model, error: "cancelled" };
+      // Don't report CANCELLED as a real error
+      if (errMsg.includes("CANCELLED")) return { provider: p.name, model: p.model, error: "cancelled (another provider won)" };
       return { provider: p.name, model: p.model, error: errMsg };
     });
-    const realErrors = errors.filter((e) => e.error !== "cancelled");
-    console.error(`[AI] [${label}] ALL ${providers.length} providers failed (${realErrors.length} real errors):`);
-    realErrors.forEach((e) => console.error(`[AI]   ✗ [${label}] ${e.provider}/${e.model}: ${e.error}`));
-    return { ok: false, errors: realErrors };
-  }
-}
+    const realErrors = errors.filter((e) => !e.error.includes("cancelled"));
+    console.error(`[AI] ALL ${providers.length} providers failed (${realErrors.length} real errors, ${errors.length - realErrors.length} cancelled):`);
+    realErrors.forEach((e) => console.error(`[AI]   ✗ ${e.provider}/${e.model}: ${e.error}`));
 
-export async function aiComplete(env, settings, params) {
-  const preferred = settings?.ai_provider || env.DEFAULT_AI_PROVIDER || "openrouter";
-
-  // v0.7.2: Explicit warnings when API keys are missing — helps diagnose
-  // "format-only fallback" issues quickly.
-  if (!env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY) {
-    const errMsg = "No AI providers configured (need GEMINI_API_KEY or OPENROUTER_API_KEY set as secrets)";
-    console.error(`[AI] NO PROVIDERS: ${errMsg}`);
-    return { ok: false, error: errMsg };
-  }
-  if (!env.OPENROUTER_API_KEY) {
-    console.warn(`[AI] ⚠️ OPENROUTER_API_KEY not set — OpenRouter fallback disabled. If Gemini rate-limits, bot will use format-only.`);
-  }
-  if (!env.GEMINI_API_KEY) {
-    console.warn(`[AI] ⚠️ GEMINI_API_KEY not set — Gemini disabled. Using OpenRouter only.`);
-  }
-
-  const geminiProviders = [];
-  const openRouterProviders = [];
-
-  // 1. Gemini models — use GEMINI_MODELS list, put env override first
-  if (env.GEMINI_API_KEY) {
-    const userModel = env.GEMINI_MODEL;
-    const geminiModels = userModel && !GEMINI_MODELS.includes(userModel)
-      ? [userModel, ...GEMINI_MODELS]
-      : GEMINI_MODELS;
-    for (const model of geminiModels) {
-      geminiProviders.push({ name: "gemini", model });
-    }
-  }
-
-  // 2. OpenRouter models
-  if (env.OPENROUTER_API_KEY) {
-    const models = getOpenRouterModels(env);
-    for (const model of models) {
-      openRouterProviders.push({ name: "openrouter", model });
-    }
-  }
-
-  // ----- Wave 1: top 2 preferred + top 2 other (max 4, fast) -----
-  const wave1 = [];
-  if (preferred === "openrouter") {
-    wave1.push(...openRouterProviders.slice(0, 2));
-    wave1.push(...geminiProviders.slice(0, 2));
-  } else {
-    // default to gemini preferred
-    wave1.push(...geminiProviders.slice(0, 2));
-    wave1.push(...openRouterProviders.slice(0, 2));
-  }
-  const wave1Racing = wave1.slice(0, MAX_PARALLEL_PROVIDERS);
-
-  console.log(`[AI] v0.7.2 Wave 1: racing ${wave1Racing.length} providers (preferred=${preferred}):`);
-  wave1Racing.forEach((p) => console.log(`[AI]   - ${p.name}/${p.model}`));
-
-  const wave1Result = await raceProviders(wave1Racing, env, params, "wave1");
-  if (wave1Result.ok) {
-    return wave1Result;
-  }
-
-  // ----- Wave 2: ALL remaining providers (robust fallback) -----
-  // v0.7.2: Only reached if Wave 1 all failed. Try every remaining provider.
-  const wave1Keys = new Set(wave1Racing.map((p) => `${p.name}/${p.model}`));
-  const wave2 = [];
-  for (const p of [...geminiProviders, ...openRouterProviders]) {
-    if (!wave1Keys.has(`${p.name}/${p.model}`)) {
-      wave2.push(p);
-    }
-  }
-
-  if (wave2.length === 0) {
-    console.error(`[AI] Wave 2 empty — no more providers to try`);
     return {
       ok: false,
-      error: wave1Result.errors?.length > 0
-        ? wave1Result.errors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
-        : "All Wave 1 providers failed (no Wave 2 available)",
-      details: wave1Result.errors,
+      error: realErrors.length > 0
+        ? realErrors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
+        : "All providers cancelled (should not happen)",
+      details: realErrors,
     };
   }
-
-  console.warn(`[AI] ⚠️ Wave 1 failed — trying Wave 2 with ${wave2.length} remaining providers:`);
-  wave2.forEach((p) => console.warn(`[AI]   - ${p.name}/${p.model}`));
-
-  const wave2Result = await raceProviders(wave2, env, params, "wave2");
-  if (wave2Result.ok) {
-    return wave2Result;
-  }
-
-  // Both waves failed
-  const allErrors = [...(wave1Result.errors || []), ...(wave2Result.errors || [])];
-  console.error(`[AI] ❌ BOTH WAVES FAILED (${allErrors.length} total errors):`);
-  allErrors.forEach((e) => console.error(`[AI]   ✗ ${e.provider}/${e.model}: ${e.error}`));
-
-  return {
-    ok: false,
-    error: allErrors.length > 0
-      ? allErrors.map((e) => `${e.provider}/${e.model}: ${e.error}`).join(" | ")
-      : "All providers failed",
-    details: allErrors,
-  };
 }
 
 // ============================================================
 // v0.5.5: ULTRA-COMPACT PROMPTS — self-contained, under 800 tokens
 // v0.5.9 HARD RULE: ONLY these prompts are sent to the API.
-// v0.7.1: Tightened — removed redundant rules, kept all critical ones.
+// Never pass buildEditorPrompt() / buildFormatterPrompt() output.
 // ============================================================
-const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. EDIT the post (do not answer it). Output ONLY the edited version — no preamble.
+const COMPACT_REWRITE_PROMPT = `You are a Telegram channel content editor. Improve the text quality. Do NOT add HTML or emojis.
+
+CRITICAL RULE: You are EDITING an existing post. Output ONLY the edited version. Do NOT write new content, do NOT answer questions, do NOT respond to the post. Your output must be the SAME post, just improved.
 
 RULES:
 - Keep input language. NEVER translate.
-- PRESERVE: GitHub/docs/APIs/commands/code blocks/filenames/versions.
-- REMOVE: spam, ads, @channel mentions, "join/follow", attribution lines.
-- PRESERVE functional emojis (📚🛠️⚡💡🔒🌐📦) and number emojis (1️⃣2️⃣3️⃣). Remove decorative (🔥😍🎉).
-- PRESERVE AI/Midjourney prompts and long technical instructions EXACTLY as-is.
-- Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`blocks\`\`\`).
-- No footer, no explanations, no HTML tags.
-- Each URL on its own line.
-- NEVER start with "Here is" / "Sure" / "I'll" — output the edited post directly.
-- PRESERVE paragraph structure and blank lines between sections.`;
+- PRESERVE: GitHub links, docs, APIs, commands, code blocks, filenames, version numbers.
+- REMOVE: spam, ads, channel mentions (@xxx), "join/follow", attribution lines.
+- PRESERVE functional emojis (📚🛠️⚡💡🔒🌐📦). Remove decorative (🔥😍😱🎉🤣).
+- PRESERVE number emojis (1️⃣2️⃣3️⃣).
+- Preserve the author's emotional tone. Don't flatten excitement or urgency.
+- PRESERVE AI image generation prompts, Midjourney prompts, and long technical instructions EXACTLY as-is. DO NOT summarize, translate, or modify them.
+- Output plain text with markdown (**bold**, *italic*, \`code\`, \`\`\`code blocks\`\`\`).
+- Do NOT add footer. Do NOT add explanations. Do NOT add HTML tags.
+- Write each URL on its OWN line.
+- NEVER start your response with "Here is" or "Sure" or "I'll" — just output the edited post directly.
+- CRITICAL: PRESERVE the paragraph structure and blank lines between sections. Do NOT merge paragraphs or remove blank lines that separate list items. Keep the same line breaks and spacing as the original.`;
 
-const COMPACT_SUMMARIZE_PROMPT = `You are a Telegram channel content editor. The post is too long — TRIM it (don't bullet-summarize).
+const COMPACT_SUMMARIZE_PROMPT = `You are a Telegram channel content editor. The post is too long for Telegram. TRIM it (don't summarize into bullet points).
 
 RULES:
 - Keep input language. NEVER translate.
-- PRESERVE EVERY URL, link, download link, code block, command.
-- Remove only: redundancy, fluff, repetition, filler.
-- Output: 80-90% of original length (NOT 30-50%).
-- Keep structure and flow.
-- Output plain text with markdown. No HTML, no footer.`;
+- PRESERVE EVERY URL, link, and download link. Do NOT remove ANY.
+- PRESERVE code blocks and commands.
+- Remove only: redundancy, fluff, repetition, filler words.
+- Output should be 80-90% of original length (NOT 30-50%!).
+- Keep original structure and flow.
+- Output plain text with markdown. Do NOT add HTML or footer.`;
 
 function buildCompactPrompt(mode) {
   return mode === "summary" ? COMPACT_SUMMARIZE_PROMPT : COMPACT_REWRITE_PROMPT;
@@ -432,7 +374,6 @@ function buildCompactPrompt(mode) {
 
 // ============================================================
 // REWRITE — v0.5.9: ONLY use compact prompt (never buildEditorPrompt)
-// v0.7.1: Truncate input if > 8000 chars
 // ============================================================
 export async function aiRewrite(env, settings, text, mode, language, personality, editIntensity, emojiLevel) {
   // v0.5.9 HARD RULE: Only COMPACT_REWRITE_PROMPT (+ optional profile addendum)
@@ -455,10 +396,6 @@ export async function aiRewrite(env, settings, text, mode, language, personality
     technical: "Precise, terminology-friendly.",
     news: "Concise, fact-first.",
   };
-
-  // v0.7.1: Truncate input to avoid sending massive prompts
-  const safeText = truncateInput(text);
-
   const userMsg = [
     `REWRITE_MODE: ${effMode}`,
     `LANGUAGE_MODE: ${language}`,
@@ -466,7 +403,7 @@ export async function aiRewrite(env, settings, text, mode, language, personality
     ``,
     `POST TO PROCESS:`,
     `----`,
-    safeText,
+    text,
     `----`,
     ``,
     `Return ONLY the edited text in the SAME language.`,
@@ -483,7 +420,6 @@ export async function aiRewrite(env, settings, text, mode, language, personality
 
 // ============================================================
 // SUMMARIZE — v0.5.9: accepts targetCharLimit to fit Telegram limits
-// v0.7.1: Truncate input if > 8000 chars (summarize is for long posts)
 // ============================================================
 export async function aiSummarize(env, settings, text, language, targetCharLimit = 3500) {
   let fullSystemPrompt;
@@ -494,10 +430,6 @@ export async function aiSummarize(env, settings, text, language, targetCharLimit
     fullSystemPrompt = buildCompactPrompt("summary");
   }
 
-  // v0.7.1: Truncate input — summarize is called for long posts,
-  // so input can be 4000-12000 chars. Limit to 8000 to control token cost.
-  const safeText = truncateInput(text);
-
   // Tell the AI the EXACT target character limit so output fits Telegram
   const userMsg = [
     `LANGUAGE_MODE: ${language}`,
@@ -506,7 +438,7 @@ export async function aiSummarize(env, settings, text, language, targetCharLimit
     ``,
     `POST TO TRIM (too long for Telegram — current length: ${text.length} chars):`,
     `----`,
-    safeText,
+    text,
     `----`,
     ``,
     `Return ONLY the trimmed text. Keep ALL links and code blocks. Remove redundancy and fluff.`,

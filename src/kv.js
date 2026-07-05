@@ -1,25 +1,23 @@
 /**
  * src/kv.js
- * Cloudflare KV helpers — v0.7.1 (KV optimization on top of v0.6.11)
+ * Cloudflare KV helpers — v0.7.3 (safe KV optimization on Prime v0.6.11)
  *
- * v0.7.1 changes (KV optimization — NO behavior changes):
- *   - ADDED module-level settings cache (30s TTL) — getSettings() called
- *     2-3x per request in pipeline, now skips KV read on repeat calls
- *   - ADDED admin_list cache (60s TTL) — isAuthorized() runs on EVERY
- *     request, now skips KV read on repeat calls
- *   - INCREASED BATCH_FLUSH_THRESHOLD from 10 → 25 — stats flush 2.5x
- *     less often (still safe: flushAllStats at end of request flushes dirty)
- *   - CHANGED listMediaGroupItems() — sequential KV.get → Promise.all
- *     parallel reads (N items = 1 round trip instead of N)
- *   - CHANGED deleteMediaGroup() — sequential KV.delete → Promise.all
- *     parallel deletes
- *   - PRESERVED all v0.6.x features: approve_enabled, admin_list,
- *     getAdminList, isAdminInList, getLastScheduledTime, etc.
+ * v0.7.3 changes (KV optimization — strictly behavior-preserving):
+ *   - ADDED module-level settings cache (30s TTL) for getSettings()
+ *   - ADDED admin_list cache (60s TTL) for getAdminList() / isAdminInList()
+ *   - ADDED last-scheduled-time cache (60s TTL) + write-through on set
+ *   - INCREASED BATCH_FLUSH_THRESHOLD from 10 → 20 (was 10, now 20)
+ *   - CHANGED listMediaGroupItems: sequential KV.get → Promise.all parallel
+ *   - CHANGED deleteMediaGroup: sequential KV.delete → Promise.all parallel
+ *   - PRESERVED all v0.6.x features: approve_enabled, admin_list, getAdminList,
+ *     isAdminInList, getLastScheduledTime, saveMediaGroupItem, etc.
+ *   - NO changes to function signatures, NO changes to return values,
+ *     NO changes to error handling — strictly additive caching.
  *
  * v0.5.9 changes (kept):
- *   - REMOVED cron-based scheduling queue — user wants native-only scheduling
- *   - ADDED in-memory stats batching to reduce KV writes
- *   - Kept getLastScheduledTime / setLastScheduledTime (interval tracking)
+ *   - REMOVED cron-based scheduling queue — native-only scheduling
+ *   - In-memory stats batching to reduce KV writes
+ *   - Kept getLastScheduledTime / setLastScheduledTime
  *
  * v0.6.9 changes (kept):
  *   - admin_list stored in global KV key (KEY_ADMIN_LIST)
@@ -59,17 +57,16 @@ export const DEFAULTS = Object.freeze({
 // ============================================================
 // NATIVE SCHEDULING — last scheduled timestamp tracking
 // (kept for interval calculation between scheduled posts)
+// v0.7.3: Added 60s in-memory cache (read-heavy, write-through)
 // ============================================================
 const KEY_LAST_SCHEDULED = (channel) => `sched:last:${channel}`;
 
-// v0.7.1: Cache last-scheduled time in memory (1 write per post max, but
-// reads can be cached for 60s to skip redundant KV.get calls).
 const _lastSchedCache = new Map(); // channel → { ts, _expires }
-const LAST_SCHED_CACHE_TTL = 60_000;
+const LAST_SCHED_CACHE_TTL = 60_000; // 60 seconds
 
 export async function getLastScheduledTime(SETTINGS, channel) {
   if (!SETTINGS || !channel) return null;
-  // v0.7.1: Check in-memory cache first
+  // v0.7.3: Check cache first
   const cached = _lastSchedCache.get(channel);
   if (cached && Date.now() < cached._expires) {
     return cached.ts;
@@ -86,7 +83,7 @@ export async function setLastScheduledTime(SETTINGS, channel, timestamp) {
   if (!SETTINGS || !channel) return;
   try {
     await SETTINGS.put(KEY_LAST_SCHEDULED(channel), String(timestamp));
-    // v0.7.1: Update cache so the next getLastScheduledTime skips the KV read
+    // v0.7.3: Write-through cache so next read skips KV
     _lastSchedCache.set(channel, { ts: timestamp, _expires: Date.now() + LAST_SCHED_CACHE_TTL });
   } catch (e) {
     console.error("[kv] setLastScheduledTime failed:", e.message);
@@ -94,18 +91,19 @@ export async function setLastScheduledTime(SETTINGS, channel, timestamp) {
 }
 
 // ============================================================
-// v0.7.1: Module-level settings cache (30s TTL)
+// v0.7.3: Module-level caches (settings 30s, admin_list 60s, last_sched 60s)
 // ============================================================
-// Problem: pipeline.js calls getSettings() 2-3 times per request
-// (once for main pipeline, once for scheduling check, once for stats).
-// Each call = 1 KV read. A busy channel = 200-300 KV reads/day just for
-// settings, which is fine for reads (100k/day) but adds latency.
-//
-// Solution: Cache the parsed settings in memory for 30 seconds.
-// saveSettings / updateSetting invalidate the cache immediately.
+// Pipeline calls getSettings() 2-3x per request. Without cache, that's
+// 2-3 KV reads per request. With 30s cache, repeat calls in the same
+// isolate skip KV entirely. saveSettings / updateSetting invalidate.
+// isAdminInList() runs on EVERY request — caching it saves 1 KV read/req.
 // ============================================================
 const _settingsCache = new Map(); // adminId → { settings, _expires }
 const SETTINGS_CACHE_TTL = 30_000; // 30 seconds
+
+// Declared early (before saveSettings uses it) for clarity
+const _adminListCache = { list: null, _expires: 0 };
+const ADMIN_LIST_CACHE_TTL = 60_000;
 
 /** Read the admin's settings, merged with defaults */
 export async function getSettings(SETTINGS, adminId) {
@@ -138,21 +136,18 @@ export async function saveSettings(SETTINGS, adminId, settings) {
   // v0.6.9: Also sync admin_list to global key so other admins can be authorized
   if (settings.admin_list !== undefined) {
     await SETTINGS.put(KEY_ADMIN_LIST, JSON.stringify(settings.admin_list));
-    // v0.7.1: Invalidate admin list cache
+    // v0.7.3: Invalidate admin list cache
     _adminListCache._expires = 0;
   }
-  // v0.7.1: Update settings cache (write-through)
+  // v0.7.3: Write-through cache
   _settingsCache.set(String(adminId), { settings: { ...settings }, _expires: Date.now() + SETTINGS_CACHE_TTL });
 }
 
 // v0.6.9: Get admin list from global key (so any user's auth check can read it)
-// v0.7.1: Cached for 60s — isAuthorized() runs on EVERY request
-const _adminListCache = { list: null, _expires: 0 };
-const ADMIN_LIST_CACHE_TTL = 60_000;
-
+// v0.7.3: Cached for 60s (declared above with other caches)
 export async function getAdminList(SETTINGS) {
   if (!SETTINGS) return [];
-  // v0.7.1: Check cache first
+  // v0.7.3: Check cache first
   if (_adminListCache.list && Date.now() < _adminListCache._expires) {
     return _adminListCache.list;
   }
@@ -192,12 +187,11 @@ export async function updateSetting(SETTINGS, adminId, key, value) {
 // Since CF Workers isolates are ephemeral, we may lose a few increments
 // when the isolate dies — but that's an acceptable tradeoff vs. hitting
 // the write quota. Stats are "best effort", not "exact".
-//
-// v0.7.1: Increased threshold from 10 → 25 (2.5x less writes).
+// ============================================================
+// v0.7.3: Increased from 10 → 20 (was 10, now 20)
 // Still safe because flushAllStats() runs at end of every request
 // via ctx.waitUntil, so dirty counters get persisted before isolate dies.
-// ============================================================
-const BATCH_FLUSH_THRESHOLD = 25; // v0.7.1: was 10, now 25
+const BATCH_FLUSH_THRESHOLD = 20;
 const _statsCache = {
   perAdmin: new Map(), // adminId → { processed, rewritten, failed, _count }
   global: { processed: 0, rewritten: 0, failed: 0, _count: 0 },
@@ -257,7 +251,7 @@ async function _flushAdminStats(SETTINGS, adminId) {
     current.stats.rewritten = (current.stats.rewritten || 0) + entry.rewritten;
     current.stats.failed = (current.stats.failed || 0) + entry.failed;
     await SETTINGS.put(KEY_ADMIN(adminId), JSON.stringify(current));
-    // v0.7.1: Update settings cache so next getSettings skips KV read
+    // v0.7.3: Update settings cache so next getSettings skips KV read
     _settingsCache.set(String(adminId), { settings: { ...current }, _expires: Date.now() + SETTINGS_CACHE_TTL });
 
     // Reset cache counters (keep the map entry for fast access)
@@ -319,7 +313,6 @@ export async function getGlobalStats(SETTINGS) {
 
 // ============================================================
 // MEDIA GROUP BUFFERING (per-item keys — no race condition)
-// v0.7.1: Parallel reads/deletes via Promise.all
 // ============================================================
 const MG_PREFIX = (groupId) => `mg:${groupId}:`;
 const MG_KEY = (groupId, msgId) => `mg:${groupId}:${msgId}`;
@@ -329,12 +322,12 @@ export async function saveMediaGroupItem(SETTINGS, groupId, msgId, item) {
   await SETTINGS.put(MG_KEY(groupId, msgId), JSON.stringify(item), { expirationTtl: 180 });
 }
 
+// v0.7.3: Parallel reads via Promise.all (was sequential — N round trips)
 export async function listMediaGroupItems(SETTINGS, groupId) {
   if (!SETTINGS || !groupId) return [];
   try {
     const list = await SETTINGS.list({ prefix: MG_PREFIX(groupId), limit: 100 });
     if (list.keys.length === 0) return [];
-    // v0.7.1: Parallel reads — N items = 1 round trip instead of N
     const raws = await Promise.all(list.keys.map(key => SETTINGS.get(key.name)));
     const items = [];
     for (const raw of raws) {
@@ -352,12 +345,12 @@ export async function listMediaGroupItems(SETTINGS, groupId) {
   }
 }
 
+// v0.7.3: Parallel deletes via Promise.all (was sequential)
 export async function deleteMediaGroup(SETTINGS, groupId) {
   if (!SETTINGS || !groupId) return;
   try {
     const list = await SETTINGS.list({ prefix: MG_PREFIX(groupId), limit: 100 });
     if (list.keys.length === 0) return;
-    // v0.7.1: Parallel deletes — N items = 1 round trip instead of N
     await Promise.all(list.keys.map(key => SETTINGS.delete(key.name)));
   } catch (e) {
     console.error("[kv] deleteMediaGroup failed:", e.message);
