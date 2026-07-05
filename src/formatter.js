@@ -85,11 +85,24 @@ const htmlEngine = {
       return ` §IC${inlineCodes.length - 1}§ `;
     });
 
-    // 3. Prompt blocks (System: ..., Prompt: ..., User: ... followed by multi-line content)
+    // 3. Prompt blocks — TWO detection methods:
+    //    A) §PROMPT_START§...§PROMPT_END§ markers (from restorePrompts — no label needed)
+    //    B) Traditional label-based: "Prompt:", "System:", etc.
     const promptBlocks = [];
-    work = work.replace(/(?:^|\n)(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE):\s*\n([\s\S]*?)(?=\n\n|\n#|$)/gi, (_, label, content) => {
-      if (content.trim().length > 30) { // Only treat as prompt if content is substantial
-        promptBlocks.push({ label: label.trim(), content: content.trim() });
+
+    // Method A — detect marker-wrapped prompts (no label shown to user)
+    work = work.replace(/§PROMPT_START§([\s\S]*?)§PROMPT_END§/g, (_, content) => {
+      if (content.trim().length > 20) {
+        promptBlocks.push({ label: "", content: content.trim() });
+        return ` §P${promptBlocks.length - 1}§ `;
+      }
+      return content;
+    });
+
+    // Method B — traditional label-based detection
+    work = work.replace(/(?:^|\n)(?:#{1,3}\s+|\*\*)?(🎨\s*)?(Prompt|System Prompt|System|User|INSTRUCTIONS?|ROLE|Query|Question|Task|AI Prompt|پرامپت|سیستم)(?:\*\*)?(?:\s*[:：])?\s*\n([\s\S]*?)(?=\n\n|\n#|\n\*\*|$)/gi, (_, emoji, label, content) => {
+      if (content.trim().length > 20) {
+        promptBlocks.push({ label: (label || "Prompt").trim(), content: content.trim() });
         return ` §P${promptBlocks.length - 1}§ `;
       }
       return _;
@@ -184,7 +197,7 @@ const htmlEngine = {
     //       Bug fix: previously, lines starting with `<` were skipped in step 11,
     //       but after markdown transforms, headings like `<b>...</b>` start with
     //       `<` and weren't detected. We now check the INNER text by stripping HTML.
-    if (intensity >= 30) {
+    if (intensity >= 20) {
       const stripTags = (s) => s.replace(/<[^>]+>/g, "");
 
       // Numbered item with dash (e.g., "400 –", "401 -", "402 —")
@@ -197,24 +210,32 @@ const htmlEngine = {
         return /^\d+\s*[–\-—]\s+/.test(inner);
       };
 
-      // راه‌حل: line OR HTML-wrapped heading ending with `:`
-      const isRaholOrColonHeading = (line) => {
+      // v0.6.6: Also detect emoji-numbered items (1️⃣, 2️⃣, etc.) and Persian numbers (۱., ۲.)
+      const isEmojiNumberedItem = (line) => {
         const t = line.trim();
-        if (!t) return false;
-        if (t.startsWith("<blockquote>") || t.startsWith("</blockquote>")) return false;
-        if (t.startsWith("§")) return false;
+        if (!t || t.startsWith("<") || t.startsWith("§")) return false;
         const inner = stripTags(t).trim();
-        if (!inner) return false;
-        // Persian "Solution:" lines (راه‌حل:, راه حل:, راهحل:, راه-حل:)
-        // Note: \u200C = ZWNJ (Zero Width Non-Joiner) — used in "راه‌حل"
-        if (/^راه[\-\s\u200C]?حل\s*[:：]/.test(inner)) return true;
-        // HTML-wrapped heading ending with `:` (only if line contains HTML tags,
-        // to avoid quoting every plain-text line that happens to end with `:`)
-        if (/<[^>]+>/.test(t) && (inner.endsWith(":") || inner.endsWith("："))) return true;
+        // Emoji numbers: 1️⃣ 2️⃣ 3️⃣ etc.
+        if (/^[0-9]️⃣\s+/.test(inner)) return true;
+        // Persian numbers: ۱. ۲. ۳. etc.
+        if (/^[۰-۹]+\s*[.)]\s+/.test(inner)) return true;
         return false;
       };
 
-      const isListHeading = (line) => isNumberedDashItem(line) || isRaholOrColonHeading(line);
+      // Heading ending with ":" (Persian or English)
+      const isColonHeading = (line) => {
+        const t = line.trim();
+        if (!t || t.startsWith("<blockquote>") || t.startsWith("§")) return false;
+        const inner = stripTags(t).trim();
+        if (!inner) return false;
+        // Persian "Solution:" lines
+        if (/^راه[\-\s\u200C]?حل\s*[:：]/.test(inner)) return true;
+        // Any line ending with : or ： (heading)
+        if (inner.length > 3 && inner.length < 150 && /[:：]\s*$/.test(inner)) return true;
+        return false;
+      };
+
+      const isListHeading = (line) => isNumberedDashItem(line) || isEmojiNumberedItem(line) || isColonHeading(line);
 
       const lines = work.split("\n");
       const out = [];
@@ -281,7 +302,9 @@ const htmlEngine = {
     work = work.replace(/§CB(\d+)§/g, (_, i) => `<pre><code>${this.escape(codeBlocks[Number(i)])}</code></pre>`);
     work = work.replace(/§P(\d+)§/g, (_, i) => {
       const p = promptBlocks[Number(i)];
-      return `<b>${this.escape(p.label)}:</b>\n<pre><code>${this.escape(p.content)}</code></pre>`;
+      if (!p) return '';
+      const labelHtml = p.label ? `<b>${this.escape(p.label)}:</b>\n` : "";
+      return `${labelHtml}<blockquote expandable="true"><code>${this.escape(p.content)}</code></blockquote>`;
     });
 
     // === PHASE 5: POLISH ===
