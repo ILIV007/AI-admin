@@ -11,7 +11,7 @@ compatibility_flags = ["nodejs_compat"]
 # KV binding — configured by user.
 [[kv_namespaces]]
 binding = "SETTINGS"
-id = "c8adbda37ee642d194adabf79f458f0d"
+id = "6fe07d58928a4731bbbf2cbc32bf3ead"
 
 # v0.5.9 TASK 1: NO cron trigger — removed per user request.
 # Only native Telegram schedule_date is used (no KV-based fallback).
