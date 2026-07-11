@@ -1,5 +1,8 @@
 # AI Admin
 
+- example channel: https://t.me/ILIVIR3
+
+
 <div align="center">
 
 **Version 0.7.3**
