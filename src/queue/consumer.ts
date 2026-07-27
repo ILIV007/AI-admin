@@ -135,6 +135,16 @@ async function handleMessage(
       kind: (body as { kind?: string }).kind,
       error: msg,
     });
+    // Log to debug_events so the /Admi-bug panel can show recent errors
+    try {
+      const { insertEvent } = await import("../storage/repositories/debug-events");
+      await insertEvent(env, "error", `queue: ${(body as { kind?: string }).kind || "unknown"}`, {
+        error: msg.slice(0, 500),
+        stack: (err as Error)?.stack?.slice(0, 500),
+      });
+    } catch {
+      /* ignore — debug_events table might not exist yet */
+    }
     if (isTransient(err)) {
       // Redeliver later. The queue runtime backs off automatically.
       message.retry();

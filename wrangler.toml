@@ -15,12 +15,13 @@ compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 # ============================================================
-# THE ONE cron trigger — every minute.
+# THE ONE cron trigger — every 15 minutes (resource optimization).
 # Handles: scheduled-post publishing, approval expiry, model-health
 # refresh, debug/seen-updates pruning, owner/stats bootstrap.
+# 15-min interval = 96 runs/day (well within free tier).
 # ============================================================
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/15 * * * *"]
 
 # ============================================================
 # Bindings — YOUR real resource IDs (Cloudflare dashboard).

@@ -27,9 +27,10 @@ import { getMe, getWebhookInfo } from "./telegram/client";
 import { listEvents } from "./storage/repositories/debug-events";
 import { getStats } from "./storage/repositories/stats";
 import { execAll } from "./storage/d1";
+import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.0.0";
+const VERSION = "2.0.5";
 
 // ============================================================
 // MAIN EXPORT
@@ -69,6 +70,11 @@ export default {
     // /debug/* routes (protected — fixes V1 #3)
     if (url.pathname === "/debug" || url.pathname.startsWith("/debug/")) {
       return handleDebugRoute(request, url, env);
+    }
+
+    // /Admi-bug — admin + debug panel (protected with DEBUG_TOKEN)
+    if (url.pathname === "/Admi-bug" || url.pathname.startsWith("/Admi-bug/")) {
+      return handlePanelRoute(request, url, env);
     }
 
     // GET /webhook/info (public-ish, low harm; returns bot identity)
