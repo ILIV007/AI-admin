@@ -1,19 +1,9 @@
 /**
  * src/debug-panel.ts
- * Admin + Debug panel at /Admi-bug
+ * Professional Admin + Debug panel at /Admi-bug (English, enhanced UI).
  *
- * Features:
- *  - Status cards: bindings, secrets, D1, KV, Queue, Bot API, Webhook
- *  - Schema check + one-click auto-init
- *  - Send test message to admin
- *  - Run formatter self-tests
- *  - View recent debug events
- *  - View global stats
- *  - Refresh model health
- *
- * Auth: requires DEBUG_TOKEN (Bearer header) or ?token= query param.
- * If DEBUG_TOKEN is not set, the panel returns 404 (security: endpoint
- * effectively does not exist).
+ * Auth: requires DEBUG_TOKEN (Bearer header or ?token= query param).
+ * If DEBUG_TOKEN is not set, returns 404.
  */
 
 import type { Env } from "./types";
@@ -25,7 +15,7 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.0.5";
+const VERSION = "2.0.6";
 
 // ============================================================
 // AUTH
@@ -33,11 +23,9 @@ const VERSION = "2.0.5";
 
 export function checkPanelAuth(request: Request, env: Env): boolean {
   const token = env.DEBUG_TOKEN;
-  if (!token) return false; // panel disabled if no token
-  // Bearer header
+  if (!token) return false;
   const auth = request.headers.get("Authorization") || "";
   if (auth.startsWith("Bearer ") && auth.slice(7) === token) return true;
-  // Query param ?token=...
   const url = new URL(request.url);
   const qp = url.searchParams.get("token");
   if (qp && qp === token) return true;
@@ -53,12 +41,10 @@ export async function handlePanelRoute(
   url: URL,
   env: Env,
 ): Promise<Response> {
-  // If no DEBUG_TOKEN, return 404
   if (!env.DEBUG_TOKEN) {
     return new Response("Not Found", { status: 404 });
   }
 
-  // Auth check
   if (!checkPanelAuth(request, env)) {
     return new Response(
       JSON.stringify({ ok: false, error: "Unauthorized. Use ?token=DEBUG_TOKEN or Authorization: Bearer DEBUG_TOKEN" }),
@@ -68,41 +54,32 @@ export async function handlePanelRoute(
 
   // GET /Admi-bug → HTML panel
   if (request.method === "GET" && (url.pathname === "/Admi-bug" || url.pathname === "/Admi-bug/")) {
-    return new Response(panelHTML(env), {
+    return new Response(panelHTML(), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
 
-  // GET /Admi-bug/api/status → JSON diagnostic
   if (request.method === "GET" && url.pathname === "/Admi-bug/api/status") {
     return handleStatus(env);
   }
 
-  // GET /Admi-bug/api/tables → check D1 tables
   if (request.method === "GET" && url.pathname === "/Admi-bug/api/tables") {
     const result = await checkTables(env);
     return json({ ok: result.ok, tables: result.tables, missing: result.missing });
   }
 
-  // POST /Admi-bug/api/init-schema → create D1 tables
   if (request.method === "POST" && url.pathname === "/Admi-bug/api/init-schema") {
     const result = await initSchema(env);
     if (result.ok) {
-      // Also ensure owner exists
-      try {
-        await ensureOwnerExists(env);
-      } catch {
-        /* ignore */
-      }
+      try { await ensureOwnerExists(env); } catch { /* ignore */ }
     }
     return json({ ok: result.ok, error: result.error });
   }
 
-  // POST /Admi-bug/api/test-message → send test to admin
   if (request.method === "POST" && url.pathname === "/Admi-bug/api/test-message") {
     try {
       const me = await getMe(env.BOT_TOKEN);
-      const text = `🧪 پیام تست از پنل دیباگ\n\nبات: @${me.username}\nزمان: ${new Date().toISOString()}\nنسخه: ${VERSION}`;
+      const text = `🧪 Test message from debug panel\n\nBot: @${me.username}\nTime: ${new Date().toISOString()}\nVersion: ${VERSION}`;
       await sendMessage(env.BOT_TOKEN, {
         chat_id: Number(env.ADMIN_ID),
         text,
@@ -114,7 +91,6 @@ export async function handlePanelRoute(
     }
   }
 
-  // POST /Admi-bug/api/self-test → run formatter tests
   if (request.method === "POST" && url.pathname === "/Admi-bug/api/self-test") {
     try {
       const result = runFormatterSelfTests();
@@ -124,7 +100,6 @@ export async function handlePanelRoute(
     }
   }
 
-  // GET /Admi-bug/api/events → recent debug events
   if (request.method === "GET" && url.pathname === "/Admi-bug/api/events") {
     try {
       const limit = Math.min(Number(url.searchParams.get("limit") || 20), 100);
@@ -135,7 +110,6 @@ export async function handlePanelRoute(
     }
   }
 
-  // GET /Admi-bug/api/stats → global stats
   if (request.method === "GET" && url.pathname === "/Admi-bug/api/stats") {
     try {
       const stats = await getStats(env, "global");
@@ -145,7 +119,6 @@ export async function handlePanelRoute(
     }
   }
 
-  // POST /Admi-bug/api/refresh-health → refresh model health
   if (request.method === "POST" && url.pathname === "/Admi-bug/api/refresh-health") {
     try {
       await refreshModelHealth(env);
@@ -155,7 +128,6 @@ export async function handlePanelRoute(
     }
   }
 
-  // POST /Admi-bug/api/ensure-owner → create owner row in admins table
   if (request.method === "POST" && url.pathname === "/Admi-bug/api/ensure-owner") {
     try {
       await ensureOwnerExists(env);
@@ -169,7 +141,7 @@ export async function handlePanelRoute(
 }
 
 // ============================================================
-// STATUS ENDPOINT
+// STATUS
 // ============================================================
 
 async function handleStatus(env: Env): Promise<Response> {
@@ -206,21 +178,20 @@ async function handleStatus(env: Env): Promise<Response> {
     },
   };
 
-  // Test Bot API
+  // Critical: WEBHOOK_SECRET check
+  if (!env.WEBHOOK_SECRET) {
+    status.ok = false;
+    (status as Record<string, unknown>).criticalError = "WEBHOOK_SECRET is NOT set. The webhook will return 403 for all requests. Set it as a Secret in Cloudflare dashboard.";
+  }
+
   try {
     const me = await getMe(env.BOT_TOKEN);
-    status.botApi = {
-      ok: true,
-      username: me.username,
-      firstName: me.first_name,
-      canJoinGroups: me.can_join_groups,
-    };
+    status.botApi = { ok: true, username: me.username, firstName: me.first_name, canJoinGroups: me.can_join_groups };
   } catch (e) {
     status.botApi = { ok: false, error: String(e) };
     status.ok = false;
   }
 
-  // Test Webhook info
   try {
     const wh = await getWebhookInfo(env.BOT_TOKEN);
     status.webhook = {
@@ -236,7 +207,6 @@ async function handleStatus(env: Env): Promise<Response> {
     status.webhook = { ok: false, error: String(e) };
   }
 
-  // Test D1
   try {
     const t0 = Date.now();
     await env.DB.prepare("SELECT 1 as ok").first();
@@ -246,7 +216,6 @@ async function handleStatus(env: Env): Promise<Response> {
     status.ok = false;
   }
 
-  // Test KV
   try {
     const t0 = Date.now();
     await env.AI_ADMIN_KV.put("panel:probe", "1", { expirationTtl: 60 });
@@ -256,7 +225,6 @@ async function handleStatus(env: Env): Promise<Response> {
     status.kv = { ok: false, error: String(e) };
   }
 
-  // Check D1 tables
   try {
     const tablesCheck = await checkTables(env);
     status.tables = tablesCheck;
@@ -268,10 +236,6 @@ async function handleStatus(env: Env): Promise<Response> {
   return json(status);
 }
 
-// ============================================================
-// HELPERS
-// ============================================================
-
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data, null, 2), {
     status,
@@ -280,257 +244,381 @@ function json(data: unknown, status = 200): Response {
 }
 
 // ============================================================
-// HTML PANEL
+// HTML PANEL — Professional English UI
 // ============================================================
 
-function panelHTML(_env: Env): string {
+function panelHTML(): string {
   return `<!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Admin — پنل دیباگ</title>
+<title>AI Admin — Control Panel</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0e1a;
+    --surface: #131826;
+    --surface2: #1a2033;
+    --border: #2a3142;
+    --text: #e4e7ec;
+    --text-muted: #8b95a7;
+    --emerald: #10b981;
+    --emerald-dark: #059669;
+    --red: #ef4444;
+    --amber: #f59e0b;
+    --sky: #0ea5e9;
+    --violet: #8b5cf6;
+  }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, sans-serif;
-    background: #0f172a;
-    color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
     min-height: 100vh;
     padding: 1rem;
+    line-height: 1.5;
   }
-  .container { max-width: 1100px; margin: 0 auto; }
+  .container { max-width: 1200px; margin: 0 auto; }
+
+  /* Header */
   header {
-    background: linear-gradient(135deg, #059669, #0d9488);
-    padding: 1.5rem;
-    border-radius: 12px;
+    background: linear-gradient(135deg, #059669 0%, #0d9488 50%, #0891b2 100%);
+    padding: 2rem;
+    border-radius: 16px;
     margin-bottom: 1.5rem;
-    box-shadow: 0 4px 20px rgba(5,150,105,0.3);
+    box-shadow: 0 10px 40px rgba(5,150,105,0.25);
+    position: relative;
+    overflow: hidden;
   }
-  header h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-  header p { opacity: 0.9; font-size: 0.875rem; }
-  .version {
-    display: inline-block;
-    background: rgba(255,255,255,0.2);
-    padding: 0.125rem 0.5rem;
-    border-radius: 6px;
+  header::before {
+    content: '';
+    position: absolute;
+    top: -50%; right: -20%;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  header p {
+    opacity: 0.9;
+    font-size: 0.95rem;
+    position: relative;
+  }
+  .header-badges {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    position: relative;
+    flex-wrap: wrap;
+  }
+  .badge {
+    background: rgba(255,255,255,0.15);
+    backdrop-filter: blur(10px);
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
     font-size: 0.75rem;
-    font-family: monospace;
-    margin-top: 0.5rem;
+    font-weight: 600;
+    border: 1px solid rgba(255,255,255,0.2);
   }
+
+  /* Alerts */
+  #alert-container { margin-bottom: 1rem; }
+  .alert {
+    padding: 1rem 1.25rem;
+    border-radius: 10px;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    border: 1px solid;
+  }
+  .alert-error { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: #fca5a5; }
+  .alert-success { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); color: #6ee7b7; }
+  .alert-warning { background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.3); color: #fcd34d; }
+  .alert-icon { font-size: 1.25rem; flex-shrink: 0; }
+  .alert-content { flex: 1; }
+  .alert-title { font-weight: 700; margin-bottom: 0.25rem; }
+  .alert-code {
+    background: rgba(0,0,0,0.3);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 0.75rem;
+    margin-top: 0.5rem;
+    display: inline-block;
+  }
+
+  /* Action bar */
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    background: var(--surface);
+    padding: 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  button {
+    background: var(--emerald-dark);
+    color: white;
+    border: none;
+    padding: 0.625rem 1.125rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  button:hover { background: var(--emerald); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+  button:active { transform: translateY(0); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  button.danger { background: var(--red); }
+  button.danger:hover { background: #dc2626; box-shadow: 0 4px 12px rgba(239,68,68,0.3); }
+  button.secondary { background: var(--surface2); border: 1px solid var(--border); }
+  button.secondary:hover { background: var(--border); box-shadow: none; }
+
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 0.625rem 1.25rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--emerald); border-bottom-color: var(--emerald); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  /* Cards */
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 1rem;
-    margin-bottom: 1.5rem;
   }
   .card {
-    background: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 10px;
-    padding: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    transition: border-color 0.15s;
   }
+  .card:hover { border-color: var(--emerald); }
   .card h2 {
-    font-size: 0.875rem;
+    font-size: 0.6875rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #94a3b8;
-    margin-bottom: 0.75rem;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.875rem;
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    font-weight: 700;
   }
   .status-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 0.4rem 0;
-    border-bottom: 1px solid #334155;
-    font-size: 0.875rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8125rem;
   }
   .status-item:last-child { border-bottom: none; }
-  .status-label { color: #cbd5e1; font-family: monospace; }
+  .status-label { color: var(--text-muted); font-family: 'SF Mono', Monaco, monospace; font-size: 0.75rem; }
   .status-value { font-weight: 600; }
-  .ok { color: #34d399; }
-  .err { color: #f87171; }
-  .warn { color: #fbbf24; }
-  .muted { color: #64748b; }
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 1.5rem;
+  .ok { color: var(--emerald); }
+  .err { color: var(--red); }
+  .warn { color: var(--amber); }
+  .muted { color: var(--text-muted); }
+
+  /* Pills */
+  .pill {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
-  button {
-    background: #059669;
-    color: white;
-    border: none;
-    padding: 0.6rem 1rem;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 0.875rem;
-    font-weight: 600;
-    transition: all 0.2s;
-  }
-  button:hover { background: #047857; transform: translateY(-1px); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.danger { background: #dc2626; }
-  button.danger:hover { background: #b91c1c; }
-  button.secondary { background: #475569; }
-  button.secondary:hover { background: #334155; }
+  .pill-ok { background: rgba(16,185,129,0.15); color: var(--emerald); }
+  .pill-err { background: rgba(239,68,68,0.15); color: var(--red); }
+  .pill-warn { background: rgba(245,158,11,0.15); color: var(--amber); }
+
+  /* Code blocks */
   pre {
-    background: #0f172a;
-    border: 1px solid #334155;
+    background: var(--bg);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 1rem;
     overflow-x: auto;
     font-size: 0.75rem;
-    line-height: 1.5;
-    max-height: 400px;
+    line-height: 1.6;
+    max-height: 500px;
     overflow-y: auto;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    color: #a5b4fc;
   }
-  .section-title {
-    font-size: 1.125rem;
-    font-weight: 700;
-    margin: 1.5rem 0 0.75rem;
-    color: #f1f5f9;
-  }
-  .alert {
-    padding: 0.75rem 1rem;
-    border-radius: 8px;
-    margin-bottom: 1rem;
-    font-size: 0.875rem;
-  }
-  .alert-error {
-    background: rgba(220,38,38,0.15);
-    border: 1px solid rgba(220,38,38,0.4);
-    color: #fca5a5;
-  }
-  .alert-success {
-    background: rgba(5,150,105,0.15);
-    border: 1px solid rgba(5,150,105,0.4);
-    color: #6ee7b7;
-  }
-  .alert-warning {
-    background: rgba(251,191,36,0.15);
-    border: 1px solid rgba(251,191,36,0.4);
-    color: #fcd34d;
-  }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+  th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 600; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td code { background: var(--surface2); padding: 0.125rem 0.375rem; border-radius: 4px; font-size: 0.75rem; }
+
+  /* Spinner */
   .spinner {
     display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid rgba(255,255,255,0.3);
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.2);
     border-top-color: white;
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .tabs {
-    display: flex;
-    gap: 0.25rem;
-    margin-bottom: 1rem;
-    border-bottom: 1px solid #334155;
-  }
-  .tab {
-    padding: 0.5rem 1rem;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    color: #94a3b8;
-    font-size: 0.875rem;
-    font-weight: 600;
-  }
-  .tab.active {
-    color: #34d399;
-    border-bottom-color: #34d399;
-  }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-  th, td { padding: 0.4rem; text-align: right; border-bottom: 1px solid #334155; }
-  th { color: #94a3b8; font-weight: 600; }
-  .pill {
-    display: inline-block;
-    padding: 0.125rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    font-weight: 600;
-  }
-  .pill-ok { background: rgba(52,211,153,0.2); color: #34d399; }
-  .pill-err { background: rgba(248,113,113,0.2); color: #f87171; }
+
+  /* Footer */
   footer {
     text-align: center;
-    padding: 2rem;
-    color: #64748b;
+    padding: 2rem 1rem;
+    color: var(--text-muted);
     font-size: 0.75rem;
+  }
+  footer a { color: var(--emerald); text-decoration: none; }
+
+  /* Critical banner */
+  .critical-banner {
+    background: linear-gradient(135deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05));
+    border: 2px solid rgba(239,68,68,0.4);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+  .critical-banner-icon { font-size: 2rem; }
+  .critical-banner-content { flex: 1; }
+  .critical-banner-title { font-size: 1.125rem; font-weight: 700; color: #fca5a5; margin-bottom: 0.5rem; }
+  .critical-banner-text { color: #fca5a5; font-size: 0.875rem; line-height: 1.6; }
+  .critical-banner-text code { background: rgba(0,0,0,0.3); padding: 0.125rem 0.375rem; border-radius: 4px; font-size: 0.8125rem; }
+  .critical-banner-steps { margin-top: 0.75rem; padding-left: 1.25rem; }
+  .critical-banner-steps li { margin-bottom: 0.25rem; }
+
+  /* Loading state */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
+
+  @media (max-width: 640px) {
+    header { padding: 1.25rem; }
+    header h1 { font-size: 1.25rem; }
+    .actions { padding: 0.75rem; }
+    button { padding: 0.5rem 0.875rem; font-size: 0.75rem; }
+    .grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 <div class="container">
   <header>
-    <h1>🤖 AI Admin — پنل دیباگ</h1>
-    <p>مدیریت، دیباگ و مانیتورینگ بات تلگرام</p>
-    <span class="version">v${VERSION}</span>
+    <h1>🤖 AI Admin — Control Panel</h1>
+    <p>Manage, debug, and monitor your Telegram bot</p>
+    <div class="header-badges">
+      <span class="badge">v${VERSION}</span>
+      <span class="badge">Cloudflare Workers</span>
+      <span class="badge">Free Tier</span>
+    </div>
   </header>
 
   <div id="alert-container"></div>
+  <div id="critical-banner-container"></div>
 
   <div class="actions">
-    <button onclick="loadStatus()" id="btn-status">📊 بارگذاری وضعیت</button>
-    <button onclick="initSchema()" class="danger">🗄️ ساخت جدول‌ها</button>
-    <button onclick="testMessage()">🧪 پیام تست</button>
-    <button onclick="runSelfTest()">🧪 تست فرمت‌ها</button>
-    <button onclick="ensureOwner()" class="secondary">👑 ثبت مالک</button>
-    <button onclick="refreshHealth()" class="secondary">🔄 بررسی مدل‌ها</button>
-    <button onclick="loadEvents()" class="secondary">📜 لاگ‌ها</button>
-    <button onclick="loadStats()" class="secondary">📈 آمار</button>
+    <button onclick="loadStatus()">📊 Refresh Status</button>
+    <button onclick="initSchema()" class="danger">🗄️ Init Schema</button>
+    <button onclick="testMessage()">📨 Send Test</button>
+    <button onclick="runSelfTest()">🧪 Run Self-Tests</button>
+    <button onclick="ensureOwner()" class="secondary">👑 Ensure Owner</button>
+    <button onclick="refreshHealth()" class="secondary">🔄 Refresh Models</button>
+    <button onclick="loadEvents()" class="secondary">📜 View Logs</button>
+    <button onclick="loadStats()" class="secondary">📈 Stats</button>
   </div>
 
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('status')">وضعیت</div>
-    <div class="tab" onclick="switchTab('tables')">جدول‌ها</div>
-    <div class="tab" onclick="switchTab('events')">لاگ‌ها</div>
-    <div class="tab" onclick="switchTab('stats')">آمار</div>
-    <div class="tab" onclick="switchTab('raw')">JSON کامل</div>
+    <div class="tab active" onclick="switchTab(event,'status')">Status</div>
+    <div class="tab" onclick="switchTab(event,'tables')">Tables</div>
+    <div class="tab" onclick="switchTab(event,'events')">Logs</div>
+    <div class="tab" onclick="switchTab(event,'stats')">Stats</div>
+    <div class="tab" onclick="switchTab(event,'raw')">Raw JSON</div>
   </div>
 
   <div id="tab-status" class="tab-content active">
     <div class="grid" id="status-grid">
-      <div class="card"><p class="muted">روی «بارگذاری وضعیت» کلیک کنید.</p></div>
+      <div class="card"><div class="loading"><span class="spinner"></span> Loading status…</div></div>
     </div>
   </div>
 
   <div id="tab-tables" class="tab-content">
     <div class="card">
-      <h2>🗄️ جدول‌های D1</h2>
-      <div id="tables-content"><p class="muted">بارگذاری...</p></div>
+      <h2>🗄️ D1 Tables</h2>
+      <div id="tables-content"><div class="loading"><span class="spinner"></span> Loading…</div></div>
     </div>
   </div>
 
   <div id="tab-events" class="tab-content">
     <div class="card">
-      <h2>📜 رویدادهای دیباگ</h2>
-      <div id="events-content"><p class="muted">روی «لاگ‌ها» کلیک کنید.</p></div>
+      <h2>📜 Debug Events</h2>
+      <div id="events-content"><p class="muted">Click "View Logs" to load.</p></div>
     </div>
   </div>
 
   <div id="tab-stats" class="tab-content">
     <div class="card">
-      <h2>📈 آمار جهانی</h2>
-      <div id="stats-content"><p class="muted">روی «آمار» کلیک کنید.</p></div>
+      <h2>📈 Global Statistics</h2>
+      <div id="stats-content"><p class="muted">Click "Stats" to load.</p></div>
     </div>
   </div>
 
   <div id="tab-raw" class="tab-content">
     <div class="card">
-      <h2>📋 JSON کامل</h2>
-      <pre id="raw-content">بارگذاری...</pre>
+      <h2>📋 Full JSON Status</h2>
+      <pre id="raw-content">Loading…</pre>
     </div>
   </div>
 
   <footer>
-    AI Admin V${VERSION} • <a href="https://ilivir3.bot" style="color:#475569;">ILIVIR3</a>
+    AI Admin v${VERSION} • <a href="https://ilivir3.bot">ILIVIR3</a> • Powered by Cloudflare Workers
   </footer>
 </div>
 
@@ -538,42 +626,64 @@ function panelHTML(_env: Env): string {
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
 const headers = TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
 
-function showAlert(type, msg) {
+function showAlert(type, title, msg) {
   const c = document.getElementById('alert-container');
-  c.innerHTML = '<div class="alert alert-' + type + '">' + msg + '</div>';
-  setTimeout(() => c.innerHTML = '', 8000);
+  const icons = { error: '🚨', success: '✅', warning: '⚠️' };
+  c.innerHTML = '<div class="alert alert-' + type + '"><span class="alert-icon">' + icons[type] + '</span><div class="alert-content"><div class="alert-title">' + title + '</div>' + (msg || '') + '</div></div>';
+  setTimeout(() => c.innerHTML = '', 10000);
 }
 
-function btnLoading(id, text) {
-  const btn = document.getElementById(id) || document.querySelector('button:has(---)');
-  // simpler: find active button
+function showCriticalBanner(title, text, steps) {
+  const c = document.getElementById('critical-banner-container');
+  let stepsHtml = '';
+  if (steps && steps.length) {
+    stepsHtml = '<ol class="critical-banner-steps">' + steps.map(s => '<li>' + s + '</li>').join('') + '</ol>';
+  }
+  c.innerHTML = '<div class="critical-banner"><span class="critical-banner-icon">🚨</span><div class="critical-banner-content"><div class="critical-banner-title">' + title + '</div><div class="critical-banner-text">' + text + stepsHtml + '</div></div></div>';
 }
 
-async function api(path, method = 'GET') {
+async function api(path, method) {
+  method = method || 'GET';
   try {
     const r = await fetch(path, { method, headers });
     const data = await r.json();
-    if (!r.ok || !data.ok) {
-      showAlert('error', 'خطا: ' + (data.error || r.statusText));
-    }
     return data;
   } catch (e) {
-    showAlert('error', 'خطای شبکه: ' + e.message);
+    showAlert('error', 'Network Error', e.message);
     return { ok: false, error: e.message };
   }
 }
 
 async function loadStatus() {
   const data = await api('/Admi-bug/api/status');
-  if (!data.ok) {
-    showAlert('error', 'سیستم مشکل دارد. جزئیات در تب JSON.');
+
+  // Check for critical errors
+  if (data.criticalError) {
+    showCriticalBanner('Critical Configuration Error', data.criticalError, [
+      'Go to Cloudflare Dashboard → Workers &amp; Pages → <strong>ai-admin</strong> → Settings → Variables',
+      'Click <strong>Add Variable</strong>, select type <strong>Secret</strong>',
+      'Name: <code>WEBHOOK_SECRET</code>',
+      'Value: the same secret you used in the <code>setWebhook</code> curl command',
+      'Save — no redeploy needed (secrets apply instantly)',
+      'Send a message to your bot. It should respond within seconds.'
+    ]);
   } else {
-    showAlert('success', '✓ سیستم سالم است.');
+    document.getElementById('critical-banner-container').innerHTML = '';
   }
+
+  if (data.ok) {
+    showAlert('success', 'All Systems Operational', 'Everything looks good. The bot should be responding to messages.');
+  } else {
+    const issues = [];
+    if (!data.secrets.WEBHOOK_SECRET) issues.push('WEBHOOK_SECRET not set');
+    if (data.webhook && data.webhook.lastErrorMessage) issues.push('Webhook: ' + data.webhook.lastErrorMessage);
+    if (data.d1 && !data.d1.ok) issues.push('D1 error');
+    if (data.tables && !data.tables.ok) issues.push(data.tables.missing.length + ' tables missing');
+    showAlert('error', 'Issues Detected', issues.join('<br>'));
+  }
+
   renderStatus(data);
   document.getElementById('raw-content').textContent = JSON.stringify(data, null, 2);
-
-  // Also load tables
   loadTables();
 }
 
@@ -581,65 +691,70 @@ function renderStatus(data) {
   const grid = document.getElementById('status-grid');
   const cards = [];
 
-  // Secrets card
+  // Secrets
   const secrets = data.secrets || {};
-  const secretItems = Object.entries(secrets).map(([k, v]) =>
-    '<div class="status-item"><span class="status-label">' + k + '</span><span class="' + (v ? 'ok' : 'err') + '">' + (v ? '✓' : '✗') + '</span></div>'
-  ).join('');
-  cards.push('<div class="card"><h2>🔐 Secretها</h2>' + secretItems + '</div>');
+  const secretItems = Object.entries(secrets).map(([k, v]) => {
+    const critical = (k === 'WEBHOOK_SECRET' && !v);
+    const cls = critical ? 'err' : (v ? 'ok' : 'warn');
+    const icon = critical ? '✗' : (v ? '✓' : '!');
+    return '<div class="status-item"><span class="status-label">' + k + '</span><span class="' + cls + '">' + icon + ' ' + (v ? 'set' : 'NOT SET') + '</span></div>';
+  }).join('');
+  cards.push('<div class="card"><h2>🔐 Secrets</h2>' + secretItems + '</div>');
 
-  // Bindings card
+  // Bindings
   const bindings = data.bindings || {};
   const bindingItems = Object.entries(bindings).map(([k, v]) =>
-    '<div class="status-item"><span class="status-label">' + k + '</span><span class="' + (v ? 'ok' : 'err') + '">' + (v ? '✓ بسته‌شده' : '✗ نبسته') + '</span></div>'
+    '<div class="status-item"><span class="status-label">' + k + '</span><span class="' + (v ? 'ok' : 'err') + '">' + (v ? '✓ bound' : '✗ missing') + '</span></div>'
   ).join('');
   cards.push('<div class="card"><h2>🔗 Bindings</h2>' + bindingItems + '</div>');
 
-  // Bot API card
+  // Bot API
   const bot = data.botApi || {};
-  let botHtml = '';
+  let botHtml;
   if (bot.ok) {
-    botHtml = '<div class="status-item"><span>بات</span><span class="ok">@' + bot.username + '</span></div>' +
-              '<div class="status-item"><span>نام</span><span>' + bot.firstName + '</span></div>';
+    botHtml = '<div class="status-item"><span class="status-label">Bot</span><span class="ok">@' + bot.username + '</span></div>' +
+              '<div class="status-item"><span class="status-label">Name</span><span>' + bot.firstName + '</span></div>' +
+              '<div class="status-item"><span class="status-label">Can Join Groups</span><span class="' + (bot.canJoinGroups ? 'ok' : 'err') + '">' + (bot.canJoinGroups ? '✓' : '✗') + '</span></div>';
   } else {
-    botHtml = '<div class="status-item"><span>Bot API</span><span class="err">✗ ' + (bot.error || 'failed') + '</span></div>';
+    botHtml = '<div class="status-item"><span class="status-label">Bot API</span><span class="err">✗ Failed</span></div><div class="status-item"><span class="status-label">Error</span><span class="err" style="font-size:0.7rem">' + (bot.error || '') + '</span></div>';
   }
   cards.push('<div class="card"><h2>🤖 Bot API</h2>' + botHtml + '</div>');
 
-  // Webhook card
+  // Webhook
   const wh = data.webhook || {};
-  let whHtml = '';
+  let whHtml;
   if (wh.ok) {
-    whHtml = '<div class="status-item"><span>URL</span><span class="status-value" style="font-size:0.7rem;word-break:break-all">' + (wh.url || '(none)') + '</span></div>' +
-             '<div class="status-item"><span>pending</span><span class="' + (wh.pendingUpdateCount > 0 ? 'warn' : 'ok') + '">' + wh.pendingUpdateCount + '</span></div>';
+    whHtml = '<div class="status-item"><span class="status-label">URL</span><span class="status-value" style="font-size:0.65rem;word-break:break-all;text-align:right">' + (wh.url || '(none)') + '</span></div>' +
+             '<div class="status-item"><span class="status-label">Pending</span><span class="' + (wh.pendingUpdateCount > 0 ? 'warn' : 'ok') + '">' + wh.pendingUpdateCount + '</span></div>' +
+             '<div class="status-item"><span class="status-label">Max Conn</span><span>' + wh.maxConnections + '</span></div>';
     if (wh.lastErrorMessage) {
-      whHtml += '<div class="status-item"><span>خطای آخر</span><span class="err" style="font-size:0.7rem">' + wh.lastErrorMessage + '</span></div>';
+      whHtml += '<div class="status-item"><span class="status-label">Last Error</span><span class="err" style="font-size:0.65rem;max-width:180px;word-break:break-word;text-align:right">' + wh.lastErrorMessage + '</span></div>';
     }
   } else {
-    whHtml = '<div class="status-item"><span>Webhook</span><span class="err">✗</span></div>';
+    whHtml = '<div class="status-item"><span class="status-label">Webhook</span><span class="err">✗ Failed</span></div>';
   }
   cards.push('<div class="card"><h2>📡 Webhook</h2>' + whHtml + '</div>');
 
-  // D1 card
+  // D1
   const d1 = data.d1 || {};
   const d1Html = d1.ok
-    ? '<div class="status-item"><span>وضعیت</span><span class="ok">✓ سالم</span></div><div class="status-item"><span>latency</span><span>' + d1.latencyMs + 'ms</span></div>'
-    : '<div class="status-item"><span>وضعیت</span><span class="err">✗ خطا</span></div><div class="status-item"><span>خطا</span><span class="err" style="font-size:0.7rem">' + (d1.error || '') + '</span></div>';
+    ? '<div class="status-item"><span class="status-label">Status</span><span class="ok">✓ Healthy</span></div><div class="status-item"><span class="status-label">Latency</span><span>' + d1.latencyMs + 'ms</span></div>'
+    : '<div class="status-item"><span class="status-label">Status</span><span class="err">✗ Error</span></div><div class="status-item"><span class="status-label">Error</span><span class="err" style="font-size:0.65rem">' + (d1.error || '') + '</span></div>';
   cards.push('<div class="card"><h2>🗄️ D1 Database</h2>' + d1Html + '</div>');
 
-  // KV card
+  // KV
   const kv = data.kv || {};
   const kvHtml = kv.ok
-    ? '<div class="status-item"><span>وضعیت</span><span class="ok">✓ سالم</span></div><div class="status-item"><span>latency</span><span>' + kv.latencyMs + 'ms</span></div>'
-    : '<div class="status-item"><span>وضعیت</span><span class="err">✗ خطا</span></div>';
-  cards.push('<div class="card"><h2>⚡ KV</h2>' + kvHtml + '</div>');
+    ? '<div class="status-item"><span class="status-label">Status</span><span class="ok">✓ Healthy</span></div><div class="status-item"><span class="status-label">Latency</span><span>' + kv.latencyMs + 'ms</span></div>'
+    : '<div class="status-item"><span class="status-label">Status</span><span class="err">✗ Error</span></div>';
+  cards.push('<div class="card"><h2>⚡ KV Namespace</h2>' + kvHtml + '</div>');
 
-  // Config card
+  // Config
   const cfg = data.config || {};
-  cards.push('<div class="card"><h2>⚙️ تنظیمات</h2>' +
-    '<div class="status-item"><span>ADMIN_ID</span><span>' + (cfg.adminId || '(unset)') + '</span></div>' +
-    '<div class="status-item"><span>TARGET_CHANNEL</span><span>' + (cfg.targetChannel || '(unset)') + '</span></div>' +
-    '<div class="status-item"><span>FOOTER_TEXT</span><span style="font-size:0.75rem">' + (cfg.footerText || '') + '</span></div>' +
+  cards.push('<div class="card"><h2>⚙️ Configuration</h2>' +
+    '<div class="status-item"><span class="status-label">ADMIN_ID</span><span>' + (cfg.adminId || '(unset)') + '</span></div>' +
+    '<div class="status-item"><span class="status-label">TARGET_CHANNEL</span><span>' + (cfg.targetChannel || '(unset)') + '</span></div>' +
+    '<div class="status-item"><span class="status-label">FOOTER_TEXT</span><span style="font-size:0.75rem">' + (cfg.footerText || '') + '</span></div>' +
     '</div>');
 
   grid.innerHTML = cards.join('');
@@ -649,111 +764,124 @@ async function loadTables() {
   const data = await api('/Admi-bug/api/tables');
   const c = document.getElementById('tables-content');
   if (data.ok) {
-    c.innerHTML = '<div class="alert alert-success">✓ همه ۸ جدول وجود دارند.</div>' +
-      '<table><tr><th>جدول</th><th>وضعیت</th></tr>' +
-      data.tables.map(t => '<tr><td><code>' + t.name + '</code></td><td><span class="pill pill-ok">✓ وجود دارد</span></td></tr>').join('') +
+    c.innerHTML = '<div class="alert alert-success" style="margin-bottom:0.75rem"><span class="alert-icon">✅</span><div class="alert-content"><div class="alert-title">All 8 tables exist</div></div></div>' +
+      '<table><tr><th>Table</th><th>Status</th></tr>' +
+      data.tables.map(t => '<tr><td><code>' + t.name + '</code></td><td><span class="pill pill-ok">EXISTS</span></td></tr>').join('') +
       '</table>';
   } else {
-    c.innerHTML = '<div class="alert alert-error">✗ ' + data.missing.length + ' جدول گم شده. روی «ساخت جدول‌ها» کلیک کنید.</div>' +
-      '<table><tr><th>جدول</th><th>وضعیت</th></tr>' +
-      data.tables.map(t => '<tr><td><code>' + t.name + '</code></td><td>' + (t.exists ? '<span class="pill pill-ok">✓</span>' : '<span class="pill pill-err">✗ گم شده</span>') + '</td></tr>').join('') +
+    c.innerHTML = '<div class="alert alert-error" style="margin-bottom:0.75rem"><span class="alert-icon">🚨</span><div class="alert-content"><div class="alert-title">' + data.missing.length + ' table(s) missing</div>Click "Init Schema" to create them.</div></div>' +
+      '<table><tr><th>Table</th><th>Status</th></tr>' +
+      data.tables.map(t => '<tr><td><code>' + t.name + '</code></td><td>' + (t.exists ? '<span class="pill pill-ok">EXISTS</span>' : '<span class="pill pill-err">MISSING</span>') + '</td></tr>').join('') +
       '</table>';
   }
 }
 
 async function initSchema() {
-  if (!confirm('جدول‌های D1 ساخته شوند؟ (ایمن — فقط CREATE TABLE IF NOT EXISTS)')) return;
-  showAlert('warning', 'در حال ساخت جدول‌ها...');
+  if (!confirm('Create D1 tables? (Safe — uses CREATE TABLE IF NOT EXISTS)')) return;
+  showAlert('warning', 'Working…', 'Creating tables…');
   const data = await api('/Admi-bug/api/init-schema', 'POST');
   if (data.ok) {
-    showAlert('success', '✓ جدول‌ها ساخته شدند!');
+    showAlert('success', 'Schema Initialized', 'All tables created successfully!');
     loadTables();
   } else {
-    showAlert('error', '✗ خطا: ' + (data.error || ''));
+    showAlert('error', 'Schema Init Failed', data.error || 'Unknown error');
   }
 }
 
 async function testMessage() {
-  showAlert('warning', 'در حال ارسال پیام تست...');
+  showAlert('warning', 'Working…', 'Sending test message…');
   const data = await api('/Admi-bug/api/test-message', 'POST');
   if (data.ok) {
-    showAlert('success', '✓ پیام تست به ادمین ارسال شد. تلگرام را چک کنید.');
+    showAlert('success', 'Test Sent', 'Check your Telegram — a test message was sent to your admin chat.');
+  } else {
+    showAlert('error', 'Test Failed', data.error || '');
   }
 }
 
 async function runSelfTest() {
-  showAlert('warning', 'در حال اجرای تست‌ها...');
+  showAlert('warning', 'Working…', 'Running formatter tests…');
   const data = await api('/Admi-bug/api/self-test', 'POST');
   if (data.ok) {
     if (data.failed === 0) {
-      showAlert('success', '✓ همه ' + data.passed + ' تست پاس شدند.');
+      showAlert('success', 'All Tests Passed', data.passed + ' tests passed, 0 failed.');
     } else {
-      showAlert('error', data.passed + ' passed, ' + data.failed + ' failed.');
+      showAlert('error', 'Tests Failed', data.passed + ' passed, ' + data.failed + ' failed.');
     }
     document.getElementById('raw-content').textContent = JSON.stringify(data, null, 2);
-    switchTab('raw');
+    switchTab(null, 'raw');
   }
 }
 
 async function ensureOwner() {
-  showAlert('warning', 'در حال ثبت مالک...');
+  showAlert('warning', 'Working…', 'Ensuring owner…');
   const data = await api('/Admi-bug/api/ensure-owner', 'POST');
   if (data.ok) {
-    showAlert('success', '✓ مالک با ID ' + data.ownerId + ' ثبت شد.');
+    showAlert('success', 'Owner Ensured', 'Owner ID ' + data.ownerId + ' added to admins table.');
+  } else {
+    showAlert('error', 'Failed', data.error || '');
   }
 }
 
 async function refreshHealth() {
-  showAlert('warning', 'در حال بررسی مدل‌های AI (۱۰ ثانیه)...');
+  showAlert('warning', 'Working…', 'Refreshing model health (may take 10s)…');
   const data = await api('/Admi-bug/api/refresh-health', 'POST');
   if (data.ok) {
-    showAlert('success', '✓ سلامت مدل‌ها به‌روزرسانی شد.');
+    showAlert('success', 'Models Refreshed', 'AI model health cache updated.');
+  } else {
+    showAlert('error', 'Failed', data.error || '');
   }
 }
 
 async function loadEvents() {
-  switchTab('events');
+  switchTab(null, 'events');
   const data = await api('/Admi-bug/api/events?limit=20');
   const c = document.getElementById('events-content');
   if (data.ok && data.events && data.events.length > 0) {
-    c.innerHTML = '<table><tr><th>زمان</th><th>نوع</th><th>خلاصه</th></tr>' +
-      data.events.map(e => '<tr><td style="font-size:0.7rem">' + new Date(e.created_at).toLocaleString('fa-IR') + '</td><td><code>' + e.kind + '</code></td><td>' + (e.summary || '') + '</td></tr>').join('') +
+    c.innerHTML = '<table><tr><th>Time</th><th>Type</th><th>Summary</th></tr>' +
+      data.events.map(e => '<tr><td style="font-size:0.7rem;white-space:nowrap">' + new Date(e.created_at).toLocaleString('en-US') + '</td><td><code>' + e.kind + '</code></td><td style="font-size:0.75rem">' + (e.summary || '') + '</td></tr>').join('') +
       '</table>';
   } else {
-    c.innerHTML = '<p class="muted">هیچ رویدادی ثبت نشده.</p>';
+    c.innerHTML = '<p class="muted">No events recorded.</p>';
   }
 }
 
 async function loadStats() {
-  switchTab('stats');
+  switchTab(null, 'stats');
   const data = await api('/Admi-bug/api/stats');
   const c = document.getElementById('stats-content');
   if (data.ok && data.stats) {
     const s = data.stats;
     c.innerHTML = '<table>' +
-      '<tr><td>دریافتی</td><td>' + s.totalReceived + '</td></tr>' +
-      '<tr><td>منتشرشده</td><td>' + s.totalPublished + '</td></tr>' +
-      '<tr><td>بازنویسی‌شده</td><td>' + s.totalRewritten + '</td></tr>' +
-      '<tr><td>ناموفق</td><td>' + s.totalFailed + '</td></tr>' +
-      '<tr><td>تایید</td><td>' + s.totalApprovals + '</td></tr>' +
-      '<tr><td>ردشده</td><td>' + s.totalRejected + '</td></tr>' +
-      '<tr><td>زمان‌بندی‌شده</td><td>' + s.totalScheduled + '</td></tr>' +
-      '<tr><td>AI calls</td><td>' + s.aiCalls + '</td></tr>' +
-      '<tr><td>AI failures</td><td>' + s.aiFailures + '</td></tr>' +
+      '<tr><th>Metric</th><th>Value</th></tr>' +
+      '<tr><td>Total Received</td><td>' + s.totalReceived + '</td></tr>' +
+      '<tr><td>Total Published</td><td>' + s.totalPublished + '</td></tr>' +
+      '<tr><td>Total Rewritten</td><td>' + s.totalRewritten + '</td></tr>' +
+      '<tr><td>Total Failed</td><td>' + s.totalFailed + '</td></tr>' +
+      '<tr><td>Total Approvals</td><td>' + s.totalApprovals + '</td></tr>' +
+      '<tr><td>Total Rejected</td><td>' + s.totalRejected + '</td></tr>' +
+      '<tr><td>Total Scheduled</td><td>' + s.totalScheduled + '</td></tr>' +
+      '<tr><td>AI Calls</td><td>' + s.aiCalls + '</td></tr>' +
+      '<tr><td>AI Failures</td><td>' + s.aiFailures + '</td></tr>' +
       '</table>';
   } else {
-    c.innerHTML = '<p class="muted">آمار در دسترس نیست (جدول stats وجود ندارد؟).</p>';
+    c.innerHTML = '<p class="muted">Stats unavailable (stats table may not exist).</p>';
   }
 }
 
-function switchTab(name) {
+function switchTab(evt, name) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
-  event.target.classList.add('active');
+  if (evt && evt.target) evt.target.classList.add('active');
+  else {
+    // find tab by matching text content
+    const tabs = document.querySelectorAll('.tab');
+    const tabTexts = { status: 'Status', tables: 'Tables', events: 'Logs', stats: 'Stats', raw: 'Raw JSON' };
+    tabs.forEach(t => { if (t.textContent.trim() === tabTexts[name]) t.classList.add('active'); });
+  }
 }
 
-// Auto-load status on page open
+// Auto-load on page open
 loadStatus();
 </script>
 </body>

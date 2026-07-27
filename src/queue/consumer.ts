@@ -145,6 +145,15 @@ async function handleMessage(
     } catch {
       /* ignore — debug_events table might not exist yet */
     }
+    // Notify admin of critical errors (best-effort)
+    try {
+      const { notifyError } = await import("../observability/notify");
+      await notifyError(env, `queue.consumer (${(body as { kind?: string }).kind || "unknown"})`, msg, {
+        kind: (body as { kind?: string }).kind,
+      });
+    } catch {
+      /* ignore */
+    }
     if (isTransient(err)) {
       // Redeliver later. The queue runtime backs off automatically.
       message.retry();
