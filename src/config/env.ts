@@ -9,7 +9,7 @@ export function assertEnv(env: unknown): asserts env is Env {
   const e = env as Record<string, unknown>;
   const missing: string[] = [];
   if (!e.BOT_TOKEN) missing.push("BOT_TOKEN");
-  if (!e.WEBHOOK_SECRET) missing.push("WEBHOOK_SECRET");
+  // WEBHOOK_SECRET is OPTIONAL — if unset, webhook accepts all requests.
   if (!e.GEMINI_API_KEY) missing.push("GEMINI_API_KEY");
   if (!e.OPENROUTER_API_KEY) missing.push("OPENROUTER_API_KEY");
   if (!e.ADMIN_ID) missing.push("ADMIN_ID");

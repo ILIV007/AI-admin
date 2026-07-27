@@ -12,7 +12,7 @@
 export interface Env {
   // Secrets (required)
   BOT_TOKEN: string;
-  WEBHOOK_SECRET: string;
+  WEBHOOK_SECRET?: string; // OPTIONAL — if set, webhook validates secret; if unset, accepts all
   GEMINI_API_KEY: string;
   OPENROUTER_API_KEY: string;
 

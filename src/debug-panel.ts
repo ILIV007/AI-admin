@@ -15,7 +15,7 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.0.6";
+const VERSION = "2.0.7";
 
 // ============================================================
 // AUTH
@@ -137,6 +137,112 @@ export async function handlePanelRoute(
     }
   }
 
+  // GET /Admi-bug/api/history → last 10 published jobs
+  if (request.method === "GET" && url.pathname === "/Admi-bug/api/history") {
+    try {
+      const result = await env.DB.prepare(
+        "SELECT id, type, status, user_id, chat_id, message_id, created_at, updated_at, published_message_id, error_message FROM jobs ORDER BY created_at DESC LIMIT 10",
+      ).all();
+      return json({ ok: true, jobs: result.results || [] });
+    } catch (e) {
+      return json({ ok: false, error: String(e), jobs: [] });
+    }
+  }
+
+  // GET /Admi-bug/api/models → list all AI models with health
+  if (request.method === "GET" && url.pathname === "/Admi-bug/api/models") {
+    try {
+      const { GEMINI_MODELS, OPENROUTER_MODELS } = await import("./config/defaults");
+      const allModels = [
+        ...GEMINI_MODELS.map((m) => ({ ...m, provider: "gemini" as const })),
+        ...OPENROUTER_MODELS.map((m) => ({ ...m, provider: "openrouter" as const })),
+      ];
+      const withHealth = await Promise.all(
+        allModels.map(async (m) => {
+          const key = `ai:health:${m.provider}:${m.id}`;
+          let health: { healthy?: boolean; lastCheck?: number; consecutiveFailures?: number } | null = null;
+          try {
+            const raw = await env.AI_ADMIN_KV.get(key);
+            if (raw) health = JSON.parse(raw);
+          } catch { /* ignore */ }
+          return {
+            id: m.id,
+            label: m.label,
+            provider: m.provider,
+            maxTokens: m.maxTokens,
+            notes: m.notes,
+            healthy: health?.healthy ?? null,
+            lastCheck: health?.lastCheck ?? null,
+            consecutiveFailures: health?.consecutiveFailures ?? 0,
+          };
+        }),
+      );
+      return json({ ok: true, models: withHealth });
+    } catch (e) {
+      return json({ ok: false, error: String(e), models: [] });
+    }
+  }
+
+  // POST /Admi-bug/api/test-model → test a specific AI model with a simple prompt
+  if (request.method === "POST" && url.pathname === "/Admi-bug/api/test-model") {
+    try {
+      const body = (await request.json()) as { provider: string; model: string };
+      const t0 = Date.now();
+      let result: { ok: boolean; text?: string; latencyMs: number; error?: string };
+
+      if (body.provider === "gemini") {
+        const url2 = `https://generativelanguage.googleapis.com/v1beta/models/${body.model}:generateContent?key=${env.GEMINI_API_KEY}`;
+        const resp = await fetch(url2, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "Say 'hello' in one word." }], role: "user" }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 50 },
+          }),
+        });
+        const data = (await resp.json()) as {
+          candidates?: { content?: { parts?: { text?: string }[] } }[];
+          error?: { message?: string };
+        };
+        if (resp.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+          result = { ok: true, text: data.candidates[0].content.parts[0].text.trim(), latencyMs: Date.now() - t0 };
+        } else {
+          result = { ok: false, latencyMs: Date.now() - t0, error: data.error?.message || "Unknown error" };
+        }
+      } else if (body.provider === "openrouter") {
+        const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://ilivir3.bot",
+            "X-Title": "AI Admin Panel Test",
+          },
+          body: JSON.stringify({
+            model: body.model,
+            messages: [{ role: "user", content: "Say 'hello' in one word." }],
+            max_tokens: 50,
+          }),
+        });
+        const data = (await resp.json()) as {
+          choices?: { message?: { content?: string } }[];
+          error?: { message?: string };
+        };
+        if (resp.ok && data.choices?.[0]?.message?.content) {
+          result = { ok: true, text: data.choices[0].message.content.trim(), latencyMs: Date.now() - t0 };
+        } else {
+          result = { ok: false, latencyMs: Date.now() - t0, error: data.error?.message || "Unknown error" };
+        }
+      } else {
+        result = { ok: false, latencyMs: 0, error: "Unknown provider: " + body.provider };
+      }
+      // Return result fields (don't spread `ok` twice)
+      return json({ ...result });
+    } catch (e) {
+      return json({ ok: false, error: String(e) });
+    }
+  }
+
   return new Response("Not Found", { status: 404 });
 }
 
@@ -178,10 +284,9 @@ async function handleStatus(env: Env): Promise<Response> {
     },
   };
 
-  // Critical: WEBHOOK_SECRET check
+  // WEBHOOK_SECRET is OPTIONAL — just note if it's unset (no critical error)
   if (!env.WEBHOOK_SECRET) {
-    status.ok = false;
-    (status as Record<string, unknown>).criticalError = "WEBHOOK_SECRET is NOT set. The webhook will return 403 for all requests. Set it as a Secret in Cloudflare dashboard.";
+    (status as Record<string, unknown>).warning = "WEBHOOK_SECRET is not set. Webhook accepts all requests (no auth). Set it as a Secret for better security.";
   }
 
   try {
@@ -562,7 +667,6 @@ function panelHTML(): string {
   </header>
 
   <div id="alert-container"></div>
-  <div id="critical-banner-container"></div>
 
   <div class="actions">
     <button onclick="loadStatus()">📊 Refresh Status</button>
@@ -578,6 +682,8 @@ function panelHTML(): string {
   <div class="tabs">
     <div class="tab active" onclick="switchTab(event,'status')">Status</div>
     <div class="tab" onclick="switchTab(event,'tables')">Tables</div>
+    <div class="tab" onclick="switchTab(event,'history')">History</div>
+    <div class="tab" onclick="switchTab(event,'models')">AI Models</div>
     <div class="tab" onclick="switchTab(event,'events')">Logs</div>
     <div class="tab" onclick="switchTab(event,'stats')">Stats</div>
     <div class="tab" onclick="switchTab(event,'raw')">Raw JSON</div>
@@ -593,6 +699,20 @@ function panelHTML(): string {
     <div class="card">
       <h2>🗄️ D1 Tables</h2>
       <div id="tables-content"><div class="loading"><span class="spinner"></span> Loading…</div></div>
+    </div>
+  </div>
+
+  <div id="tab-history" class="tab-content">
+    <div class="card">
+      <h2>🕘 Last 10 Messages</h2>
+      <div id="history-content"><p class="muted">Loading history…</p></div>
+    </div>
+  </div>
+
+  <div id="tab-models" class="tab-content">
+    <div class="card">
+      <h2>🤖 AI Models</h2>
+      <div id="models-content"><p class="muted">Loading models…</p></div>
     </div>
   </div>
 
@@ -612,7 +732,7 @@ function panelHTML(): string {
 
   <div id="tab-raw" class="tab-content">
     <div class="card">
-      <h2>📋 Full JSON Status</h2>
+      <h2>📋 Full JSON Status <button onclick="copyJson()" class="secondary" style="float:right;padding:0.25rem 0.625rem;font-size:0.6875rem">📋 Copy</button></h2>
       <pre id="raw-content">Loading…</pre>
     </div>
   </div>
@@ -657,25 +777,14 @@ async function api(path, method) {
 async function loadStatus() {
   const data = await api('/Admi-bug/api/status');
 
-  // Check for critical errors
-  if (data.criticalError) {
-    showCriticalBanner('Critical Configuration Error', data.criticalError, [
-      'Go to Cloudflare Dashboard → Workers &amp; Pages → <strong>ai-admin</strong> → Settings → Variables',
-      'Click <strong>Add Variable</strong>, select type <strong>Secret</strong>',
-      'Name: <code>WEBHOOK_SECRET</code>',
-      'Value: the same secret you used in the <code>setWebhook</code> curl command',
-      'Save — no redeploy needed (secrets apply instantly)',
-      'Send a message to your bot. It should respond within seconds.'
-    ]);
-  } else {
-    document.getElementById('critical-banner-container').innerHTML = '';
-  }
-
   if (data.ok) {
-    showAlert('success', 'All Systems Operational', 'Everything looks good. The bot should be responding to messages.');
+    if (data.warning) {
+      showAlert('warning', 'Security Note', data.warning);
+    } else {
+      showAlert('success', 'All Systems Operational', 'Everything looks good. The bot should be responding to messages.');
+    }
   } else {
     const issues = [];
-    if (!data.secrets.WEBHOOK_SECRET) issues.push('WEBHOOK_SECRET not set');
     if (data.webhook && data.webhook.lastErrorMessage) issues.push('Webhook: ' + data.webhook.lastErrorMessage);
     if (data.d1 && !data.d1.ok) issues.push('D1 error');
     if (data.tables && !data.tables.ok) issues.push(data.tables.missing.length + ' tables missing');
@@ -685,6 +794,8 @@ async function loadStatus() {
   renderStatus(data);
   document.getElementById('raw-content').textContent = JSON.stringify(data, null, 2);
   loadTables();
+  loadHistory();
+  loadModels();
 }
 
 function renderStatus(data) {
@@ -874,10 +985,92 @@ function switchTab(evt, name) {
   document.getElementById('tab-' + name).classList.add('active');
   if (evt && evt.target) evt.target.classList.add('active');
   else {
-    // find tab by matching text content
     const tabs = document.querySelectorAll('.tab');
-    const tabTexts = { status: 'Status', tables: 'Tables', events: 'Logs', stats: 'Stats', raw: 'Raw JSON' };
+    const tabTexts = { status: 'Status', tables: 'Tables', history: 'History', models: 'AI Models', events: 'Logs', stats: 'Stats', raw: 'Raw JSON' };
     tabs.forEach(t => { if (t.textContent.trim() === tabTexts[name]) t.classList.add('active'); });
+  }
+}
+
+// Copy JSON status to clipboard
+function copyJson() {
+  const text = document.getElementById('raw-content').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    showAlert('success', 'Copied!', 'JSON status copied to clipboard.');
+  }).catch(() => {
+    showAlert('error', 'Copy Failed', 'Could not copy to clipboard.');
+  });
+}
+
+// Load last 10 messages (history)
+async function loadHistory() {
+  const data = await api('/Admi-bug/api/history');
+  const c = document.getElementById('history-content');
+  if (data.ok && data.jobs && data.jobs.length > 0) {
+    c.innerHTML = '<table><tr><th>Time</th><th>Type</th><th>Status</th><th>Job ID</th><th>Msg ID</th></tr>' +
+      data.jobs.map(j => {
+        const statusPill = j.status === 'published' ? 'pill-ok' : (j.status === 'failed' ? 'pill-err' : 'pill-warn');
+        return '<tr>' +
+          '<td style="font-size:0.7rem;white-space:nowrap">' + new Date(j.created_at).toLocaleString('en-US') + '</td>' +
+          '<td><code>' + j.type + '</code></td>' +
+          '<td><span class="pill ' + statusPill + '">' + j.status + '</span></td>' +
+          '<td style="font-size:0.7rem"><code>' + (j.id || '').slice(0,12) + '</code></td>' +
+          '<td>' + (j.published_message_id || j.message_id || '-') + '</td>' +
+          '</tr>';
+      }).join('') +
+      '</table>';
+  } else {
+    c.innerHTML = '<p class="muted">No messages processed yet. Send a message to your bot to see history.</p>';
+  }
+}
+
+// Load AI models with health
+async function loadModels() {
+  const data = await api('/Admi-bug/api/models');
+  const c = document.getElementById('models-content');
+  if (data.ok && data.models && data.models.length > 0) {
+    c.innerHTML = '<table><tr><th>Model</th><th>Provider</th><th>Health</th><th>Failures</th><th>Test</th></tr>' +
+      data.models.map((m, i) => {
+        const healthPill = m.healthy === true ? 'pill-ok' : (m.healthy === false ? 'pill-err' : 'pill-warn');
+        const healthText = m.healthy === true ? '✓ Healthy' : (m.healthy === false ? '✗ Unhealthy' : '? Unknown');
+        const providerColor = m.provider === 'gemini' ? 'var(--emerald)' : 'var(--sky)';
+        return '<tr>' +
+          '<td><code style="font-size:0.7rem">' + m.id + '</code><br><span style="font-size:0.75rem;color:var(--text-muted)">' + m.label + (m.notes ? ' (' + m.notes + ')' : '') + '</span></td>' +
+          '<td><span style="color:' + providerColor + ';font-weight:600">' + m.provider + '</span></td>' +
+          '<td><span class="pill ' + healthPill + '">' + healthText + '</span></td>' +
+          '<td>' + (m.consecutiveFailures || 0) + '</td>' +
+          '<td><button onclick="testModel(' + i + ')" class="secondary" style="padding:0.25rem 0.5rem;font-size:0.7rem" data-provider="' + m.provider + '" data-model="' + m.id + '">Test</button></td>' +
+          '</tr>';
+      }).join('') +
+      '</table>' +
+      '<div id="model-test-result" style="margin-top:1rem"></div>';
+    // Store models globally for testModel
+    window._models = data.models;
+  } else {
+    c.innerHTML = '<p class="muted">No models available.</p>';
+  }
+}
+
+// Test a specific AI model
+async function testModel(index) {
+  const models = window._models || [];
+  const m = models[index];
+  if (!m) return;
+  const result = document.getElementById('model-test-result');
+  result.innerHTML = '<div class="loading"><span class="spinner"></span> Testing ' + m.label + '…</div>';
+  try {
+    const r = await fetch('/Admi-bug/api/test-model', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: m.provider, model: m.id }),
+    });
+    const data = await r.json();
+    if (data.ok && data.text) {
+      result.innerHTML = '<div class="alert alert-success"><span class="alert-icon">✅</span><div class="alert-content"><div class="alert-title">Success — ' + data.latencyMs + 'ms</div>Response: <code>' + data.text + '</code></div></div>';
+    } else {
+      result.innerHTML = '<div class="alert alert-error"><span class="alert-icon">❌</span><div class="alert-content"><div class="alert-title">Failed' + (data.latencyMs ? ' — ' + data.latencyMs + 'ms' : '') + '</div>' + (data.error || 'Unknown error') + '</div></div>';
+    }
+  } catch (e) {
+    result.innerHTML = '<div class="alert alert-error"><span class="alert-icon">❌</span><div class="alert-content"><div class="alert-title">Error</div>' + e.message + '</div></div>';
   }
 }
 

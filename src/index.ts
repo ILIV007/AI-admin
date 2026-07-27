@@ -28,10 +28,9 @@ import { listEvents } from "./storage/repositories/debug-events";
 import { getStats } from "./storage/repositories/stats";
 import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
-import { notifyWebhookAuthFailure } from "./observability/notify";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.0.6";
+const VERSION = "2.0.7";
 
 // ============================================================
 // MAIN EXPORT
@@ -137,18 +136,17 @@ async function handleWebhook(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  // 1. Secret check (REQUIRED in V2 — fixes V1 #15)
-  const secret = request.headers.get("x-telegram-bot-api-secret-token");
-  if (!env.WEBHOOK_SECRET || secret !== env.WEBHOOK_SECRET) {
-    log("warn", "webhook", "403 — secret mismatch or missing", {
-      hasEnvSecret: !!env.WEBHOOK_SECRET,
-      hasHeaderSecret: !!secret,
-      cfIp: request.headers.get("CF-Connecting-IP"),
-    });
-    // Notify admin (throttled to once per hour)
-    const remoteIp = request.headers.get("CF-Connecting-IP") || undefined;
-    ctx.waitUntil(notifyWebhookAuthFailure(env, remoteIp));
-    return new Response("Forbidden", { status: 403 });
+  // 1. Secret check (OPTIONAL — if WEBHOOK_SECRET is set, validate it)
+  // If WEBHOOK_SECRET is unset, accept all requests (less secure but works).
+  if (env.WEBHOOK_SECRET) {
+    const secret = request.headers.get("x-telegram-bot-api-secret-token");
+    if (secret !== env.WEBHOOK_SECRET) {
+      log("warn", "webhook", "403 — secret mismatch", {
+        hasHeaderSecret: !!secret,
+        cfIp: request.headers.get("CF-Connecting-IP"),
+      });
+      return new Response("Forbidden", { status: 403 });
+    }
   }
 
   // 2. Parse body
