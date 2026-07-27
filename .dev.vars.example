@@ -1,25 +1,31 @@
-# ============================================================
-# .dev.vars — LOCAL DEVELOPMENT ONLY
-# ============================================================
-# Copy this file to `.dev.vars` and fill in real values for local testing.
+# .dev.vars.example — LOCAL DEVELOPMENT ONLY
+# Copy to `.dev.vars` and fill in real values for local testing.
 # NEVER commit your real `.dev.vars` file.
 #
-# In production, set ALL of these as Cloudflare Secrets via the dashboard:
-#   Workers & Pages → ai-admin → Settings → Variables and Secrets
-# ============================================================
+# In production, set ALL secrets via Cloudflare dashboard or
+# `wrangler secret put NAME`.
 
-# === Secrets (required) ===
-BOT_TOKEN=123456:ABC-DEF-your-telegram-bot-token
-GEMINI_API_KEY=your-google-gemini-api-key
-OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key
+# === Secrets (required — set via `wrangler secret put` in production) ===
+BOT_TOKEN="123456:ABC-DEF_your_bot_token_from_BotFather"
+WEBHOOK_SECRET="any-random-string-at-least-20-chars"
+GEMINI_API_KEY="AIza...your_gemini_key"
+OPENROUTER_API_KEY="sk-or-v1-...your_openrouter_key"
 
-# === Optional: webhook secret for verifying Telegram requests ===
-# WEBHOOK_SECRET=any-random-string-here
+# === Per-channel secrets (NOT in wrangler.toml — set as secrets) ===
+# ADMIN_ID: numeric Telegram ID of THIS channel's owner (from @userinfobot)
+ADMIN_ID="123456789"
+# TARGET_CHANNEL: @username or -100xxx for THIS channel
+TARGET_CHANNEL="@your_channel"
+# FOOTER_TEXT: optional, defaults to "🌀 @ILIVIR3" in code if unset
+FOOTER_TEXT="🌀 @ILIVIR3"
 
-# === Vars (also set in dashboard OR wrangler.toml) ===
-# ADMIN_ID=123456789
-# TARGET_CHANNEL=@your_channel
-# FOOTER_TEXT=🌀 @ILIVIR3
-# DEFAULT_AI_PROVIDER=gemini
-# GEMINI_MODEL=gemini-2.0-flash
-# OPENROUTER_MODEL=google/gemini-2.0-flash-exp:free
+# === Optional debug token ===
+# DEBUG_TOKEN="a-long-random-string-for-debug-endpoint"
+
+# === Non-secret vars (also in wrangler.toml [vars], override here for dev) ===
+DEFAULT_AI_PROVIDER="gemini"
+GEMINI_MODEL="gemini-2.5-flash"
+OPENROUTER_MODEL="meta-llama/llama-3.3-70b-instruct:free"
+OPENROUTER_FALLBACK_MODELS="nvidia/nemotron-3-ultra-550b-a55b:free,qwen/qwen3-coder:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openai/gpt-oss-20b:free,meta-llama/llama-3.3-70b-instruct:free"
+DEBUG_MODE="false"
+CHANNEL_PROFILE="ilivir3"

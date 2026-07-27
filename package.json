@@ -1,29 +1,27 @@
 {
   "name": "ai-admin",
-  "version": "0.7.3",
-  "description": "AI Admin — Telegram channel content processing bot on Cloudflare Workers. Free, serverless, AI-powered.",
+  "version": "2.0.0",
+  "description": "AI Admin V2 — Telegram channel content processing bot on Cloudflare Workers (free tier)",
+  "private": true,
   "type": "module",
-  "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "tail": "wrangler tail",
-    "test": "node scripts/test-units.mjs"
+    "db:create": "wrangler d1 create ai-admin",
+    "db:migrate": "wrangler d1 execute ai-admin --file=./schema.sql",
+    "db:migrate:remote": "wrangler d1 execute ai-admin --remote --file=./schema.sql",
+    "queue:create": "wrangler queues create ai-admin-queue && wrangler queues create ai-admin-dlq",
+    "kv:create": "wrangler kv namespace create AI_ADMIN_KV",
+    "secret:bot": "wrangler secret put BOT_TOKEN",
+    "secret:webhook": "wrangler secret put WEBHOOK_SECRET",
+    "secret:gemini": "wrangler secret put GEMINI_API_KEY",
+    "secret:openrouter": "wrangler secret put OPENROUTER_API_KEY",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
   },
   "devDependencies": {
-    "wrangler": "^3.90.0"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "keywords": [
-    "telegram-bot",
-    "cloudflare-workers",
-    "ai",
-    "gemini",
-    "openrouter",
-    "content-processing",
-    "serverless"
-  ],
-  "license": "MIT"
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.114.0"
+  }
 }

@@ -1,52 +1,92 @@
 # ============================================================
-# AI Admin — Cloudflare Worker configuration
-# Version: v0.7.3
+# AI Admin V2 — Cloudflare Worker config
+# ============================================================
+# FREE TIER ONLY. Uses:
+#   - Workers (free: 100k requests/day)
+#   - D1 (free: 5M reads/day, 100k writes/day, 5GB storage)
+#   - KV (free: 100k reads/day, 1k writes/day, 1GB storage)
+#   - Queues (free: 10k operations/day)
+#   - Cron Triggers (free: up to 5, but we use ONLY ONE per user constraint)
 # ============================================================
 
 name = "ai-admin"
-main = "src/index.js"
+main = "src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
-# KV binding — configured by user.
-[[kv_namespaces]]
-binding = "SETTINGS"
-id = "6fe07d58928a4731bbbf2cbc32bf3ead"
-
-# v0.5.9 TASK 1: NO cron trigger — removed per user request.
-# Only native Telegram schedule_date is used (no KV-based fallback).
-# If native fails, the bot shows an error to the user.
+# ============================================================
+# THE ONE cron trigger — every minute.
+# Handles: scheduled-post publishing, approval expiry, model-health
+# refresh, debug/seen-updates pruning, owner/stats bootstrap.
+# ============================================================
+[triggers]
+crons = ["* * * * *"]
 
 # ============================================================
-# Environment Variables (non-secret)
+# Bindings (create these in the Cloudflare dashboard, then fill in the ids)
+# ============================================================
+
+# D1 database — run `wrangler d1 create ai-admin` and paste the id below
+[[d1_databases]]
+binding = "DB"
+database_name = "ai-admin"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# KV namespace — run `wrangler kv namespace create AI_ADMIN_KV` and paste the id
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Queue — run `wrangler queues create ai-admin-queue`
+[[queues.producers]]
+queue = "ai-admin-queue"
+binding = "QUEUE"
+
+[[queues.consumers]]
+queue = "ai-admin-queue"
+max_batch_size = 5
+max_batch_timeout = 2
+max_retries = 3
+dead_letter_queue = "ai-admin-dlq"
+
+# Create the DLQ too: `wrangler queues create ai-admin-dlq`
+
+# ============================================================
+# Non-secret vars (also settable in dashboard). Secrets go via
+# `wrangler secret put NAME` or the dashboard.
 # ============================================================
 [vars]
-ADMIN_ID = "126679582"
-TARGET_CHANNEL = "@ILIVIR3"
-FOOTER_TEXT = "🌀 @ILIVIR3"
-
-# v0.5.9 TASK 4: DEBUG_MODE — when "true", debug logs are written to KV.
-# When "false" (default), logs only go to console.log (saves KV writes).
-DEBUG_MODE = "false"
-
-# AI Provider: "openrouter" (default — works even when Gemini quota is exceeded)
 DEFAULT_AI_PROVIDER = "gemini"
-
-# Gemini model — v0.6.4: Using gemini-3-flash-preview (newest)
-GEMINI_MODEL = "gemini-3-flash-preview"
-
-# OpenRouter primary model — v0.6.4: Using llama-3.3-70b (best quality)
+GEMINI_MODEL = "gemini-2.5-flash"
 OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
-
-# OpenRouter FALLBACK models (comma-separated, ALL tried in parallel via Promise.any)
-# v0.6.4: Top 6 from user's list, ranked by quality
-OPENROUTER_FALLBACK_MODELS = "meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-next-80b-a3b-instruct:free,google/gemma-4-31b-it:free,openai/gpt-oss-120b:free,nousresearch/hermes-3-llama-3.1-405b:free,nvidia/nemotron-3-ultra-550b-a55b:free"
+OPENROUTER_FALLBACK_MODELS = "nvidia/nemotron-3-ultra-550b-a55b:free,qwen/qwen3-coder:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openai/gpt-oss-20b:free,meta-llama/llama-3.3-70b-instruct:free"
+DEBUG_MODE = "false"
+CHANNEL_PROFILE = "ilivir3"
 
 # ============================================================
-# Secrets (DO NOT put real values here — set via dashboard):
-#   BOT_TOKEN          →  from @BotFather
-#   GEMINI_API_KEY     →  from aistudio.google.com
-#   OPENROUTER_API_KEY →  from openrouter.ai/keys
-#   WEBHOOK_SECRET     →  optional, for webhook verification
-#   DEBUG_TOKEN        →  optional, for /debug protection
+# SECRETS — set via ONE of:
+#   1. `wrangler secret put NAME` (per-Worker, recommended)
+#   2. Cloudflare dashboard → Worker → Settings → Variables (mark as Secret)
+#
+# Required secrets:
+#   BOT_TOKEN            — from @BotFather (per-channel bot)
+#   WEBHOOK_SECRET       — random string per channel
+#   GEMINI_API_KEY       — from aistudio.google.com (shared ok across channels)
+#   OPENROUTER_API_KEY   — from openrouter.ai/keys (shared ok)
+#   ADMIN_ID             — numeric Telegram ID of THIS channel's owner
+#   TARGET_CHANNEL       — @username or -100xxx for THIS channel
+#
+# Optional secrets:
+#   FOOTER_TEXT          — e.g. "🌀 @ILIVIR3" (defaults to "🌀 @ILIVIR3" in code)
+#   DEBUG_TOKEN          — bearer token for /debug routes
+#
+# Multi-channel: the SAME repo can deploy to N Workers (one per channel).
+# Each Worker gets its own ADMIN_ID + TARGET_CHANNEL + BOT_TOKEN secrets.
+# Other config stays in [vars] above (shared defaults).
 # ============================================================
+
+# ============================================================
+# Observability
+# ============================================================
+[observability]
+enabled = true

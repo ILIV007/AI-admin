@@ -1,14 +1,17 @@
 # dependencies
 node_modules/
 
-# Cloudflare
-.dev.vars
+# cloudflare
 .wrangler/
+.dev.vars
 .mf/
 
 # env
 .env
 .env.local
+
+# build
+dist/
 
 # OS
 .DS_Store
