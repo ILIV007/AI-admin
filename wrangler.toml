@@ -28,11 +28,11 @@ crons = ["* * * * *"]
 # For multi-channel: each channel gets its own D1/KV/Queue + different IDs.
 # ============================================================
 
-# D1 database — your namespace: "ai-admin-dl"
+# D1 database — your database: "ai_admin_db"
 [[d1_databases]]
 binding = "DB"
-database_name = "ai-admin"
-database_id = "f4182b62a7444ac68a14aab442b4994b"
+database_name = "ai_admin_db"
+database_id = "478e8f3d-2263-475b-a197-27cceb42580c"
 
 # KV namespace — your namespace: "AI_ADMIN_KV"
 # Binding name matches the Cloudflare KV namespace name for clarity.
