@@ -23,21 +23,24 @@ compatibility_flags = ["nodejs_compat"]
 crons = ["* * * * *"]
 
 # ============================================================
-# Bindings (create these in the Cloudflare dashboard, then fill in the ids)
+# Bindings — YOUR real resource IDs (Cloudflare dashboard).
+# These are NOT secrets — they're binding IDs required at deploy time.
+# For multi-channel: each channel gets its own D1/KV/Queue + different IDs.
 # ============================================================
 
-# D1 database — run `wrangler d1 create ai-admin` and paste the id below
+# D1 database — your namespace: "ai-admin-dl"
 [[d1_databases]]
 binding = "DB"
 database_name = "ai-admin"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f4182b62a7444ac68a14aab442b4994b"
 
-# KV namespace — run `wrangler kv namespace create AI_ADMIN_KV` and paste the id
+# KV namespace — your namespace: "AI_ADMIN_KV"
+# Binding name matches the Cloudflare KV namespace name for clarity.
 [[kv_namespaces]]
-binding = "KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+binding = "AI_ADMIN_KV"
+id = "fbf68be5b8e54f9493056d076b29a1a5"
 
-# Queue — run `wrangler queues create ai-admin-queue`
+# Queue — your queue: "ai-admin-queue"
 [[queues.producers]]
 queue = "ai-admin-queue"
 binding = "QUEUE"

@@ -56,7 +56,7 @@ function healthKey(provider: string, model: string): string {
 
 async function readHealth(env: Env, provider: string, model: string): Promise<ModelHealth | null> {
   try {
-    const raw = await env.KV.get(healthKey(provider, model));
+    const raw = await env.AI_ADMIN_KV.get(healthKey(provider, model));
     if (!raw) return null;
     return JSON.parse(raw) as ModelHealth;
   } catch {
@@ -66,7 +66,7 @@ async function readHealth(env: Env, provider: string, model: string): Promise<Mo
 
 async function writeHealth(env: Env, h: ModelHealth): Promise<void> {
   try {
-    await env.KV.put(healthKey(h.provider, h.model), JSON.stringify(h), {
+    await env.AI_ADMIN_KV.put(healthKey(h.provider, h.model), JSON.stringify(h), {
       expirationTtl: HEALTH_TTL_SEC,
     });
   } catch {

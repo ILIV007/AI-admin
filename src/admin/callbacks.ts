@@ -177,7 +177,7 @@ async function handleSet(
         await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
         return;
       }
-      const flag = await env.KV.get(`sched_next:${fromId}`).catch(() => null);
+      const flag = await env.AI_ADMIN_KV.get(`sched_next:${fromId}`).catch(() => null);
       const text = flag
         ? `📅 <b>زمان‌بندی فعال</b>\n\nپست بعدی شما در <code>${new Date(
             Number(flag),

@@ -53,7 +53,7 @@ export async function handleAddAdminReply(
   const flagKey = `${KV_FLAG_PREFIX}${fromId}`;
   let flagValue: string | null = null;
   try {
-    flagValue = await env.KV.get(flagKey);
+    flagValue = await env.AI_ADMIN_KV.get(flagKey);
   } catch (e) {
     log("warn", "addadmin.handleAddAdminReply", "KV get failed", {
       error: String(e),
@@ -65,7 +65,7 @@ export async function handleAddAdminReply(
 
   // Always delete the flag — the flow is single-shot, even on parse error.
   try {
-    await env.KV.delete(flagKey);
+    await env.AI_ADMIN_KV.delete(flagKey);
   } catch (e) {
     log("warn", "addadmin.handleAddAdminReply", "KV delete failed", {
       error: String(e),
@@ -165,7 +165,7 @@ export async function setAddAdminFlag(
   ownerId: number,
 ): Promise<void> {
   try {
-    await env.KV.put(`${KV_FLAG_PREFIX}${ownerId}`, "1", {
+    await env.AI_ADMIN_KV.put(`${KV_FLAG_PREFIX}${ownerId}`, "1", {
       expirationTtl: KV_FLAG_TTL_SEC,
     });
   } catch (e) {

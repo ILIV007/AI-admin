@@ -521,7 +521,7 @@ export async function handleSchedule(
   // will be processed as a scheduled post (the queue consumer honors this).
   const flagKey = `sched_next:${fromId}`;
   try {
-    await env.KV.put(flagKey, String(when), {
+    await env.AI_ADMIN_KV.put(flagKey, String(when), {
       expirationTtl: 6 * 60 * 60, // 6h max lead time
     });
   } catch (e) {
@@ -760,8 +760,8 @@ export async function handleHealth(
   try {
     const t0 = Date.now();
     const probeValue = `probe-${Date.now()}`;
-    await env.KV.put("health:probe", probeValue, { expirationTtl: 60 });
-    const readBack = await env.KV.get("health:probe");
+    await env.AI_ADMIN_KV.put("health:probe", probeValue, { expirationTtl: 60 });
+    const readBack = await env.AI_ADMIN_KV.get("health:probe");
     const latency = Date.now() - t0;
     const ok = readBack === probeValue;
     lines.push(
@@ -868,7 +868,7 @@ export async function handleDiag(
 
   // --- KV health cache entries ---
   try {
-    const list = await env.KV.list({ prefix: "ai:health:" });
+    const list = await env.AI_ADMIN_KV.list({ prefix: "ai:health:" });
     out.push("<b>📦 KV — کش سلامت مدل‌ها</b>");
     out.push(`تعداد کلیدها: <code>${list.keys.length}</code>`);
     for (const k of list.keys) {
@@ -1072,7 +1072,7 @@ export async function handleReset(
   // --- Step 1: check for an existing confirmation flag ---
   let pending: string | null = null;
   try {
-    pending = await env.KV.get(confirmKey);
+    pending = await env.AI_ADMIN_KV.get(confirmKey);
   } catch (e) {
     log("warn", SCOPE, "reset: KV read failed", { error: String(e) });
   }
@@ -1080,7 +1080,7 @@ export async function handleReset(
   if (pending !== raw) {
     // No prior confirmation (or different target) → ask to confirm.
     try {
-      await env.KV.put(confirmKey, raw, {
+      await env.AI_ADMIN_KV.put(confirmKey, raw, {
         expirationTtl: RESET_CONFIRM_TTL_SEC,
       });
     } catch (e) {
@@ -1113,7 +1113,7 @@ export async function handleReset(
   // --- Step 2: confirmation matches → execute ---
   // Clear the flag FIRST so a retry can't double-fire if execution throws.
   try {
-    await env.KV.delete(confirmKey);
+    await env.AI_ADMIN_KV.delete(confirmKey);
   } catch (e) {
     log("warn", SCOPE, "reset: KV delete failed", { error: String(e) });
   }
@@ -1941,7 +1941,7 @@ export async function dispatchCommand(
   if (cmd === "/schedule" && args.toLowerCase() === "cancel") {
     const fromId = message.from?.id ?? 0;
     try {
-      await env.KV.delete(`sched_next:${fromId}`);
+      await env.AI_ADMIN_KV.delete(`sched_next:${fromId}`);
     } catch (e) {
       log("warn", SCOPE, "schedule cancel: KV delete failed", { error: String(e) });
     }
@@ -2175,7 +2175,7 @@ async function readHealthFor(
   model: string,
 ): Promise<ModelHealth | null> {
   try {
-    const raw = await env.KV.get(`ai:health:${provider}:${model}`);
+    const raw = await env.AI_ADMIN_KV.get(`ai:health:${provider}:${model}`);
     if (!raw) return null;
     return JSON.parse(raw) as ModelHealth;
   } catch {

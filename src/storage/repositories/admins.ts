@@ -206,7 +206,7 @@ export async function audit(
 
 async function kvGet(env: Env, key: string): Promise<string | null> {
   try {
-    return await env.KV.get(key);
+    return await env.AI_ADMIN_KV.get(key);
   } catch {
     return null;
   }
@@ -219,7 +219,7 @@ async function kvPut(
   ttlSec: number,
 ): Promise<void> {
   try {
-    await env.KV.put(key, value, { expirationTtl: ttlSec });
+    await env.AI_ADMIN_KV.put(key, value, { expirationTtl: ttlSec });
   } catch {
     // ignore — non-fatal
   }
@@ -227,7 +227,7 @@ async function kvPut(
 
 async function kvDelete(env: Env, key: string): Promise<void> {
   try {
-    await env.KV.delete(key);
+    await env.AI_ADMIN_KV.delete(key);
   } catch {
     // ignore — non-fatal
   }

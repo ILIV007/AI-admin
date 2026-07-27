@@ -22,6 +22,10 @@ FOOTER_TEXT="🌀 @ILIVIR3"
 # === Optional debug token ===
 # DEBUG_TOKEN="a-long-random-string-for-debug-endpoint"
 
+# === Bindings (for local dev — match wrangler.toml) ===
+# D1 database_id, KV id, Queue name are in wrangler.toml (not secrets).
+# Local dev uses wrangler's local D1 + KV automatically.
+
 # === Non-secret vars (also in wrangler.toml [vars], override here for dev) ===
 DEFAULT_AI_PROVIDER="gemini"
 GEMINI_MODEL="gemini-2.5-flash"

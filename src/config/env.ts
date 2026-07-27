@@ -15,7 +15,7 @@ export function assertEnv(env: unknown): asserts env is Env {
   if (!e.ADMIN_ID) missing.push("ADMIN_ID");
   if (!e.TARGET_CHANNEL) missing.push("TARGET_CHANNEL");
   if (!e.DB) missing.push("DB (D1 binding)");
-  if (!e.KV) missing.push("KV (KV binding)");
+  if (!e.AI_ADMIN_KV) missing.push("AI_ADMIN_KV (KV binding)");
   if (!e.QUEUE) missing.push("QUEUE (Queue binding)");
   if (missing.length > 0) {
     throw new Error(

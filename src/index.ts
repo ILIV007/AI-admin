@@ -216,7 +216,7 @@ async function handleDebugRoute(
       time: new Date().toISOString(),
       has_bot_token: !!env.BOT_TOKEN,
       has_admin_id: !!env.ADMIN_ID,
-      has_kv: !!env.KV,
+      has_kv: !!env.AI_ADMIN_KV,
       has_db: !!env.DB,
       has_queue: !!env.QUEUE,
       has_webhook_secret: !!env.WEBHOOK_SECRET,
@@ -345,8 +345,8 @@ async function handleHealthRoute(
     try {
       const t0 = Date.now();
       const probeValue = `probe-${Date.now()}`;
-      await env.KV.put("health:probe", probeValue, { expirationTtl: 60 });
-      const readBack = await env.KV.get("health:probe");
+      await env.AI_ADMIN_KV.put("health:probe", probeValue, { expirationTtl: 60 });
+      const readBack = await env.AI_ADMIN_KV.get("health:probe");
       const latencyMs = Date.now() - t0;
       return { ok: readBack === probeValue, latencyMs };
     } catch (e) {

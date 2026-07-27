@@ -30,7 +30,7 @@ export interface Env {
 
   // Bindings
   DB: D1Database;
-  KV: KVNamespace;
+  AI_ADMIN_KV: KVNamespace;
   QUEUE: Queue<QueueMessage>;
 }
 

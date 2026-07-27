@@ -251,7 +251,7 @@ async function handleProcessUpdate(
   if (userId !== null && content.chatType === "private") {
     let schedFor: number | null = null;
     try {
-      const raw = await env.KV.get(`sched_next:${userId}`);
+      const raw = await env.AI_ADMIN_KV.get(`sched_next:${userId}`);
       if (raw) schedFor = Number(raw);
     } catch { /* ignore */ }
     if (schedFor && schedFor > Date.now()) {
@@ -275,7 +275,7 @@ async function handleProcessUpdate(
           payload: JSON.stringify({ html, parts, media: content.media, footer: settings.footerText }),
           scheduledFor: schedFor,
         });
-        await env.KV.delete(`sched_next:${userId}`);
+        await env.AI_ADMIN_KV.delete(`sched_next:${userId}`);
         await recordScheduled(env, userId);
         const faTime = new Date(schedFor).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" });
         await sendMessage(env.BOT_TOKEN, {
