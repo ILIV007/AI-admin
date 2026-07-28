@@ -252,3 +252,32 @@ export async function listRecentJobs(
   );
   return rows.map(rowToJob);
 }
+
+/**
+ * Pending scheduled posts for one user, ordered by `scheduled_for` ASC.
+ *
+ * Used by the schedule system (task 26) to compute the next free slot when a
+ * new post arrives. We only care about pending posts (the cron will publish
+ * past ones soon), and we sort by `scheduled_for` so the scheduler can walk
+ * them in order to find the first cycle with an available slot.
+ *
+ * Returns an empty array on error / no rows.
+ */
+export async function listPendingScheduledForUser(
+  env: Env,
+  userId: number,
+  limit: number = 200,
+): Promise<JobRecord[]> {
+  const rows = await execAll<JobRow>(
+    env.DB,
+    `SELECT * FROM jobs
+      WHERE type = 'scheduled_post'
+        AND status = 'pending'
+        AND user_id = ?
+      ORDER BY scheduled_for ASC
+      LIMIT ?`,
+    userId,
+    limit,
+  );
+  return rows.map(rowToJob);
+}

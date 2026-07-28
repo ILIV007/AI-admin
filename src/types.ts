@@ -164,6 +164,26 @@ export interface Settings {
    * settings repo merges `DEFAULT_SETTINGS.uiLanguage` ("en") when missing.
    */
   uiLanguage?: "en" | "fa";
+
+  /**
+   * Schedule system (task 26).
+   *
+   * When `scheduleEnabled` is true, the pipeline does NOT publish admin
+   * posts immediately. Instead it stores a `scheduled_post` job in D1 with
+   * `scheduled_for` = the computed next slot. The cron (every minute) picks
+   * up due jobs and publishes them via the queue.
+   *
+   *   scheduleMessagesPerDay : max posts per 24h cycle (1,2,3,4,6,8,12,24).
+   *   scheduleIntervalHours  : hours between posts (1,2,3,4,6,8,12,24).
+   *
+   * Default = "24h after received, one post per day, spaced 24h apart".
+   *
+   * All three fields are optional so older stored settings rows still parse;
+   * the settings repo merges DEFAULT_SETTINGS when missing.
+   */
+  scheduleEnabled?: boolean;
+  scheduleMessagesPerDay?: number;
+  scheduleIntervalHours?: number;
 }
 
 // ============================================================
@@ -310,7 +330,7 @@ export interface Stats {
 
 export interface PipelineResult {
   ok: boolean;
-  action: "published" | "preview" | "format_only" | "skipped" | "failed";
+  action: "published" | "preview" | "format_only" | "skipped" | "failed" | "scheduled";
   html: string;
   parts: string[]; // for multi-part posts
   media?: ExtractedContent["media"];
@@ -319,6 +339,12 @@ export interface PipelineResult {
   aiProvider?: string;
   aiModel?: string;
   jobId?: string;
+  /**
+   * Epoch ms the post was scheduled for. Populated only when
+   * action === "scheduled". The consumer uses this to render the
+   * "📅 Scheduled for {time}" reply to the admin.
+   */
+  scheduledFor?: number;
   errorMessage?: string;
 }
 

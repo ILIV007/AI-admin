@@ -310,49 +310,6 @@ async function handleProcessUpdate(
     }
   }
 
-  // ── sched_next flag: this message should become a scheduled post ─
-  if (userId !== null && content.chatType === "private") {
-    let schedFor: number | null = null;
-    try {
-      const raw = await env.AI_ADMIN_KV.get(`sched_next:${userId}`);
-      if (raw) schedFor = Number(raw);
-    } catch { /* ignore */ }
-    if (schedFor && schedFor > Date.now()) {
-      // Clean content, format, store as scheduled_post job, do NOT publish now.
-      try {
-        const { cleanContent } = await import("../processing/cleaner");
-        const { blocksToTelegramHtml } = await import("../formatting/telegram-html");
-        const { markdownToBlocks } = await import("../formatting/blocks");
-        const { chunkHtml } = await import("../formatting/chunker");
-        const settings = await getSettings(env, userId);
-        const cleaned = cleanContent(content.text);
-        const blocks = markdownToBlocks(cleaned);
-        const html = blocksToTelegramHtml(blocks, settings.footerText);
-        const parts = chunkHtml(html, 4000, settings.footerText);
-        const jobId = await createJob(env, {
-          type: "scheduled_post",
-          status: "pending",
-          userId,
-          chatId: content.chatId,
-          messageId: content.messageId,
-          payload: JSON.stringify({ html, parts, media: content.media, footer: settings.footerText }),
-          scheduledFor: schedFor,
-        });
-        await env.AI_ADMIN_KV.delete(`sched_next:${userId}`);
-        await recordScheduled(env, userId);
-        const faTime = new Date(schedFor).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" });
-        await sendMessage(env.BOT_TOKEN, {
-          chat_id: content.chatId,
-          text: `📅 Post scheduled for ${faTime}\n🆔 <code>${jobId}</code>`,
-          parse_mode: "HTML",
-        }).catch(() => undefined);
-        return;
-      } catch (e) {
-        log("error", "queue.consumer", "schedule job creation failed", { error: String(e) });
-      }
-    }
-  }
-
   // ── Normal single message: pipeline ─────────────────────────────
   const settings = await getSettings(env, userId);
 
@@ -404,6 +361,10 @@ async function handleProcessUpdate(
     ctx.waitUntil(safe(createHistoryRecord(env, userId, content, result, elapsedMs)));
   } else if (result.action === "preview") {
     ctx.waitUntil(safe(recordApproval(env, userId)));
+  } else if (result.action === "scheduled") {
+    // Scheduled posts are counted as "scheduled" now; they'll be counted as
+    // "published" later when the cron publishes them.
+    ctx.waitUntil(safe(recordScheduled(env, userId)));
   } else if (result.action === "failed") {
     ctx.waitUntil(safe(recordFailed(env, userId)));
   }
@@ -474,7 +435,10 @@ async function sendAdminReport(
       lang = getUiLanguage(settings);
     } catch { /* use default */ }
 
-    // 1. Send the published post copy to admin (same content as channel)
+    // 1. Send the published post copy to admin (same content as channel).
+    //    Skipped for "scheduled" action — the post hasn't been published yet
+    //    and we don't want to leak the formatted preview before the channel
+    //    sees it. The schedule confirmation is shown in step 2 instead.
     if (result.parts.length > 0 && result.action === "published") {
       try {
         if (content.media) {
@@ -519,6 +483,46 @@ async function sendAdminReport(
 
     // 2. Edit loading message → report
     if (loadingMsgId) {
+      // Scheduled posts get a specialized reply showing the scheduled time,
+      // the job id, and a short summary. We don't use the generic
+      // "report.{action}" i18n key because the schedule confirmation needs
+      // the time + job id inline.
+      if (result.action === "scheduled" && result.scheduledFor) {
+        const when = new Date(result.scheduledFor);
+        const tehranTime = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Asia/Tehran",
+          dateStyle: "full",
+          timeStyle: "short",
+        }).format(when);
+        const countdownSec = Math.max(
+          0,
+          Math.round((result.scheduledFor - Date.now()) / 1000),
+        );
+        const lines: string[] = [
+          `<blockquote><b>📅 Scheduled</b></blockquote>`,
+          ``,
+          `Your post has been queued and will be published at:`,
+          `<b>${escapeHtmlSimple(tehranTime)}</b>`,
+          `⏱ Countdown: <code>${countdownSec}s</code>`,
+        ];
+        if (result.jobId) {
+          lines.push(`🆔 Job ID: <code>${escapeHtmlSimple(result.jobId)}</code>`);
+        }
+        if (result.aiUsed && result.aiModel) {
+          lines.push(
+            `🤖 AI: <code>${escapeHtmlSimple(result.aiProvider || "?")}/${escapeHtmlSimple(result.aiModel)}</code>`,
+          );
+        }
+        lines.push(`📊 Category: <code>${result.classification.category}</code>`);
+        await editMessageText(env.BOT_TOKEN, {
+          chat_id: userId,
+          message_id: loadingMsgId,
+          text: lines.join("\n"),
+          parse_mode: "HTML",
+        }).catch(() => undefined);
+        return;
+      }
+
       const statusKey = `report.${result.action}`;
       const status = t(lang, statusKey);
 
@@ -838,7 +842,7 @@ async function handleFinalizeMediaGroup(
       settings: Settings,
     ) => Promise<{
       ok: boolean;
-      action: "published" | "preview" | "format_only" | "skipped" | "failed";
+      action: "published" | "preview" | "format_only" | "skipped" | "failed" | "scheduled";
       aiUsed: boolean;
       errorMessage?: string;
     }>;
@@ -853,6 +857,8 @@ async function handleFinalizeMediaGroup(
     ctx.waitUntil(safe(recordPublished(env, firstItem.fromId)));
   } else if (result.action === "preview") {
     ctx.waitUntil(safe(recordApproval(env, firstItem.fromId)));
+  } else if (result.action === "scheduled") {
+    ctx.waitUntil(safe(recordScheduled(env, firstItem.fromId)));
   } else if (result.action === "failed") {
     ctx.waitUntil(safe(recordFailed(env, firstItem.fromId)));
   }

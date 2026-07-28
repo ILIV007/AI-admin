@@ -53,6 +53,9 @@ import {
   personalityKeyboard,
   providerKeyboard,
   rewriteModeKeyboard,
+  scheduleIntervalKeyboard,
+  scheduleMessagesPerDayKeyboard,
+  scheduleSettingsKeyboard,
   settingsKeyboard,
 } from "./keyboards";
 import {
@@ -68,6 +71,10 @@ import {
   saveSettings,
 } from "../storage/repositories/settings";
 import { getStats } from "../storage/repositories/stats";
+import {
+  SCHEDULE_INTERVAL_OPTIONS,
+  SCHEDULE_PER_DAY_OPTIONS,
+} from "../config/defaults";
 
 const SCOPE = "admin.callbacks";
 
@@ -231,14 +238,17 @@ async function handleSet(
         await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
         return;
       }
-      const flag = await env.AI_ADMIN_KV.get(`sched_next:${fromId}`).catch(() => null);
-      const text = flag
-        ? `📅 <b>Schedule Active</b>\n\nYour next post will be published at <code>${new Date(
-            Number(flag),
-          ).toISOString()}</code> will be published.
-To cancel:: <code>/schedule cancel</code>`
-        : "📅 <b>Schedule</b>\n\nNo active schedule.\nTo activate: <code>/schedule in 30m</code>";
-      await editText(env, cq, text);
+      const settings = await getSettingsFor(env, fromId);
+      const cfg = resolveScheduleConfig(settings);
+      const text =
+        `📅 <b>Schedule</b>\n\n` +
+        `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
+        `📊 Messages per day: <b>${cfg.perDay}</b>\n` +
+        `⏱ Interval: <b>${cfg.intervalHours}h</b>\n\n` +
+        `<i>When ON, every admin post is stored in the queue and published ` +
+        `${cfg.intervalHours === 24 ? "24h" : cfg.intervalHours + "h"} after receipt ` +
+        `(up to ${cfg.perDay} per 24h cycle).</i>`;
+      await editText(env, cq, text, scheduleSettingsKeyboard(settings));
       return;
     }
     case "set:status": {
@@ -260,7 +270,7 @@ Channel: <code>${escapeHtml(
         "❓ <b>Help</b>\n\n" +
         "/start — Introduction\n/help — Commands\n/menu — Menu\n/footer &lt;text&gt; — Footer\n" +
         "/checkperms — Bot permissions\n/stats — Stats\n/admins — Admins\n" +
-        "/schedule &lt;time&gt; — Schedule\n/ping — Server status";
+        "/schedule — Open schedule settings\n/ping — Server status";
       await editText(env, cq, text);
       return;
     }
@@ -268,6 +278,21 @@ Channel: <code>${escapeHtml(
       await runAiTest(env, cq);
       return;
     }
+  }
+
+  // --- Schedule-specific updates (task 26) ---
+  // These are gated on the `schedule` permission, NOT `change_settings`.
+  // Owner and editor both have `schedule`; reviewer and viewer do not.
+  // Handling them here (before the change_settings gate) keeps the
+  // authorization matrix truthful and lets a future role with only
+  // `schedule` configure the queue.
+  if (parts[1] === "sched") {
+    if (!can(role, "schedule")) {
+      await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
+      return;
+    }
+    await handleSchedUpdate(env, cq, data, fromId);
+    return;
   }
 
   // --- Setting-update callbacks (require change_settings permission) ---
@@ -408,6 +433,137 @@ Channel: <code>${escapeHtml(
 }
 
 // ============================================================
+// set:sched:* — schedule settings updates (task 26)
+// ============================================================
+
+/**
+ * Resolve the effective schedule config from a Settings object, applying
+ * DEFAULT_SETTINGS-style fallbacks for older rows that predate the schedule
+ * fields. Kept in sync with the same helper in keyboards.ts.
+ */
+function resolveScheduleConfig(settings: Settings): {
+  enabled: boolean;
+  perDay: number;
+  intervalHours: number;
+} {
+  return {
+    enabled: settings.scheduleEnabled === true,
+    perDay:
+      Number.isFinite(settings.scheduleMessagesPerDay) &&
+      SCHEDULE_PER_DAY_OPTIONS.includes(settings.scheduleMessagesPerDay as number)
+        ? (settings.scheduleMessagesPerDay as number)
+        : 1,
+    intervalHours:
+      Number.isFinite(settings.scheduleIntervalHours) &&
+      SCHEDULE_INTERVAL_OPTIONS.includes(settings.scheduleIntervalHours as number)
+        ? (settings.scheduleIntervalHours as number)
+        : 24,
+  };
+}
+
+/**
+ * Handle schedule-related `set:sched:*` mutations. Already authorized
+ * (caller checked the `schedule` permission).
+ *
+ * Callback shapes:
+ *   set:sched:toggle:on|off    → flip scheduleEnabled
+ *   set:sched:perday:{n}       → set scheduleMessagesPerDay (n in
+ *                                SCHEDULE_PER_DAY_OPTIONS)
+ *   set:sched:interval:{n}     → set scheduleIntervalHours (n in
+ *                                SCHEDULE_INTERVAL_OPTIONS)
+ *
+ * After mutation: persist + audit + re-render the appropriate keyboard.
+ * For perday/interval we re-render the picker (so the ✅ updates);
+ * for toggle we re-render the top-level schedule menu.
+ */
+async function handleSchedUpdate(
+  env: Env,
+  cq: TelegramCallbackQuery,
+  data: string,
+  fromId: number,
+): Promise<void> {
+  const parts = data.split(":");
+  // parts[0] === "set", parts[1] === "sched", parts[2] === action, parts[3] === value
+  const action = parts[2];
+  const value = parts[3];
+
+  const settings = await getSettingsFor(env, fromId);
+  let auditAction: string | undefined;
+  let auditDetail: string | undefined;
+  let reRender: "menu" | "perday" | "interval" = "menu";
+
+  if (action === "toggle" && (value === "on" || value === "off")) {
+    settings.scheduleEnabled = value === "on";
+    auditAction = "settings.scheduleEnabled";
+    auditDetail = value;
+    reRender = "menu";
+  } else if (action === "perday" && value != null) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || !SCHEDULE_PER_DAY_OPTIONS.includes(n)) {
+      await safeAnswer(env, cq.id, "⚠️ Invalid value", true);
+      return;
+    }
+    settings.scheduleMessagesPerDay = n;
+    auditAction = "settings.scheduleMessagesPerDay";
+    auditDetail = String(n);
+    reRender = "perday";
+  } else if (action === "interval" && value != null) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || !SCHEDULE_INTERVAL_OPTIONS.includes(n)) {
+      await safeAnswer(env, cq.id, "⚠️ Invalid value", true);
+      return;
+    }
+    settings.scheduleIntervalHours = n;
+    auditAction = "settings.scheduleIntervalHours";
+    auditDetail = String(n);
+    reRender = "interval";
+  } else {
+    await safeAnswer(env, cq.id, "⚠️ Unknown schedule action", true);
+    return;
+  }
+
+  try {
+    await saveSettings(env, fromId, settings);
+  } catch (e) {
+    log("error", SCOPE, "schedule saveSettings failed", { error: String(e) });
+    await safeAnswer(env, cq.id, "❌ Failed to save", true);
+    return;
+  }
+
+  if (auditAction) {
+    void auditLog(env, fromId, auditAction, `u:${fromId}`, auditDetail);
+  }
+  await safeAnswer(env, cq.id, "✅ Saved");
+
+  const cfg = resolveScheduleConfig(settings);
+  if (reRender === "menu") {
+    const text =
+      `📅 <b>Schedule</b>\n\n` +
+      `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
+      `📊 Messages per day: <b>${cfg.perDay}</b>\n` +
+      `⏱ Interval: <b>${cfg.intervalHours}h</b>\n\n` +
+      `<i>When ON, every admin post is stored in the queue and published ` +
+      `${cfg.intervalHours === 24 ? "24h" : cfg.intervalHours + "h"} after receipt ` +
+      `(up to ${cfg.perDay} per 24h cycle).</i>`;
+    await editText(env, cq, text, scheduleSettingsKeyboard(settings));
+  } else if (reRender === "perday") {
+    await editText(
+      env,
+      cq,
+      "📊 <b>Messages per day</b>\nSelect a value:",
+      scheduleMessagesPerDayKeyboard(cfg.perDay),
+    );
+  } else {
+    await editText(
+      env,
+      cq,
+      "⏱ <b>Interval (hours)</b>\nSelect a value:",
+      scheduleIntervalKeyboard(cfg.intervalHours),
+    );
+  }
+}
+
+// ============================================================
 // pick:* — open a subkeyboard
 // ============================================================
 
@@ -417,6 +573,29 @@ async function handlePick(
   data: string,
   role: Role,
 ): Promise<void> {
+  // Schedule pickers use the `schedule` permission, not `change_settings`.
+  if (data === "pick:sched:perday" || data === "pick:sched:interval") {
+    if (!can(role, "schedule")) {
+      await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
+      return;
+    }
+    const fromId = cq.from.id;
+    const settings = await getSettingsFor(env, fromId);
+    const cfg = resolveScheduleConfig(settings);
+    let keyboard: string;
+    let text: string;
+    if (data === "pick:sched:perday") {
+      keyboard = scheduleMessagesPerDayKeyboard(cfg.perDay);
+      text = "📊 <b>Messages per day</b>\nSelect a value:";
+    } else {
+      keyboard = scheduleIntervalKeyboard(cfg.intervalHours);
+      text = "⏱ <b>Interval (hours)</b>\nSelect a value:";
+    }
+    await safeAnswer(env, cq.id, "");
+    await editText(env, cq, text, keyboard);
+    return;
+  }
+
   if (!can(role, "change_settings")) {
     await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
     return;

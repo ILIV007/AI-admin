@@ -5,7 +5,13 @@
  *
  * CRITICAL CONSTRAINT: the user said ONLY ONE cron trigger is allowed. This
  * function does ALL of:
- *   1. Publish scheduled posts due now (enqueue publish_scheduled messages)
+ *   1. Publish scheduled posts due now (enqueue publish_scheduled messages).
+ *      This includes the scheduled_post jobs created by the schedule system
+ *      (task 26): when `settings.scheduleEnabled === true`, the pipeline
+ *      stores formatted posts in D1 with a `scheduled_for` epoch ms. This
+ *      step fans them out to the queue once they're due; the queue
+ *      consumer's `handlePublishScheduled` does the actual publish +
+ *      marks the job `published`.
  *   2. Expire stale approvals (> APPROVAL_TTL_MS old)
  *   3. Refresh AI model health cache
  *   4. Prune old debug_events + seen_updates

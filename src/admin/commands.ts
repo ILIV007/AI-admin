@@ -16,7 +16,7 @@
  *   handleStats       admin        global + per-admin stats
  *   handleModels      admin        list all 12 AI models + health
  *   handleAdmins      OWNER ONLY   list admins + manage keyboard
- *   handleSchedule    admin        parse time → set KV sched_next:{userId}
+ *   handleSchedule    admin        show schedule settings menu (task 26)
  *   handlePing        OWNER ONLY   uptime/version/queue depth
  *   handleHealth      OWNER ONLY   system health check (D1/KV/TG/Queue)
  *   handleDiag        OWNER ONLY   diagnostic dump (chunked)
@@ -47,6 +47,8 @@ import {
   ALL_MODELS,
   GEMINI_MODELS,
   OPENROUTER_MODELS,
+  SCHEDULE_INTERVAL_OPTIONS,
+  SCHEDULE_PER_DAY_OPTIONS,
   type ModelEntry,
 } from "../config/defaults";
 import {
@@ -166,7 +168,7 @@ export async function handleHelp(env: Env, message: TelegramMessage): Promise<vo
   lines.push("/stats — Activity stats (all admins)");
   lines.push("/models — List AI models + health (all admins)");
   lines.push("/admins — Manage admins (owner only)");
-  lines.push("/schedule &lt;time&gt; — Schedule next post");
+  lines.push("/schedule — Open schedule settings menu");
   lines.push("/ping — Bot status (owner only)");
   lines.push("/health — System health check (owner only)");
   lines.push("/diag — Full diagnostic report (owner only)");
@@ -530,11 +532,20 @@ export async function handleAdmins(
   await safeSend(env, message.chat.id, text, keyboard);
 }
 
-/** /schedule <time> — schedule the NEXT post for this user. Any admin. */
+/**
+ * /schedule — show the schedule settings menu (task 26).
+ *
+ * Replaces the old `/schedule <time>` command which set a transient
+ * `sched_next:{userId}` KV flag and waited for the next message. The new
+ * system uses persistent D1-backed jobs with configurable messages-per-day
+ * and interval; the menu is the same one reached via the main-menu
+ * "📅 Schedule" button (`set:schedule` callback).
+ *
+ * Authorization: any role with the `schedule` permission (owner + editor).
+ */
 export async function handleSchedule(
   env: Env,
   message: TelegramMessage,
-  args: string,
 ): Promise<void> {
   const fromId = message.from?.id ?? 0;
   let role: Role | null = null;
@@ -556,50 +567,45 @@ export async function handleSchedule(
     return;
   }
 
-  const when = parseScheduleArg(args);
-  if (when === null) {
-    await safeSend(
-      env,
-      message.chat.id,
-      "⚠️ Invalid time format.\n\n" +
-        "<b>Examples:</b>\n" +
-        "<code>/schedule in 30m</code> — in 30 minutes\n" +
-        "<code>/schedule in 2h</code> — in 2 hours\n" +
-        "<code>/schedule at 15:30</code> — today at 15:30 (Tehran time)\n" +
-        "<code>/schedule tomorrow 09:00</code> — tomorrow at 09:00",
-    );
-    return;
-  }
-
-  // Set the transient KV flag. The next non-command message from this user
-  // will be processed as a scheduled post (the queue consumer honors this).
-  const flagKey = `sched_next:${fromId}`;
+  // Read the user's settings (with defaults merged) so the menu reflects the
+  // current schedule config. Fall back to defaults on error.
+  let settings: import("../types").Settings;
   try {
-    await env.AI_ADMIN_KV.put(flagKey, String(when), {
-      expirationTtl: 6 * 60 * 60, // 6h max lead time
-    });
+    const { getSettings } = await import("../storage/repositories/settings");
+    settings = await getSettings(env, fromId);
   } catch (e) {
-    log("error", SCOPE, "schedule: KV put failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "❌ Failed to save schedule.");
-    return;
+    log("warn", SCOPE, "schedule: getSettings failed; using defaults", {
+      error: String(e),
+    });
+    const { DEFAULT_SETTINGS } = await import("../config/defaults");
+    settings = { ...DEFAULT_SETTINGS };
   }
 
-  const tehranTime = new Intl.DateTimeFormat("fa-IR", {
-    timeZone: "Asia/Tehran",
-    dateStyle: "full",
-    timeStyle: "short",
-  }).format(new Date(when));
+  const { scheduleSettingsKeyboard } = await import("./keyboards");
+  const cfg = {
+    enabled: settings.scheduleEnabled === true,
+    perDay:
+      Number.isFinite(settings.scheduleMessagesPerDay) &&
+      SCHEDULE_PER_DAY_OPTIONS.includes(settings.scheduleMessagesPerDay as number)
+        ? (settings.scheduleMessagesPerDay as number)
+        : 1,
+    intervalHours:
+      Number.isFinite(settings.scheduleIntervalHours) &&
+      SCHEDULE_INTERVAL_OPTIONS.includes(settings.scheduleIntervalHours as number)
+        ? (settings.scheduleIntervalHours as number)
+        : 24,
+  };
 
-  await safeSend(
-    env,
-    message.chat.id,
-    `✅ Schedule activated.\n\n` +
-      `📅 Your next post at: <b>${escapeHtml(tehranTime)}</b>\n` +
-      `⏱ Countdown: ${Math.max(0, Math.round((when - Date.now()) / 1000))} seconds\n\n` +
-      `Now send the message you want to publish at the scheduled time.
-` +
-      `To cancel: <code>/schedule cancel</code>`,
-  );
+  const text =
+    `📅 <b>Schedule</b>\n\n` +
+    `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
+    `📊 Messages per day: <b>${cfg.perDay}</b>\n` +
+    `⏱ Interval: <b>${cfg.intervalHours}h</b>\n\n` +
+    `<i>When ON, every admin post is stored in the queue and published ` +
+    `${cfg.intervalHours === 24 ? "24h" : cfg.intervalHours + "h"} after receipt ` +
+    `(up to ${cfg.perDay} per 24h cycle). The cron publishes due posts every minute.</i>`;
+
+  await safeSend(env, message.chat.id, text, scheduleSettingsKeyboard(settings));
 }
 
 /** /ping — owner. Uptime-ish info. */
@@ -1992,18 +1998,6 @@ export async function dispatchCommand(
   // Strip optional @botname suffix.
   const cmd = head.replace(/@\w+$/, "").toLowerCase();
 
-  // Special: /schedule cancel — clear the KV flag.
-  if (cmd === "/schedule" && args.toLowerCase() === "cancel") {
-    const fromId = message.from?.id ?? 0;
-    try {
-      await env.AI_ADMIN_KV.delete(`sched_next:${fromId}`);
-    } catch (e) {
-      log("warn", SCOPE, "schedule cancel: KV delete failed", { error: String(e) });
-    }
-    await safeSend(env, message.chat.id, "✅ Schedule cancelled.");
-    return true;
-  }
-
   switch (cmd) {
     case "/start":
       await handleStart(env, message);
@@ -2033,7 +2027,7 @@ export async function dispatchCommand(
       await handleAdmins(env, message);
       return true;
     case "/schedule":
-      await handleSchedule(env, message, args);
+      await handleSchedule(env, message);
       return true;
     case "/ping":
       await handlePing(env, message);

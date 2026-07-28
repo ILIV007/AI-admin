@@ -318,7 +318,127 @@ export async function runPipeline(
     };
   }
 
-  // ── 12c. Publish directly to target channel ─────────────────────
+  // ── 12c. Schedule mode (task 26): store as scheduled_post, do NOT publish ──
+  // When scheduleEnabled is ON and the sender is an admin, the formatted
+  // post is persisted in D1 as a pending scheduled_post job with
+  // scheduled_for = the computed next slot. The cron picks it up later and
+  // publishes it via the queue. The admin sees a "📅 Scheduled for {time}"
+  // reply instead of the published post copy.
+  if (settings.scheduleEnabled && content.fromId != null) {
+    try {
+      const jobsMod: {
+        listPendingScheduledForUser?: (
+          env: Env,
+          userId: number,
+          limit?: number,
+        ) => Promise<{ scheduledFor: number | null }[]>;
+        createJob?: (
+          env: Env,
+          job: {
+            type: "scheduled_post";
+            status: "pending";
+            userId: number;
+            chatId: number;
+            messageId: number;
+            payload: string;
+            scheduledFor: number;
+            publishedMessageId?: number | null;
+            publishedChatId?: number | null;
+          },
+        ) => Promise<string>;
+      } = await import("../storage/repositories/jobs");
+      const schedulerMod: {
+        computeNextScheduledTime: (
+          now: number,
+          pendingScheduledFors: number[],
+          messagesPerDay: number,
+          intervalHours: number,
+        ) => number;
+      } = await import("./scheduler");
+
+      if (!jobsMod.listPendingScheduledForUser || !jobsMod.createJob) {
+        throw new Error("jobs repo missing required exports");
+      }
+      if (!schedulerMod.computeNextScheduledTime) {
+        throw new Error("scheduler module missing computeNextScheduledTime");
+      }
+
+      const pending = await jobsMod.listPendingScheduledForUser(
+        env,
+        content.fromId,
+        200,
+      );
+      const pendingFors = pending
+        .map((p) => p.scheduledFor)
+        .filter((t): t is number => typeof t === "number" && Number.isFinite(t));
+
+      // Defensive: fall back to defaults if the settings row is malformed.
+      const perDay =
+        Number.isFinite(settings.scheduleMessagesPerDay) &&
+        settings.scheduleMessagesPerDay! >= 1
+          ? settings.scheduleMessagesPerDay!
+          : 1;
+      const intervalHours =
+        Number.isFinite(settings.scheduleIntervalHours) &&
+        settings.scheduleIntervalHours! >= 1
+          ? settings.scheduleIntervalHours!
+          : 24;
+
+      const scheduledFor = schedulerMod.computeNextScheduledTime(
+        Date.now(),
+        pendingFors,
+        perDay,
+        intervalHours,
+      );
+
+      const payload = JSON.stringify({
+        html,
+        parts,
+        media: content.media,
+        footer: settings.footerText,
+      });
+      const jobId = await jobsMod.createJob(env, {
+        type: "scheduled_post",
+        status: "pending",
+        userId: content.fromId,
+        chatId: content.chatId,
+        messageId: content.messageId,
+        payload,
+        scheduledFor,
+        publishedMessageId: null,
+        publishedChatId: null,
+      });
+
+      log("info", scope, "scheduled_post job created", {
+        jobId,
+        scheduledFor,
+        perDay,
+        intervalHours,
+        pendingCount: pendingFors.length,
+      });
+
+      return {
+        ok: true,
+        action: "scheduled",
+        html,
+        parts,
+        media: content.media,
+        classification,
+        aiUsed,
+        aiProvider,
+        aiModel,
+        jobId,
+        scheduledFor,
+      };
+    } catch (e) {
+      log("error", scope, "schedule job creation failed; falling back to publish", {
+        error: String(e),
+      });
+      // Fall through to direct publish so the admin's post isn't lost.
+    }
+  }
+
+  // ── 12d. Publish directly to target channel ─────────────────────
   try {
     const publisherMod: {
       publishPost?: (

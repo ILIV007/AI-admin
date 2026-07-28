@@ -25,6 +25,13 @@ export const DEFAULT_SETTINGS: Settings = {
   openrouterModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
   profile: "ilivir3",
   uiLanguage: "en",
+  // Schedule system (task 26):
+  //   OFF by default — admin must opt in via /schedule menu.
+  //   When enabled with these defaults, every post is published 24h after
+  //   receipt, one per 24h cycle (i.e. daily).
+  scheduleEnabled: false,
+  scheduleMessagesPerDay: 1,
+  scheduleIntervalHours: 24,
 };
 
 // ============================================================
@@ -144,3 +151,23 @@ export const AI_BUDGET = {
   TIMEOUT_MS: 15_000,
   BACKOFF_MS: 800,
 };
+
+// ============================================================
+// SCHEDULE SYSTEM (task 26)
+// ============================================================
+
+/**
+ * Allowed values for `Settings.scheduleMessagesPerDay` and
+ * `Settings.scheduleIntervalHours`. Any other value is rejected at the
+ * callback layer (the keyboards only offer these buttons, and the
+ * `set:sched:perday:{n}` / `set:sched:interval:{n}` handlers validate
+ * against this list).
+ *
+ * 24h / 24h combinations: 1 post per day, 24h apart (the default).
+ * 24h / 1h combinations: 24 posts per day, 1h apart (one per hour).
+ */
+export const SCHEDULE_PER_DAY_OPTIONS: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 24];
+export const SCHEDULE_INTERVAL_OPTIONS: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 24];
+
+/** 24-hour window in milliseconds — one scheduling "cycle". */
+export const SCHEDULE_CYCLE_MS = 24 * 60 * 60 * 1000;

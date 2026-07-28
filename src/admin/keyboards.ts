@@ -9,6 +9,8 @@ import type { AdminRecord, RewriteMode, Role, Settings } from "../types";
 import {
   GEMINI_MODELS,
   OPENROUTER_MODELS,
+  SCHEDULE_INTERVAL_OPTIONS,
+  SCHEDULE_PER_DAY_OPTIONS,
 } from "../config/defaults";
 import { buildInlineKeyboard } from "../telegram/entities";
 
@@ -271,4 +273,107 @@ export function adminListKeyboard(admins: AdminRecord[], ownerId: number): strin
 
 export function disabledKeyboard(text: string): string {
   return buildInlineKeyboard([[{ text, callback_data: "noop" }]]);
+}
+
+// ============================================================
+// Schedule settings (task 26)
+// ============================================================
+
+/**
+ * Resolve the effective schedule config from a Settings object, applying
+ * DEFAULT_SETTINGS-style fallbacks for older rows that predate the schedule
+ * fields. We can't import DEFAULT_SETTINGS here without creating a circular
+ * dep risk in tests, so we inline the same defaults.
+ */
+function resolveScheduleConfig(settings: Settings): {
+  enabled: boolean;
+  perDay: number;
+  intervalHours: number;
+} {
+  return {
+    enabled: settings.scheduleEnabled === true,
+    perDay:
+      Number.isFinite(settings.scheduleMessagesPerDay) &&
+      SCHEDULE_PER_DAY_OPTIONS.includes(settings.scheduleMessagesPerDay as number)
+        ? (settings.scheduleMessagesPerDay as number)
+        : 1,
+    intervalHours:
+      Number.isFinite(settings.scheduleIntervalHours) &&
+      SCHEDULE_INTERVAL_OPTIONS.includes(settings.scheduleIntervalHours as number)
+        ? (settings.scheduleIntervalHours as number)
+        : 24,
+  };
+}
+
+/**
+ * Top-level schedule menu. Shows current config + a toggle + pickers for
+ * perDay and interval. Reached from the main menu's "📅 Schedule" button
+ * (`set:schedule` callback) and from the `/schedule` command.
+ */
+export function scheduleSettingsKeyboard(settings: Settings): string {
+  const cfg = resolveScheduleConfig(settings);
+  const toggleLabel = cfg.enabled
+    ? "🟢 Schedule: ON"
+    : "⚪ Schedule: OFF";
+  const toggleOther = cfg.enabled ? "off" : "on";
+
+  const rows: { text: string; callback_data: string }[][] = [
+    [
+      {
+        text: toggleLabel,
+        callback_data: `set:sched:toggle:${toggleOther}`,
+      },
+    ],
+    [
+      {
+        text: `📊 Messages/day: ${cfg.perDay}`,
+        callback_data: "pick:sched:perday",
+      },
+      {
+        text: `⏱ Interval: ${cfg.intervalHours}h`,
+        callback_data: "pick:sched:interval",
+      },
+    ],
+    [{ text: "🔙 Back", callback_data: "back:menu" }],
+  ];
+
+  return buildInlineKeyboard(rows);
+}
+
+/**
+ * Picker for messagesPerDay. Renders the 8 allowed values; the currently
+ * selected one is marked with ✅. Layout: 4 buttons per row × 2 rows.
+ */
+export function scheduleMessagesPerDayKeyboard(current: number): string {
+  const rows: { text: string; callback_data: string }[][] = [
+    SCHEDULE_PER_DAY_OPTIONS.slice(0, 4).map((n) => ({
+      text: `${n}${mark(current === n)}`,
+      callback_data: `set:sched:perday:${n}`,
+    })),
+    SCHEDULE_PER_DAY_OPTIONS.slice(4, 8).map((n) => ({
+      text: `${n}${mark(current === n)}`,
+      callback_data: `set:sched:perday:${n}`,
+    })),
+    [{ text: "🔙 Back", callback_data: "set:schedule" }],
+  ];
+  return buildInlineKeyboard(rows);
+}
+
+/**
+ * Picker for intervalHours. Renders the 8 allowed values; the currently
+ * selected one is marked with ✅. Layout: 4 buttons per row × 2 rows.
+ */
+export function scheduleIntervalKeyboard(current: number): string {
+  const rows: { text: string; callback_data: string }[][] = [
+    SCHEDULE_INTERVAL_OPTIONS.slice(0, 4).map((n) => ({
+      text: `${n}h${mark(current === n)}`,
+      callback_data: `set:sched:interval:${n}`,
+    })),
+    SCHEDULE_INTERVAL_OPTIONS.slice(4, 8).map((n) => ({
+      text: `${n}h${mark(current === n)}`,
+      callback_data: `set:sched:interval:${n}`,
+    })),
+    [{ text: "🔙 Back", callback_data: "set:schedule" }],
+  ];
+  return buildInlineKeyboard(rows);
 }
