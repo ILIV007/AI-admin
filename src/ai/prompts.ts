@@ -2,23 +2,13 @@
  * src/ai/prompts.ts
  * System + user prompt builders.
  *
- * The system prompt combines the channel profile (soul/style/rules/formatting)
- * with mode-specific instructions and soft hints from per-user settings.
- * The user prompt wraps the source text with classification context so the
- * model knows what kind of content it is dealing with (code? github? fa?).
- *
- * All AI output is MARKDOWN. The formatting layer (src/format/) later converts
- * Markdown → Telegram HTML. NEVER let the model emit raw HTML — Telegram will
- * reject it or render it as text.
- *
- * Task 28 (rewrite-formatting overhaul):
- *   • "normal" is now a LIGHT polish (not a full rewrite).
- *   • "light" is now MINIMAL (formatting fixes only, no rephrasing).
- *   • "aggressive" stays a full rewrite.
- *   • "summarize" (new RewriteMode value) compresses to ~40% length.
- *   • OUTPUT CONTRACT enforces: limited bolding, RTL rules, concise output,
- *     Unicode symbol structure.
- *   • Emoji level 20 gets explicit LOW-emoji guidance.
+ * V2.3.1 changes:
+ *   • NO translation of English technical terms (AI, API, GPU stay as-is)
+ *   • Preserve content emojis (don't remove emojis that are part of the content)
+ *   • First paragraph NEVER quoted; selective quoting only
+ *   • At least 1 blockquote per post
+ *   • Token optimization via shorter system prompt (not lower maxOutputTokens)
+ *   • Organization: break long text into separate paragraphs, don't stuff
  */
 
 import type {
@@ -38,75 +28,70 @@ export function buildSystemPrompt(
 ): string {
   const parts: string[] = [];
 
-  // --- Profile identity ---
+  // --- Profile identity (shortened for token efficiency) ---
   parts.push(`# IDENTITY\n${profile.soul}`);
   parts.push(`# STYLE\n${profile.style}`);
   parts.push(`# RULES\n${profile.rules}`);
-  parts.push(`# FORMATTING\n${profile.formatting}`);
 
   // --- Hard output contract (always present) ---
   parts.push(
     `# OUTPUT CONTRACT (mandatory)\n` +
-      `- You output MARKDOWN only, never raw HTML.\n` +
-      `- Preserve all URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
-      `- Never translate unless an explicit language mode forces it.\n` +
-      `- Preserve the author's emotional tone.\n` +
-      `- Do not add greetings or closings.\n` +
-      `- Do not invent facts, links, or quotes that were not in the source.\n` +
-      `- Do not wrap the whole response in a code fence.\n` +
-      `- Be concise. Do not add commentary, explanations, or meta-text. Output ONLY the processed text.\n` +
-      `- CRITICAL: Do NOT add any channel mentions like @ILIVIR3 or channel handles. The system adds the footer automatically. Never output @ followed by a channel name.\n` +
-      `- CRITICAL: Do NOT add any footer, signature, or attribution line. The system handles this.\n` +
-      `- CRITICAL: If the source contains @channelName mentions, REMOVE them from your output. They are promotional and will be added by the system footer.\n` +
-      `- BOLDING: Do NOT bold entire paragraphs or sentences. Only bold key terms, tool names, or important warnings (max 2-6 per post). NEVER bold more than 10 words in a row.\n` +
-      `- STRUCTURE: Use bullet points (•) and numbered lists for structure instead of bolding everything.\n` +
-      `- SYMBOLS: Use Unicode symbols for visual structure: ▸ for sub-items, ◆ for highlights, ─ for separators within blockquotes.\n` +
-      `- RTL RULES: If a paragraph is Persian, do NOT start it with an English word (this causes left-alignment). If you must reference an English term, put it after a Persian word or in parentheses. Use Persian punctuation (، ؟ ؛). Use half-spaces (نیم‌فاصله) in Persian compound words.\n` +
-      `- For mixed-language posts, keep each paragraph in ONE language direction. Don't mix English and Persian in the same paragraph unless necessary.`,
+      `- Output MARKDOWN only, never raw HTML.\n` +
+      `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
+      `- CRITICAL: NEVER translate English technical terms to Persian. Keep "AI", "API", "GPU", "CPU", "LLM", "bot", "cloud", "framework" etc. as-is in English. Do NOT replace them with Persian equivalents.\n` +
+      `- CRITICAL: Do NOT add @channelName mentions or footers. The system adds them.\n` +
+      `- CRITICAL: If source contains @channelName mentions, REMOVE them.\n` +
+      `- Preserve content emojis: If the source has emojis that are part of the content (e.g. 📦 in "📦 Installation"), KEEP them. Only remove decorative/spam emojis (🔥🔥🔥😍🎉).\n` +
+      `- Do not add greetings, closings, or meta-text. Output ONLY the processed text.\n` +
+      `- BOLDING: Only bold key terms, tool names, or important warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
+      `- STRUCTURE: Use bullet points (•) and numbered lists. Use Unicode symbols (▸ ◆ ─) for visual structure.\n` +
+      `- ORGANIZATION: Break long text into separate paragraphs. Don't stuff everything together. Make posts readable and attractive. Each paragraph = one idea.\n` +
+      `- BLOCKQUOTE: Use > (markdown blockquote) for:\n` +
+      `  • Explanatory text after a topic header (lines ending with ":")\n` +
+      `  • Step-by-step instructions\n` +
+      `  • Guide/help text\n` +
+      `  • Long URLs (already shortened by system)\n` +
+      `  • At least 1 blockquote per post (when applicable)\n` +
+      `  But NEVER quote the FIRST paragraph of a post.\n` +
+      `  Don't quote everything — only selective important parts.\n` +
+      `- RTL: If a paragraph is Persian, do NOT start it with an English word. Use Persian punctuation (، ؟ ؛). Use half-spaces (نیم‌فاصله).\n` +
+      `- Keep each paragraph in ONE language direction.`,
   );
 
   // --- Mode-specific instructions ---
   if (mode === "summarize") {
     parts.push(
       `# TASK: SUMMARIZE\n` +
-        `Compress the text to ~40% of original length.\n` +
-        `Keep ALL technical references (links, code, commands, package names).\n` +
-        `Drop filler, examples, and redundant phrasing.\n` +
-        `Preserve the original language.`,
+        `Compress to ~40% of original length.\n` +
+        `Keep ALL technical references. Drop filler and redundancy.\n` +
+        `Preserve original language.`,
     );
   } else {
-    // rewrite
     const modeMap: Partial<Record<Settings["rewriteMode"], string>> = {
-      none: `Do not rewrite the meaning. Only apply light formatting fixes (whitespace, bullet structure, code fences).`,
-      light: `LIGHT rewrite: minimal edits. Fix only formatting (code fences, bullets, links). Do not rephrase sentences at all. Keep 95% of original text.`,
-      normal: `NORMAL rewrite: light editing. Fix formatting, remove obvious spam/hype, tighten slightly. Keep the original structure and most wording. This is a gentle polish, NOT a full rewrite.`,
-      aggressive: `AGGRESSIVE rewrite: full rewrite preserving meaning. Restructure for clarity. Keep all technical references and language.`,
+      none: `Do not rewrite meaning. Only apply formatting fixes.`,
+      light: `LIGHT rewrite: minimal edits. Fix formatting only. Keep 95% of original text. Do not rephrase sentences.`,
+      normal: `NORMAL rewrite: gentle polish. Fix formatting, remove obvious spam/hype, tighten slightly. Keep original structure and most wording. NOT a full rewrite.`,
+      aggressive: `AGGRESSIVE rewrite: full rewrite preserving meaning. Restructure for clarity.`,
     };
     const modeDesc = modeMap[settings.rewriteMode] ?? modeMap.normal!;
     parts.push(
-      `# TASK: REWRITE\n` +
-        `${modeDesc}\n` +
-        `Rewrite mode selected: ${settings.rewriteMode}.`,
+      `# TASK: REWRITE\n${modeDesc}\nRewrite mode: ${settings.rewriteMode}.`,
     );
   }
 
-  // --- Soft guidance from per-user settings ---
+  // --- Soft guidance (shortened) ---
   const editHint = describeEditIntensity(settings.editIntensity);
   const emojiHint = describeEmojiLevel(settings.emojiLevel);
   parts.push(
-    `# SOFT GUIDANCE\n` +
+    `# GUIDANCE\n` +
       `- Edit intensity: ${settings.editIntensity}/100 — ${editHint}\n` +
-      `- Emoji level: ${settings.emojiLevel}/100 — ${emojiHint}\n` +
-      `- Personality: ${settings.personalityMode}\n` +
-      `- Language mode: ${settings.languageMode}`,
+      `- Emoji: ${emojiHint}\n` +
+      `- Language: ${settings.languageMode}`,
   );
 
   if (settings.languageMode !== "auto") {
     parts.push(
-      `# LANGUAGE\n` +
-        `The user explicitly requested language: ${settings.languageMode}. ` +
-        `If this differs from the source language, translate the content to ${settings.languageMode}. ` +
-        `Otherwise preserve the source language.`,
+      `# LANGUAGE\nOutput in ${settings.languageMode}. Translate non-technical content only. Keep technical terms in English.`,
     );
   }
 
@@ -114,7 +99,7 @@ export function buildSystemPrompt(
 }
 
 function describeEditIntensity(level: number): string {
-  if (level <= 25) return "touch as little as possible";
+  if (level <= 25) return "minimal touch";
   if (level <= 50) return "light touches";
   if (level <= 75) return "moderate edits";
   return "thorough edits";
@@ -124,14 +109,12 @@ function describeEmojiLevel(level: number): string {
   if (level <= 10) return "no emojis";
   if (level <= 30) {
     return (
-      "Emoji level LOW: Use at most 1-3 functional emojis per post. " +
-      "Use creative/modern emojis (not 🔥🚀💯). " +
-      "Use emojis ONLY for: section headers (📦, ⚡, 💡, 🔒), step markers (1️⃣ 2️⃣ 3️⃣ or ▶), or topic indicators. " +
-      "NEVER use decorative emojis (😍😂🔥🎉). NEVER use more than 1 emoji per paragraph."
+      "Level LOW (1-3 per post). Functional only (📦⚡💡🔒, 1️⃣2️⃣3️⃣). " +
+      "No decorative (😍😂🔥🎉). Preserve content emojis. Max 1 per paragraph."
     );
   }
   if (level <= 60) return "occasional functional emojis";
-  return "generous (but still functional) emojis";
+  return "generous functional emojis";
 }
 
 // ============================================================
@@ -146,26 +129,21 @@ export function buildUserPrompt(
   const lines: string[] = [];
 
   lines.push(`# CONTEXT`);
-  lines.push(`- Detected category: ${classification.category}`);
-  lines.push(`- Detected language: ${classification.language}`);
-  lines.push(`- Contains code: ${classification.hasCode ? "yes" : "no"}`);
+  lines.push(`- Category: ${classification.category}`);
+  lines.push(`- Language: ${classification.language}`);
+  lines.push(`- Has code: ${classification.hasCode ? "yes" : "no"}`);
   if (classification.hasGithubLink) {
-    lines.push(`- Contains GitHub link: yes (preserve verbatim)`);
-  }
-  if (classification.hasLongText) {
-    lines.push(`- Long text (>800 chars): yes`);
+    lines.push(`- Has GitHub link: yes (preserve verbatim)`);
   }
 
   lines.push("");
   lines.push(`# INSTRUCTION`);
   if (mode === "summarize") {
-    lines.push(`Summarize the SOURCE below per the system contract.`);
+    lines.push(`Summarize the SOURCE per the system contract.`);
   } else {
-    lines.push(`Rewrite the SOURCE below per the system contract.`);
+    lines.push(`Rewrite the SOURCE per the system contract.`);
   }
-  lines.push(
-    `Return ONLY the processed markdown. No preamble, no explanations, no comments.`,
-  );
+  lines.push(`Return ONLY the processed markdown.`);
 
   lines.push("");
   lines.push(`# SOURCE`);

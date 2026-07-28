@@ -63,7 +63,7 @@ import { can, roleLabel } from "../domain/roles";
 import { mainMenuKeyboard, adminListKeyboard } from "./keyboards";
 import { log } from "../observability/logger";
 import { t, getUiLanguage, SUPPORTED_LANGUAGES } from "../i18n";
-import { getRole, isAuthorized, isOwner, audit } from "../storage/repositories/admins";
+import { getRole, isAuthorized, isOwner, audit, ensureOwnerExists } from "../storage/repositories/admins";
 import {
   getSettings,
   getGlobalSettings,
@@ -174,6 +174,7 @@ export async function handleHelp(env: Env, message: TelegramMessage): Promise<vo
   lines.push("/diag — Full diagnostic report (owner only)");
   lines.push("/test — Run formatter tests (owner only)");
   lines.push("/reset &lt;stats|debug|jobs|all&gt; — Reset stats/logs/jobs (owner only)");
+  lines.push("/resetall — Wipe EVERYTHING to defaults (owner only)");
   lines.push("/queue — Queue status (owner only)");
   lines.push("/audit [n] — Recent audit events (owner only)");
   lines.push("/webhook &lt;info|set &lt;url&gt;|delete|test&gt; — Manage webhook (owner only)");
@@ -1095,6 +1096,120 @@ function resetConfirmKey(userId: number): string {
  *           (pending jobs are preserved so in-flight posts aren't dropped).
  *   all   — all of the above, run in parallel.
  */
+export async function handleResetAll(
+  env: Env,
+  message: TelegramMessage,
+): Promise<void> {
+  const fromId = message.from?.id ?? 0;
+  if (!(await isOwner(env, fromId))) {
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
+    return;
+  }
+
+  // Two-step confirmation
+  const confirmKey = `resetall_confirm:${fromId}`;
+  const confirmed = await env.AI_ADMIN_KV.get(confirmKey);
+  if (!confirmed) {
+    await env.AI_ADMIN_KV.put(confirmKey, "1", { expirationTtl: 30 });
+    await safeSend(
+      env,
+      message.chat.id,
+      "⚠️ <b>RESET ALL — This will wipe:</b>\n\n" +
+        "<blockquote>\n" +
+        "• All settings (reset to defaults)\n" +
+        "• All scheduled posts\n" +
+        "• All approval jobs\n" +
+        "• All stats\n" +
+        "• All debug events\n" +
+        "• All audit logs\n" +
+        "• All seen updates\n" +
+        "• All media group items\n" +
+        "</blockquote>\n\n" +
+        "Send <code>/resetall</code> again within 30 seconds to confirm.",
+    );
+    return;
+  }
+  await env.AI_ADMIN_KV.delete(confirmKey);
+
+  const results: string[] = [];
+  try {
+    // 1. Delete all settings
+    await env.DB.prepare("DELETE FROM settings");
+    results.push("✅ Settings: wiped");
+  } catch (e) {
+    results.push("❌ Settings: " + String(e));
+  }
+  try {
+    // 2. Delete all jobs
+    await env.DB.prepare("DELETE FROM jobs");
+    results.push("✅ Jobs: wiped");
+  } catch (e) {
+    results.push("❌ Jobs: " + String(e));
+  }
+  try {
+    // 3. Reset stats
+    await env.DB.prepare("DELETE FROM stats");
+    results.push("✅ Stats: wiped");
+  } catch (e) {
+    results.push("❌ Stats: " + String(e));
+  }
+  try {
+    // 4. Delete debug events
+    await env.DB.prepare("DELETE FROM debug_events");
+    results.push("✅ Debug events: wiped");
+  } catch (e) {
+    results.push("❌ Debug events: " + String(e));
+  }
+  try {
+    // 5. Delete audit log
+    await env.DB.prepare("DELETE FROM audit_log");
+    results.push("✅ Audit log: wiped");
+  } catch (e) {
+    results.push("❌ Audit log: " + String(e));
+  }
+  try {
+    // 6. Delete seen updates
+    await env.DB.prepare("DELETE FROM seen_updates");
+    results.push("✅ Seen updates: wiped");
+  } catch (e) {
+    results.push("❌ Seen updates: " + String(e));
+  }
+  try {
+    // 7. Delete media group items
+    await env.DB.prepare("DELETE FROM media_group_items");
+    results.push("✅ Media groups: wiped");
+  } catch (e) {
+    results.push("❌ Media groups: " + String(e));
+  }
+  try {
+    // 8. Clear all KV cache keys
+    const list = await env.AI_ADMIN_KV.list();
+    for (const key of list.keys) {
+      await env.AI_ADMIN_KV.delete(key.name);
+    }
+    results.push("✅ KV cache: cleared");
+  } catch (e) {
+    results.push("❌ KV cache: " + String(e));
+  }
+  try {
+    // 9. Re-ensure owner exists
+    await ensureOwnerExists(env);
+    results.push("✅ Owner: re-created");
+  } catch (e) {
+    results.push("❌ Owner: " + String(e));
+  }
+
+  try {
+    await audit(env, fromId, "resetall", "all", "Full reset to defaults");
+  } catch { /* ignore */ }
+
+  await safeSend(
+    env,
+    message.chat.id,
+    "🔄 <b>Reset All Complete</b>\n\n" + results.join("\n"),
+  );
+}
+
 export async function handleReset(
   env: Env,
   message: TelegramMessage,
@@ -2043,6 +2158,9 @@ export async function dispatchCommand(
       return true;
     case "/reset":
       await handleReset(env, message, args);
+      return true;
+    case "/resetall":
+      await handleResetAll(env, message);
       return true;
     case "/queue":
       await handleQueue(env, message);

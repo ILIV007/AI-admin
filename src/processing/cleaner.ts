@@ -55,8 +55,13 @@ const SOURCE_ATTR_RE = /\s*(?:source|src|منبع)\s*[:：]?\s*@[A-Za-z0-9_]+/gi
 const SIGNATURE_LINE_RE = /^[ \t]*@[A-Za-z0-9_]+\s*[|｜]\s*.+$/gm;
 
 // Whole-line standalone promo mentions: "@user" or "@user @user2 @user3"
+// Also matches lines with emoji prefix + @username (e.g. "🌀 @ILIVIR3")
 const STANDALONE_MENTION_LINE_RE =
-  /^[ \t]*@[A-Za-z0-9_]+(?:\s+@[A-Za-z0-9_]+)*[ \t]*$/gm;
+  /^[ \t]*(?:[\p{Extended_Pictographic}\s]*)?@[A-Za-z0-9_]+(?:\s+@[A-Za-z0-9_]+)*[ \t]*$/gmu;
+
+// Lines with emoji + @username + optional description (e.g. "🌀 @ILIVIR3", "🆔 @ShahrSakhtAfzar")
+const EMOJI_MENTION_LINE_RE =
+  /^[ \t]*[\p{Extended_Pictographic}]+\s*@[A-Za-z0-9_]+(?:\s*[|｜\-—–]\s*.*)?[ \t]*$/gmu;
 
 // Whole-line "Join / Follow / Subscribe" prompts (English + Persian)
 const JOIN_LINE_RE =
@@ -155,6 +160,9 @@ export function cleanContent(
 
   // "@user | desc" signature lines
   text = text.replace(SIGNATURE_LINE_RE, "");
+
+  // Emoji + @username lines (e.g. "🌀 @ILIVIR3", "🆔 @ShahrSakhtAfzar")
+  text = text.replace(EMOJI_MENTION_LINE_RE, "");
 
   // Standalone promo @mention lines — but never the channel's own handle.
   const ownHandle = opts?.ownHandle?.replace(/^@/, "");

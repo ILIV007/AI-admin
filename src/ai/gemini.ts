@@ -61,7 +61,7 @@ export const geminiProvider: AIProvider = {
       },
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2048,
+        maxOutputTokens: 4096,
       },
     };
 

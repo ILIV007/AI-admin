@@ -183,18 +183,37 @@ export function blocksToTelegramHtml(
   footer: string,
 ): string {
   const parts: string[] = [];
+  let paragraphIndex = 0; // Track which paragraph we're on (for first-paragraph rule)
+  let hasBlockquote = false; // Track if we've added at least one blockquote
 
   for (const block of blocks) {
     switch (block.kind) {
       case "paragraph": {
         const rendered = block.spans.map(renderSpan).join("");
         const textLen = spanTextLength(block.spans);
-        // Task 28: wrap long paragraphs in blockquotes. >400 chars →
-        // collapsible (expandable); >200 chars → regular blockquote.
+        paragraphIndex++;
+
+        // RULE: First paragraph is NEVER quoted
+        if (paragraphIndex === 1) {
+          parts.push(rendered);
+          break;
+        }
+
+        // RULE: Only quote SOME paragraphs, not all
+        // - Very long (>400 chars) → collapsible blockquote
+        // - Long (>200 chars) → regular blockquote
+        // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
+        // - Short → no quote (just text)
         if (textLen > 400) {
           parts.push(`<blockquote expandable>${rendered}</blockquote>`);
+          hasBlockquote = true;
         } else if (textLen > 200) {
           parts.push(`<blockquote>${rendered}</blockquote>`);
+          hasBlockquote = true;
+        } else if (textLen > 80 && !hasBlockquote) {
+          // Only quote if we don't have any blockquote yet (ensure at least 1)
+          parts.push(`<blockquote>${rendered}</blockquote>`);
+          hasBlockquote = true;
         } else {
           parts.push(rendered);
         }
@@ -210,27 +229,27 @@ export function blocksToTelegramHtml(
 
       case "code": {
         if (block.language === "prompt") {
-          // Task 28: detected prompt (image-gen / instruction block).
-          // Render as collapsible + monospace so it's both compact and
-          // copyable. The "prompt" language is emitted by
-          // cleaner.restorePrompts which wraps detected prompts in a
-          // ```prompt fence.
+          // Prompt block: collapsible + monospace (copyable in Telegram)
+          // Use <pre><code> which Telegram renders as copyable monospace
           parts.push(
             `<blockquote expandable><pre><code>${escapeHtml(block.code)}</code></pre></blockquote>`,
           );
-          break;
+          hasBlockquote = true;
+        } else {
+          const lang = block.language ? escapeHtml(block.language) : "";
+          parts.push(
+            `<pre><code class="language-${lang}">${escapeHtml(block.code)}</code></pre>`,
+          );
         }
-        const lang = block.language ? escapeHtml(block.language) : "";
-        parts.push(
-          `<pre><code class="language-${lang}">${escapeHtml(block.code)}</code></pre>`,
-        );
         break;
       }
 
       case "quote":
+        // User explicitly used > markdown quote
         parts.push(
           `<blockquote>${block.spans.map(renderSpan).join("")}</blockquote>`,
         );
+        hasBlockquote = true;
         break;
 
       case "list": {
@@ -239,14 +258,19 @@ export function blocksToTelegramHtml(
           return block.ordered ? `${idx + 1}. ${rendered}` : `• ${rendered}`;
         });
         const inner = items.join("\n");
-        // Task 28: multi-item lists go inside blockquotes. Ordered lists
-        // (step-by-step instructions) → collapsible (expandable). Unordered
-        // multi-item lists → regular blockquote. Single-item lists stay bare
-        // (no visual benefit from a blockquote wrapper).
-        if (block.ordered && block.items.length > 1) {
+        const listLen = inner.length;
+        // Ordered lists (steps) with >2 items → collapsible if very long
+        if (block.ordered && block.items.length > 2 && listLen > 300) {
           parts.push(`<blockquote expandable>${inner}</blockquote>`);
-        } else if (!block.ordered && block.items.length > 1) {
-          parts.push(`<blockquote>${inner}</blockquote>`);
+          hasBlockquote = true;
+        } else if (block.items.length > 1) {
+          // Regular list → blockquote (not collapsible unless very long)
+          if (listLen > 400) {
+            parts.push(`<blockquote expandable>${inner}</blockquote>`);
+          } else {
+            parts.push(`<blockquote>${inner}</blockquote>`);
+          }
+          hasBlockquote = true;
         } else {
           parts.push(inner);
         }
@@ -254,12 +278,11 @@ export function blocksToTelegramHtml(
       }
 
       case "divider":
-        // Removed: separator line caused visual clutter. Use blockquote instead.
         break;
     }
   }
 
-  // Footer — ALWAYS escaped. Fixes V1 injection bug.
+  // Footer — ALWAYS escaped
   parts.push(`<blockquote>${escapeHtml(footer)}</blockquote>`);
 
   return parts.join("\n\n");
