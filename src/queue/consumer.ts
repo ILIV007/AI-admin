@@ -258,23 +258,37 @@ async function handleProcessUpdate(
   }
 
   // ── Channel post: edit in place if channelEditing is enabled ────
-  // This matches V1 behavior: when a post appears in the target channel
-  // (not from the bot itself), clean + AI rewrite + format, then EDIT
-  // the original channel post (not publish a new one).
   if (content.isChannelPost && content.chatType === "channel") {
-    // Check if channel editing is enabled
+    log("info", "queue.consumer", "channel post received", {
+      messageId: content.messageId,
+      chatId: content.chatId,
+      fromId: content.fromId,
+      hasText: !!content.text,
+      hasMedia: !!content.media,
+    });
     const channelSettings = await getSettings(env, userId || Number(env.ADMIN_ID));
     if (channelSettings.channelEditing) {
       // Skip if this is the bot's own post (prevent infinite loop)
-      const { getMe } = await import("../telegram/client");
+      // Cache bot ID in KV to avoid calling getMe every time
+      let botId: number | null = null;
       try {
-        const me = await getMe(env.BOT_TOKEN);
-        if (content.fromId === me.id) {
-          log("info", "queue.consumer", "skipping self-post in channel");
-          return;
+        const cached = await env.AI_ADMIN_KV.get("bot:id");
+        if (cached) {
+          botId = Number(cached);
+        } else {
+          const { getMe } = await import("../telegram/client");
+          const me = await getMe(env.BOT_TOKEN);
+          botId = me.id;
+          await env.AI_ADMIN_KV.put("bot:id", String(botId), { expirationTtl: 86400 });
         }
-      } catch { /* ignore — proceed */ }
-      // Run channel edit pipeline
+      } catch (e) {
+        log("warn", "queue.consumer", "failed to get bot ID", { error: String(e) });
+      }
+      if (botId && content.fromId === botId) {
+        log("info", "queue.consumer", "skipping self-post in channel");
+        return;
+      }
+      log("info", "queue.consumer", "running channel edit pipeline");
       await runChannelEditPipeline(env, content, channelSettings);
       return;
     } else {
@@ -623,6 +637,23 @@ async function runChannelEditPipeline(
     // 4. Sanitize + restore prompts
     const { sanitizeAiOutput } = await import("../formatting/sanitizer");
     workingText = sanitizeAiOutput(workingText);
+
+    // 4b. Strip ANY @channel references from final text (AI may add them)
+    if (settings.footerText) {
+      const chMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
+      if (chMatch) {
+        const chName = chMatch[1];
+        const chRegex = new RegExp(
+          `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\b[^\\n]*`,
+          "gu",
+        );
+        workingText = workingText.replace(chRegex, "").trim();
+      }
+      const fEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      workingText = workingText.replace(new RegExp(fEscaped, "gi"), "").trim();
+      workingText = workingText.replace(/\n{3,}/g, "\n\n").trim();
+    }
+
     workingText = restorePrompts(workingText, prompts);
 
     // 5. Format to HTML

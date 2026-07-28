@@ -62,8 +62,7 @@ import type {
   Role,
   TelegramCallbackQuery,
 } from "../types";
-import { answerCallbackQuery, editMessageText } from "../telegram/client";
-import { escapeHtml } from "../telegram/entities";
+import { answerCallbackQuery } from "../telegram/client";
 import { disabledKeyboard } from "./keyboards";
 import { can } from "../domain/roles";
 import { log } from "../observability/logger";
@@ -180,7 +179,7 @@ export async function handleApprovalCallback(
 
   if (!job || job.status !== "pending") {
     await safeAnswer(env, cq.id, "⚠️ This preview is no longer valid", true);
-    await disablePreviewKeyboard(env, cq, "⏳ پیش‌نمایش دیگر معتبر نیست");
+    await updateKeyboardOnly(env, cq, "⏳ No longer valid");
     return;
   }
 
@@ -211,14 +210,14 @@ async function handlePublish(
       log("error", SCOPE, "setApprovalFailed threw", { error: String(e) });
     }
     await safeAnswer(env, cq.id, "⚠️ محتوای نامعتبر", true);
-    await disablePreviewKeyboard(env, cq, "❌ محتوای نامعتبر");
+    await updateKeyboardOnly(env, cq, "❌ Invalid content");
     return;
   }
 
   // Disable the keyboard BEFORE the slow publish I/O so the user can't
   // double-click Publish while we're working. This is the visible half of
   // the "buttons remain clickable after callback" fix.
-  await disablePreviewKeyboard(env, cq, "⏳ Publishing…");
+  await updateKeyboardOnly(env, cq, "⏳ Publishing...");
   await safeAnswer(env, cq.id, "⏳ Publishing…");
 
   // Publish to TARGET_CHANNEL.
@@ -318,7 +317,7 @@ async function handlePublish(
       }
     }
     await safeAnswer(env, cq.id, "⚠️ این پست قبلاً منتشر شده بود", true);
-    await disablePreviewKeyboard(env, cq, "✅ قبلاً منتشر شد");
+    await updateKeyboardOnly(env, cq, "✅ Already published");
     return;
   }
 
@@ -332,16 +331,16 @@ async function handlePublish(
     if (!weFailed) {
       // Someone else resolved it. Don't double-record.
       await safeAnswer(env, cq.id, "⚠️ این پیش‌نمایش قبلاً پردازش شده", true);
-      await disablePreviewKeyboard(env, cq, "⏳ قبلاً پردازش شده");
+      await updateKeyboardOnly(env, cq, "⏳ Already processed");
       return;
     }
     // Our failure stuck.
     void audit(env, job.userId, "approval.failed", `job:${jobId}`, publishError ?? "unknown");
     await safeAnswer(env, cq.id, "❌ Publish failed", true);
-    await disablePreviewKeyboard(
+    await updateKeyboardOnly(
       env,
       cq,
-      `❌ Publish failed: ${truncate(publishError ?? "نامشخص", 200)}`,
+      `❌ Publish failed: ${truncate(publishError ?? "unknown", 200)}`,
     );
     return;
   }
@@ -353,7 +352,7 @@ async function handlePublish(
       jobId,
     });
     await safeAnswer(env, cq.id, "✅ Published");
-    await disablePreviewKeyboard(env, cq, "✅ Published");
+    await updateKeyboardOnly(env, cq, "✅ Published");
     return;
   }
 
@@ -373,7 +372,7 @@ async function handlePublish(
   }
 
   await safeAnswer(env, cq.id, "✅ Published");
-  await disablePreviewKeyboard(env, cq, "✅ Published");
+  await updateKeyboardOnly(env, cq, "✅ Published");
 }
 
 // ============================================================
@@ -387,7 +386,7 @@ async function handleReject(
   job: JobRecord,
 ): Promise<void> {
   // Disable keyboard immediately.
-  await disablePreviewKeyboard(env, cq, "⏳ در حال پردازش…");
+  await updateKeyboardOnly(env, cq, "⏳ Processing...");
 
   try {
     await setApprovalRejected(env, jobId);
@@ -439,9 +438,12 @@ async function handleReject(
 // ============================================================
 
 /**
- * Update ONLY the inline keyboard (not the message text). Uses
- * editMessageReplyMarkup to avoid changing the preview content.
- * Falls back to editMessageText if reply_markup edit fails.
+ * Update ONLY the inline keyboard (not the message text).
+ * Uses editMessageReplyMarkup which ONLY changes the keyboard —
+ * the original message text/caption/media is completely preserved.
+ *
+ * If editMessageReplyMarkup fails (rare), we DON'T replace the message.
+ * The callback query is already answered with the status text.
  */
 async function updateKeyboardOnly(
   env: Env,
@@ -450,11 +452,9 @@ async function updateKeyboardOnly(
 ): Promise<void> {
   const msg = cq.message;
   if (!msg) return;
-  // Get original message text to preserve it
-  const originalText = msg.text || msg.caption || "";
-  const hasMedia = !!msg.photo || !!msg.video || !!msg.document || !!msg.animation;
   try {
-    // Try editMessageReplyMarkup first (only changes keyboard, preserves message)
+    // editMessageReplyMarkup: ONLY changes the keyboard, preserves everything else.
+    // This is the correct Telegram API method for our use case.
     const { tgApi } = await import("../telegram/client");
     await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
       chat_id: msg.chat.id,
@@ -462,55 +462,13 @@ async function updateKeyboardOnly(
       reply_markup: JSON.parse(disabledKeyboard(statusText)),
     });
   } catch (e) {
-    // Fallback: editMessageText/Caption preserving original content + add status prefix
-    try {
-      if (hasMedia && msg.caption !== undefined) {
-        const { editMessageCaption } = await import("../telegram/client");
-        await editMessageCaption(env.BOT_TOKEN, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          caption: `<blockquote>${escapeHtml(statusText)}</blockquote>\n\n${originalText}`,
-          parse_mode: "HTML",
-          reply_markup: disabledKeyboard(statusText),
-        });
-      } else {
-        await editMessageText(env.BOT_TOKEN, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          text: `<blockquote>${escapeHtml(statusText)}</blockquote>\n\n${originalText}`,
-          parse_mode: "HTML",
-          reply_markup: disabledKeyboard(statusText),
-        });
-      }
-    } catch (e2) {
-      log("warn", SCOPE, "updateKeyboardOnly failed", { error: String(e2) });
-    }
-  }
-}
-
-/**
- * Swap the preview message's keyboard for a single disabled button showing
- * `text`. This is the visible half of the "disable buttons after callback"
- * fix. If the message has no `message_id` (e.g. inline-mode messages), we
- * silently skip — there's no inline message to edit.
- */
-async function disablePreviewKeyboard(
-  env: Env,
-  cq: TelegramCallbackQuery,
-  text: string,
-): Promise<void> {
-  const msg = cq.message;
-  if (!msg) return;
-  try {
-    await editMessageText(env.BOT_TOKEN, {
-      chat_id: msg.chat.id,
-      message_id: msg.message_id,
-      text: `<blockquote>${escapeHtml(text)}</blockquote>`,
-      reply_markup: disabledKeyboard(text),
+    // If editMessageReplyMarkup fails, DON'T replace the message.
+    // The callback query answer already shows the status to the user.
+    // This preserves the original preview content completely.
+    log("warn", SCOPE, "updateKeyboardOnly: editMessageReplyMarkup failed (message preserved)", {
+      error: String(e),
+      statusText,
     });
-  } catch (e) {
-    // "message is not modified" or "message can't be edited" — non-fatal.
-    log("warn", SCOPE, "editMessageText failed", { error: String(e) });
   }
 }
 

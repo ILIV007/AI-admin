@@ -179,6 +179,28 @@ export async function runPipeline(
   // ── 7. Sanitize AI output (also applies to cleaned text — harmless) ──
   finalText = sanitizeAiOutput(finalText);
 
+  // ── 7b. Strip ANY @channel references from final text (AI may add them) ──
+  // The AI knows about ILIVIR3 from the system prompt and might include
+  // @ILIVIR3 in its output. Remove ALL occurrences to prevent duplicate
+  // channel IDs before the footer.
+  if (settings.footerText) {
+    const chMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
+    if (chMatch) {
+      const chName = chMatch[1];
+      // Remove @channelName anywhere in the text (with optional emoji prefix on its own line)
+      const chRegex = new RegExp(
+        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\b[^\\n]*`,
+        "gu",
+      );
+      finalText = finalText.replace(chRegex, "").trim();
+    }
+    // Also remove the full footer text if it appears anywhere
+    const fEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    finalText = finalText.replace(new RegExp(fEscaped, "gi"), "").trim();
+    // Clean up multiple blank lines
+    finalText = finalText.replace(/\n{3,}/g, "\n\n").trim();
+  }
+
   // ── 8. Restore prompt placeholders ──────────────────────────────
   finalText = restorePrompts(finalText, prompts);
 
