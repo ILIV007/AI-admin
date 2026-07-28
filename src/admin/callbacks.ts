@@ -346,7 +346,13 @@ Channel: <code>${escapeHtml(
   // set:rewrite:{mode}
   if (parts[1] === "rewrite" && parts[2]) {
     const mode = parts[2] as Settings["rewriteMode"];
-    if (mode === "none" || mode === "light" || mode === "normal" || mode === "aggressive") {
+    if (
+      mode === "none" ||
+      mode === "light" ||
+      mode === "normal" ||
+      mode === "aggressive" ||
+      mode === "summarize"
+    ) {
       settings.rewriteMode = mode;
       mutated = true;
       auditAction = "settings.rewriteMode";

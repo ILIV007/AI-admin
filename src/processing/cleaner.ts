@@ -207,7 +207,9 @@ export function cleanContent(
 // ---------------------------------------------------------------------------
 
 // Keywords that strongly suggest a paragraph is an image-gen prompt.
+// Task 28: expanded with more Midjourney/SD parameters and render engines.
 const PROMPT_KEYWORDS = [
+  // Midjourney / SD parameters
   "--ar",
   "--v ",
   "--seed",
@@ -218,6 +220,15 @@ const PROMPT_KEYWORDS = [
   "--q ",
   "--tile",
   "--upscale",
+  "--bw",
+  "--hd",
+  "--fast",
+  "--relax",
+  "--turbo",
+  "--style",
+  "--weird",
+  "--no ",
+  // Render engines / styles
   "photorealistic",
   "octane render",
   "unreal engine",
@@ -229,20 +240,49 @@ const PROMPT_KEYWORDS = [
   "sd1.5",
   "sd 1.5",
   "sd3",
-  "prompt:",
+  "sd 3",
+  "flux",
+  "dalle",
+  "dall-e",
   "negative prompt",
+  "prompt:",
   "highly detailed",
   "ultra realistic",
   "ultra-realistic",
+  "hyperrealistic",
+  "hyper-realistic",
   "8k",
+  "16k",
   "uhd",
+  "4k",
   "cinematic lighting",
   "volumetric lighting",
+  "soft lighting",
+  "studio lighting",
   "depth of field",
+  "bokeh",
   "trending on artstation",
+  "trending on cgsociety",
+  "trending on behance",
+  "sharp focus",
+  "intricate details",
+  "highly detailed face",
+  "masterpiece",
+  "best quality",
+  "high quality",
 ];
 
+// Paragraphs that start with one of these prefixes are ALWAYS treated as
+// prompts, regardless of length or language. Matches Latin OR Persian colon.
+const PROMPT_PREFIX_RE =
+  /^\s*(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i;
+
 function isPromptParagraph(text: string): boolean {
+  // Explicit prefix → always a prompt (skip very short false positives).
+  if (PROMPT_PREFIX_RE.test(text)) {
+    return text.length >= 20;
+  }
+
   if (text.length < 80) return false;
 
   // English-dominant: more Latin chars than Persian/Arabic.
@@ -284,7 +324,17 @@ export function protectPrompts(text: string): {
 
 export function restorePrompts(text: string, prompts: string[]): string {
   if (!text || prompts.length === 0) return text;
-  return text.replace(/\u0000PROMPT_(\d+)\u0000/g, (_, i) => prompts[Number(i)] ?? "");
+  // Wrap each restored prompt in a fenced code block with language "prompt".
+  // The formatter (blocks.ts → telegram-html.ts) recognizes this language and
+  // renders the block as:
+  //   <blockquote expandable><pre><code>...</code></pre></blockquote>
+  // — collapsible AND monospace (copyable). Surrounded by blank lines so the
+  // markdown parser treats the fence as a standalone block even when the
+  // AI emitted the placeholder inline with surrounding text.
+  return text.replace(/\u0000PROMPT_(\d+)\u0000/g, (_, i) => {
+    const promptText = prompts[Number(i)] ?? "";
+    return "\n\n```prompt\n" + promptText.trim() + "\n```\n\n";
+  });
 }
 
 // ---------------------------------------------------------------------------

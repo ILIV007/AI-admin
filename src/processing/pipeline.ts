@@ -127,7 +127,10 @@ export async function runPipeline(
         classification,
         settings,
         profile,
-        mode: "rewrite",
+        // Task 28: when the user picked "summarize" as their rewrite mode,
+        // route the request through the summarize branch of the prompt
+        // builder (compress to ~40%, drop filler, keep technical refs).
+        mode: settings.rewriteMode === "summarize" ? "summarize" : "rewrite",
       };
       const ai: AIResult = await aiMod.rewriteWithFallback(env, aiReq);
 

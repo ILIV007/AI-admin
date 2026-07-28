@@ -140,7 +140,7 @@ export interface AdminRecord {
 // Settings (per-user overrides + global defaults)
 // ============================================================
 
-export type RewriteMode = "none" | "light" | "normal" | "aggressive";
+export type RewriteMode = "none" | "light" | "normal" | "aggressive" | "summarize";
 export type PersonalityMode = "friendly" | "professional" | "neutral";
 export type LanguageMode = "auto" | "fa" | "en";
 

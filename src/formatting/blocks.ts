@@ -23,6 +23,19 @@
  *   **bold**  __underline__  *italic*  _italic_
  *   ~~strike~~  ||spoiler||  `code`
  *   [text](url)  @username  http(s)://...
+ *
+ * Task 28 (rewrite-formatting overhaul):
+ *   • LINK PRESERVATION: [text](url) is preserved verbatim as a `link` span
+ *     with both `text` and `url` intact (never stripped). Bare URLs become
+ *     `link` spans where `text` = the full URL (the renderer shortens the
+ *     visible text via shortenUrl but keeps the full href). No link ever
+ *     leaves this parser as plain text.
+ *   • PROMPT BLOCKS: a fenced code block with language "prompt"
+ *     (```prompt ... ```) is produced by cleaner.restorePrompts to wrap
+ *     detected AI/image-gen prompts. It enters this parser as a normal
+ *     `code` block with language="prompt"; the renderer (telegram-html.ts)
+ *     recognizes that language and emits
+ *     `<blockquote expandable><pre><code>...</code></pre></blockquote>`.
  * -----------------------------------------------------------------------------
  */
 

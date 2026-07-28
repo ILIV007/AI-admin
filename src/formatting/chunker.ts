@@ -288,12 +288,16 @@ function splitParagraphsSafe(html: string): string[] {
   const pres: string[] = [];
   const bqs: string[] = [];
 
+  // Task 28: also match <blockquote expandable> (collapsible blockquotes
+  // emitted by the renderer for long paragraphs, step-by-step lists, and
+  // prompt blocks). Both forms are treated as atomic — their contents may
+  // contain \n\n that must NOT be split on.
   let protected_ = html
     .replace(/<pre>[\s\S]*?<\/pre>/g, (m) => {
       pres.push(m);
       return `\u0000PRE${pres.length - 1}\u0000`;
     })
-    .replace(/<blockquote>[\s\S]*?<\/blockquote>/g, (m) => {
+    .replace(/<blockquote(?:\s+expandable)?>[\s\S]*?<\/blockquote>/g, (m) => {
       bqs.push(m);
       return `\u0000BQ${bqs.length - 1}\u0000`;
     });
@@ -302,11 +306,17 @@ function splitParagraphsSafe(html: string): string[] {
     .split(/\n\n+/)
     .filter((p) => p.trim().length > 0);
 
+  // Task 28: restore BQ FIRST, then PRE. Reason: BQ placeholders may
+  // contain PRE placeholders (e.g. prompt blocks render as
+  // <blockquote expandable><pre><code>...</code></pre></blockquote>, and
+  // the protection pass already replaced the inner <pre>...</pre> with a
+  // \u0000PRE_N\u0000 placeholder BEFORE wrapping the outer BQ). Doing PRE
+  // first would leave the PRE placeholder stranded inside the restored BQ.
   return parts.map(
     (p) =>
       p
-        .replace(/\u0000PRE(\d+)\u0000/g, (_, i) => pres[Number(i)] ?? "")
-        .replace(/\u0000BQ(\d+)\u0000/g, (_, i) => bqs[Number(i)] ?? ""),
+        .replace(/\u0000BQ(\d+)\u0000/g, (_, i) => bqs[Number(i)] ?? "")
+        .replace(/\u0000PRE(\d+)\u0000/g, (_, i) => pres[Number(i)] ?? ""),
   );
 }
 

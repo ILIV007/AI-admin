@@ -21,6 +21,7 @@ const REWRITE_LABELS: Record<RewriteMode, string> = {
   light: "Light",
   normal: "Normal",
   aggressive: "Aggressive",
+  summarize: "Summarize",
 };
 
 const PERSONALITY_LABELS: Record<Settings["personalityMode"], string> = {
@@ -144,9 +145,16 @@ export function settingsKeyboard(settings: Settings): string {
 // ============================================================
 
 export function rewriteModeKeyboard(current: RewriteMode): string {
-  const modes: RewriteMode[] = ["none", "light", "normal", "aggressive"];
+  // 5 modes now (Off, Light, Normal, Aggressive, Summarize). Split into two
+  // rows so the buttons stay readable on narrow screens.
+  const row1: RewriteMode[] = ["none", "light", "normal"];
+  const row2: RewriteMode[] = ["aggressive", "summarize"];
   const rows: { text: string; callback_data: string }[][] = [
-    modes.map((m) => ({
+    row1.map((m) => ({
+      text: `${REWRITE_LABELS[m]}${mark(current === m)}`,
+      callback_data: `set:rewrite:${m}`,
+    })),
+    row2.map((m) => ({
       text: `${REWRITE_LABELS[m]}${mark(current === m)}`,
       callback_data: `set:rewrite:${m}`,
     })),

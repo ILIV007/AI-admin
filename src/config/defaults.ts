@@ -14,7 +14,7 @@ import type { Settings, ChannelProfile } from "../types";
 export const DEFAULT_SETTINGS: Settings = {
   rewriteMode: "normal",
   personalityMode: "friendly",
-  editIntensity: 60,
+  editIntensity: 40,
   emojiLevel: 20,
   languageMode: "auto",
   approvalMode: false,
@@ -114,7 +114,7 @@ Footer: a blockquote with the channel handle. Max 1 functional emoji every 2-3 p
   defaultSettings: {
     rewriteMode: "normal",
     personalityMode: "friendly",
-    editIntensity: 60,
+    editIntensity: 40,
     emojiLevel: 20,
     languageMode: "auto",
   },
