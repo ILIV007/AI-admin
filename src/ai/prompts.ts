@@ -44,7 +44,10 @@ export function buildSystemPrompt(
       `- Preserve the author's emotional tone.\n` +
       `- Do not add greetings or closings.\n` +
       `- Do not invent facts, links, or quotes that were not in the source.\n` +
-      `- Do not wrap the whole response in a code fence.`,
+      `- Do not wrap the whole response in a code fence.\n` +
+      `- CRITICAL: Do NOT add any channel mentions like @ILIVIR3 or channel handles. The system adds the footer automatically. Never output @ followed by a channel name.\n` +
+      `- CRITICAL: Do NOT add any footer, signature, or attribution line. The system handles this.\n` +
+      `- CRITICAL: If the source contains @channelName mentions, REMOVE them from your output. They are promotional and will be added by the system footer.`,
   );
 
   // --- Mode-specific instructions ---

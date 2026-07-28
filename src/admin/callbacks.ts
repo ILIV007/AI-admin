@@ -372,17 +372,30 @@ Channel: <code>${escapeHtml(
 
   await safeAnswer(env, cq.id, "✅ Saved");
 
-  // If approval or channelEdit changed, return to main menu (so emoji updates)
+  // If approval or channelEdit changed, update ONLY the keyboard (preserve menu text)
   if (parts[1] === "approval" || parts[1] === "channeledit") {
     const { mainMenuKeyboard } = await import("./keyboards");
     const { getRole } = await import("../storage/repositories/admins");
     const role2 = await getRole(env, fromId).catch(() => null);
-    await editText(
-      env,
-      cq,
-      `<blockquote><b>🎛 Control Panel</b></blockquote>\n\n<b>Updated!</b>\nRole: <b>${role2 || "?"}</b>`,
-      mainMenuKeyboard(role2, settings),
-    );
+    // Use editMessageReplyMarkup to ONLY update keyboard (emoji updates, text preserved)
+    try {
+      const { tgApi } = await import("../telegram/client");
+      if (cq.message) {
+        await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
+          chat_id: cq.message.chat.id,
+          message_id: cq.message.message_id,
+          reply_markup: JSON.parse(mainMenuKeyboard(role2, settings)),
+        });
+      }
+    } catch (e) {
+      // Fallback: edit text + keyboard
+      await editText(
+        env,
+        cq,
+        `<blockquote><b>🎛 Control Panel</b></blockquote>\n\n<b>Updated!</b>\nRole: <b>${role2 || "?"}</b>`,
+        mainMenuKeyboard(role2, settings),
+      );
+    }
   } else {
     // Re-render the settings keyboard so the user sees the new value.
     await editText(
@@ -417,27 +430,27 @@ async function handlePick(
   switch (which) {
     case "rewrite":
       keyboard = rewriteModeKeyboard(settings.rewriteMode);
-      text = "✍️ <b>حالت بازنویسی</b>\nیک گزینه را انتخاب کنید:";
+      text = "✍️ <b>Rewrite Mode</b>\\nSelect an option:";
       break;
     case "personality":
       keyboard = personalityKeyboard(settings.personalityMode);
-      text = "🎭 <b>شخصیت</b>\nیک گزینه را انتخاب کنید:";
+      text = "🎭 <b>Personality</b>\\nSelect an option:";
       break;
     case "editint":
       keyboard = editIntensityKeyboard(settings.editIntensity);
-      text = "📊 <b>شدت ویرایش</b>\nمقدار را انتخاب کنید:";
+      text = "📊 <b>Edit Intensity</b>\\nSelect a value:";
       break;
     case "emoji":
       keyboard = emojiLevelKeyboard(settings.emojiLevel);
-      text = "😀 <b>سطح ایموجی</b>\nمقدار را انتخاب کنید:";
+      text = "😀 <b>Emoji Level</b>\\nSelect a value:";
       break;
     case "lang":
       keyboard = languageKeyboard(settings.languageMode);
-      text = "🌐 <b>زبان</b>\nیک گزینه را انتخاب کنید:";
+      text = "🌐 <b>Language</b>\\nSelect an option:";
       break;
     case "provider":
       keyboard = providerKeyboard(settings.aiProvider);
-      text = "🤖 <b>ارائه‌دهنده AI</b>\nیک گزینه را انتخاب کنید:";
+      text = "🤖 <b>AI Provider</b>\\nSelect an option:";
       break;
     case "gemodel":
       keyboard = geminiModelKeyboard(settings.geminiModel);
@@ -445,7 +458,7 @@ async function handlePick(
       break;
     case "ormodel":
       keyboard = openrouterModelKeyboard(settings.openrouterModel);
-      text = "🦙 <b>مدل OpenRouter</b>\nیک مدل را انتخاب کنید:";
+      text = "🦙 <b>OpenRouter Model</b>\\nSelect a model:";
       break;
     default:
       await safeAnswer(env, cq.id, "⚠️ Unknown action", true);

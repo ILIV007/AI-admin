@@ -158,12 +158,12 @@ export async function handleApprovalCallback(
     if (authorized) role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "auth check threw", { error: String(e) });
-    await safeAnswer(env, cq.id, "⚠️ خطای داخلی", true);
+    await safeAnswer(env, cq.id, "⚠️ Internal error", true);
     return;
   }
 
   if (!authorized || !can(role, action === "pub" ? "approve" : "reject")) {
-    await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+    await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
     return;
   }
 
@@ -173,7 +173,7 @@ export async function handleApprovalCallback(
     job = await getApprovalJob(env, jobId);
   } catch (e) {
     log("error", SCOPE, "getApprovalJob threw", { error: String(e) });
-    await safeAnswer(env, cq.id, "⚠️ خطای داخلی", true);
+    await safeAnswer(env, cq.id, "⚠️ Internal error", true);
     return;
   }
 
@@ -209,7 +209,7 @@ async function handlePublish(
     } catch (e) {
       log("error", SCOPE, "setApprovalFailed threw", { error: String(e) });
     }
-    await safeAnswer(env, cq.id, "⚠️ محتوای نامعتبر", true);
+    await safeAnswer(env, cq.id, "⚠️ Invalid content", true);
     await updateKeyboardOnly(env, cq, "❌ Invalid content");
     return;
   }
@@ -316,7 +316,7 @@ async function handlePublish(
         log("warn", SCOPE, "duplicate cleanup failed", { error: String(e) });
       }
     }
-    await safeAnswer(env, cq.id, "⚠️ این پست قبلاً منتشر شده بود", true);
+    await safeAnswer(env, cq.id, "⚠️ Already published", true);
     await updateKeyboardOnly(env, cq, "✅ Already published");
     return;
   }
@@ -330,7 +330,7 @@ async function handlePublish(
       updated.errorMessage === (publishError ?? "unknown publish error");
     if (!weFailed) {
       // Someone else resolved it. Don't double-record.
-      await safeAnswer(env, cq.id, "⚠️ این پیش‌نمایش قبلاً پردازش شده", true);
+      await safeAnswer(env, cq.id, "⚠️ Already processed", true);
       await updateKeyboardOnly(env, cq, "⏳ Already processed");
       return;
     }
@@ -392,7 +392,7 @@ async function handleReject(
     await setApprovalRejected(env, jobId);
   } catch (e) {
     log("error", SCOPE, "setApprovalRejected threw", { error: String(e), jobId });
-    await safeAnswer(env, cq.id, "⚠️ خطای داخلی", true);
+    await safeAnswer(env, cq.id, "⚠️ Internal error", true);
     return;
   }
 

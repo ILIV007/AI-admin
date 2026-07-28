@@ -76,7 +76,7 @@ export async function handleAddAdminReply(
   const tokens = text.split(/\s+/).filter(Boolean);
 
   if (tokens.length === 0) {
-    await reply(env, message.chat.id, "⚠️ ورودی خالی است. دوباره /admins را امتحان کنید.");
+    await reply(env, message.chat.id, "⚠️ Empty input. Try /admins again.");
     return true;
   }
 
@@ -86,7 +86,7 @@ export async function handleAddAdminReply(
     await reply(
       env,
       message.chat.id,
-      "⚠️ آیدی باید عدد باشد.\nمثال: <code>123456789 editor</code>",
+      "⚠️ ID must be a number.\nExample: <code>123456789 editor</code>",
     );
     return true;
   }
@@ -99,8 +99,8 @@ export async function handleAddAdminReply(
       await reply(
         env,
         message.chat.id,
-        "⚠️ نقش نامعتبر. گزینه‌ها: <code>editor</code>, <code>reviewer</code>, <code>viewer</code>.\n" +
-          "نکته: نقش owner فقط از طریق تنظیمات سرور (ADMIN_ID) تعیین می‌شود.",
+        "⚠️ Invalid role. Options: <code>editor</code>, <code>reviewer</code>, <code>viewer</code>.\n" +
+          "Note: owner role is set via ADMIN_ID env var.",
       );
       return true;
     }
@@ -124,7 +124,7 @@ export async function handleAddAdminReply(
     await reply(
       env,
       message.chat.id,
-      "❌ خطا در ذخیره ادمین. لطفاً بعداً دوباره تلاش کنید.",
+      "❌ Failed to save admin. Try again later.",
     );
     return true;
   }

@@ -324,13 +324,13 @@ export async function handleCheckperms(
 
   const lines: string[] = [];
   lines.push("🔍 <b>Bot status</b>\n");
-  lines.push(`نام: ${escapeHtml(me.first_name ?? "?")}`);
-  lines.push(`یوزرنیم: @${escapeHtml(me.username ?? "?")}`);
-  lines.push(`کانال هدف: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>`);
+  lines.push(`Name: ${escapeHtml(me.first_name ?? "?")}`);
+  lines.push(`Username: @${escapeHtml(me.username ?? "?")}`);
+  lines.push(`Target channel: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>`);
   lines.push("");
   lines.push("<b>Webhook</b>");
   lines.push(`URL: <code>${escapeHtml(hook.url ?? "(none)")}</code>`);
-  lines.push(`پending updates: ${hook.pending_update_count ?? 0}`);
+  lines.push(`Pending updates: ${hook.pending_update_count ?? 0}`);
   lines.push(`max connections: ${hook.max_connections ?? "?"}`);
   if (hook.last_error_message) {
     const when = hook.last_error_date
@@ -339,7 +339,7 @@ export async function handleCheckperms(
     lines.push(`⚠️ Last error: <code>${escapeHtml(hook.last_error_message)}</code> @ ${when}`);
   }
   lines.push("");
-  lines.push("ℹ️ نکته: برای ارسال پیام به کانال، ربات باید ادمین کانال با دسترسی <b>Post Messages</b> باشد. این دسترسی در Bot API قابل مشاهده نیست؛ از تنظیمات کانال بررسی کنید.");
+  lines.push("ℹ️ Note: Bot must be channel admin with <b>Post Messages</b> permission. This permission is not visible via Bot API; check channel settings.");
 
   await safeSend(env, message.chat.id, lines.join("\n"));
 }
@@ -383,15 +383,15 @@ export async function handleStats(
   const fmt = (s: Stats, title: string): string => {
     return (
       `${title}:\n` +
-      `  📥 دریافت‌شده: ${s.totalReceived}\n` +
-      `  📤 منتشرشده: ${s.totalPublished}\n` +
+      `  📥 Received: ${s.totalReceived}\n` +
+      `  📤 Published: ${s.totalPublished}\n` +
       `  ✍️ Rewritten: ${s.totalRewritten}\n` +
       `  ❌ Failed: ${s.totalFailed}\n` +
       `  ✅ Approvals: ${s.totalApprovals}\n` +
-      `  🚫 ردشده: ${s.totalRejected}\n` +
+      `  🚫 Rejected: ${s.totalRejected}\n` +
       `  📅 Scheduled: ${s.totalScheduled}\n` +
-      `  🤖 فراخوانی AI: ${s.aiCalls}\n` +
-      `  ⚠️ شکست AI: ${s.aiFailures}`
+      `  🤖 AI calls: ${s.aiCalls}\n` +
+      `  ⚠️ AI failures: ${s.aiFailures}`
     );
   };
 
@@ -406,11 +406,11 @@ export async function handleStats(
 
   const text =
     `📊 <b>Activity stats</b>\n\n` +
-    `${fmt(global, "🌐 کلی")}\n\n` +
+    `${fmt(global, "🌐 Global")}\n\n` +
     `${chartBlock}\n\n` +
     `${successRateBlock}\n\n` +
     `${aiBlock}\n\n` +
-    `${fmt(mine, "👤 شما")}\n\n` +
+    `${fmt(mine, "👤 You")}\n\n` +
     `Last updated: <code>${last}</code>`;
 
   // Keep under Telegram's 4096 visible-char limit; chunk if needed.
@@ -436,17 +436,17 @@ const MAX_BAR_CHARS = 20;
 
 function renderStatsChart(s: Stats): string {
   const items: { label: string; value: number }[] = [
-    { label: "📤 انتشار", value: s.totalPublished },
+    { label: "📤 Published", value: s.totalPublished },
     { label: "✏️ Rewrite", value: s.totalRewritten },
-    { label: "❌ خطا", value: s.totalFailed },
+    { label: "❌ Failed", value: s.totalFailed },
   ];
 
   const max = Math.max(1, ...items.map((i) => i.value));
   if (items.every((i) => i.value === 0)) {
-    return "<b>📈 نمودار</b>\n<i>(بدون داده)</i>";
+    return "<b>📈 Chart</b>\n<i>(no data)</i>";
   }
 
-  const lines: string[] = ["<b>📈 نمودار</b>"];
+  const lines: string[] = ["<b>📈 Chart</b>"];
   for (const it of items) {
     const width = it.value === 0 ? 0 : Math.max(1, Math.round((it.value / max) * MAX_BAR_CHARS));
     const bar = BAR_FILL.repeat(width);
@@ -462,13 +462,13 @@ function renderStatsChart(s: Stats): string {
 function renderSuccessRate(s: Stats): string {
   const denom = s.totalPublished + s.totalFailed;
   if (denom === 0) {
-    return "<b>🎯 نرخ موفقیت</b>: <i>—</i> (بدون داده)";
+    return "<b>🎯 Success Rate</b>: <i>—</i> (no data)";
   }
   const rate = (s.totalPublished / denom) * 100;
   const rounded = Math.round(rate * 10) / 10;
   return (
-    `<b>🎯 نرخ موفقیت</b>: <code>${rounded}%</code>\n` +
-    `   (${s.totalPublished} منتشر / ${denom} کل)`
+    `<b>🎯 Success Rate</b>: <code>${rounded}%</code>\n` +
+    `   (${s.totalPublished} published / ${denom} total)`
   );
 }
 
@@ -483,8 +483,8 @@ function renderAiMetrics(s: Stats): string {
   const rounded = Math.round(rate * 10) / 10;
   return (
     `<b>🤖 AI</b>\n` +
-    `   فراخوانی: <code>${s.aiCalls}</code>\n` +
-    `   شکست: <code>${s.aiFailures}</code> (<code>${rounded}%</code>)`
+    `   Calls: <code>${s.aiCalls}</code>\n` +
+    `   Failures: <code>${s.aiFailures}</code> (<code>${rounded}%</code>)`
   );
 }
 
@@ -507,7 +507,7 @@ export async function handleAdmins(
   }
 
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -523,9 +523,10 @@ export async function handleAdmins(
   const keyboard = adminListKeyboard(admins, ownerUserId(env));
   const text =
     `👥 <b>Manage admins</b>\n\n` +
-    `تعداد: ${admins.length}\n` +
-    `برای حذف، روی ردیف ادمین ضربه بزنید. مالک قابل حذف نیست.\n` +
-    `برای افزودن، «➕ افزودن ادمین» را بزنید.`;
+    `Count: ${admins.length}
+` +
+    `To remove, tap the admin row. Owner cannot be removed.\n` +
+    `To add, tap "➕ Add Admin".`;
   await safeSend(env, message.chat.id, text, keyboard);
 }
 
@@ -560,12 +561,12 @@ export async function handleSchedule(
     await safeSend(
       env,
       message.chat.id,
-      "⚠️ فرمت زمان نامعتبر.\n\n" +
-        "<b>مثال‌ها:</b>\n" +
-        "<code>/schedule in 30m</code> — ۳۰ دقیقه دیگر\n" +
-        "<code>/schedule in 2h</code> — ۲ ساعت دیگر\n" +
-        "<code>/schedule at 15:30</code> — امروز ساعت ۱۵:۳۰ (به وقت تهران)\n" +
-        "<code>/schedule tomorrow 09:00</code> — فردا ساعت ۰۹:۰۰",
+      "⚠️ Invalid time format.\n\n" +
+        "<b>Examples:</b>\n" +
+        "<code>/schedule in 30m</code> — in 30 minutes\n" +
+        "<code>/schedule in 2h</code> — in 2 hours\n" +
+        "<code>/schedule at 15:30</code> — today at 15:30 (Tehran time)\n" +
+        "<code>/schedule tomorrow 09:00</code> — tomorrow at 09:00",
     );
     return;
   }
@@ -593,10 +594,11 @@ export async function handleSchedule(
     env,
     message.chat.id,
     `✅ Schedule activated.\n\n` +
-      `📅 پست بعدی شما در: <b>${escapeHtml(tehranTime)}</b>\n` +
-      `⏱ شمارش معکوس: ${Math.max(0, Math.round((when - Date.now()) / 1000))} ثانیه\n\n` +
-      `حالا پیام مورد نظر را بفرستید تا در زمان تعیین‌شده منتشر شود.\n` +
-      `برای لغو: <code>/schedule cancel</code>`,
+      `📅 Your next post at: <b>${escapeHtml(tehranTime)}</b>\n` +
+      `⏱ Countdown: ${Math.max(0, Math.round((when - Date.now()) / 1000))} seconds\n\n` +
+      `Now send the message you want to publish at the scheduled time.
+` +
+      `To cancel: <code>/schedule cancel</code>`,
   );
 }
 
@@ -616,7 +618,7 @@ export async function handlePing(
   }
 
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -637,12 +639,12 @@ export async function handlePing(
 
   const text =
     `🏓 <b>pong</b>\n\n` +
-    `نسخه: <code>${VERSION}</code>\n` +
-    `زمان سرور: <code>${now.toISOString()}</code>\n` +
-    `زمان تهران: <code>${escapeHtml(tehranNow)}</code>\n` +
-    `صف Webhook: <code>${hookPending}</code>\n` +
+    `Version: <code>${VERSION}</code>\n` +
+    `Server time: <code>${now.toISOString()}</code>\n` +
+    `Tehran time: <code>${escapeHtml(tehranNow)}</code>\n` +
+    `Webhook queue: <code>${hookPending}</code>\n` +
     `Channel: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>\n` +
-    `مالک: <code>${ownerUserId(env)}</code>`;
+    `Owner: <code>${ownerUserId(env)}</code>`;
   await safeSend(env, message.chat.id, text);
 }
 
@@ -660,15 +662,15 @@ export async function handleVersion(
 
   const text =
     `🏷 <b>Version Info</b>\n\n` +
-    `<b>نسخه</b>: <code>${VERSION}</code>\n` +
-    `<b>تاریخ ساخت</b>: <code>${BUILD_DATE}</code>\n` +
-    `<b>زمان سرور</b>: <code>${now.toISOString()}</code>\n` +
-    `<b>زمان تهران</b>: <code>${escapeHtml(tehranNow)}</code>\n\n` +
-    `<b>📦 آمار ساخت</b>\n` +
-    `• فایل‌های تایپ‌اسکریپت: <code>40</code>\n` +
-    `• مدل‌های AI: <code>${ALL_MODELS.length}</code>\n` +
-    `• کرون‌تریگرها: <code>1</code>\n\n` +
-    `🌀 <i>AI Admin V2 — ساخته‌شده برای Cloudflare Workers</i>`;
+    `<b>Version</b>: <code>${VERSION}</code>\n` +
+    `<b>Build date</b>: <code>${BUILD_DATE}</code>\n` +
+    `<b>Server time</b>: <code>${now.toISOString()}</code>\n` +
+    `<b>Tehran time</b>: <code>${escapeHtml(tehranNow)}</code>\n\n` +
+    `<b>📦 Build stats</b>\n` +
+    `• TypeScript files: <code>40</code>\n` +
+    `• AI models: <code>${ALL_MODELS.length}</code>\n` +
+    `• Cron triggers: <code>1</code>\n\n` +
+    `🌀 <i>AI Admin V2 — Built for Cloudflare Workers</i>`;
   await safeSend(env, message.chat.id, text);
 }
 
@@ -714,8 +716,8 @@ export async function handleModels(
 
   const lines: string[] = [];
   lines.push("🤖 <b>List AI models</b>");
-  lines.push(`تعداد کل: <code>${ALL_MODELS.length}</code>`);
-  lines.push(`ارائه‌دهنده فعال: <code>${escapeHtml(activeProvider)}</code>`);
+  lines.push(`Total count: <code>${ALL_MODELS.length}</code>`);
+  lines.push(`Active provider: <code>${escapeHtml(activeProvider)}</code>`);
   lines.push("");
 
   lines.push("<blockquote><b>🔷 Gemini</b></blockquote>");
@@ -733,7 +735,7 @@ export async function handleModels(
   });
 
   lines.push("");
-  lines.push("<i>✅ سالم — ⚠️ ناسالم — ❓ ناشناخته — 🟢 فعال</i>");
+  lines.push("<i>✅ Healthy — ⚠️ Unhealthy — ❓ Unknown — 🟢 Active</i>");
 
   await safeSend(env, message.chat.id, lines.join("\n"));
 }
@@ -753,20 +755,20 @@ export async function handleHealth(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
   const lines: string[] = [];
-  lines.push("🩺 <b>وضعیت سیستم</b>\n");
+  lines.push("🩺 <b>System Health</b>\n");
 
   // --- Telegram Bot API ---
   try {
     const me = await getMe(env.BOT_TOKEN);
-    lines.push(`🔵 <b>Telegram API</b>: 🟢 سالم — @${escapeHtml(me.username ?? "?")}`);
+    lines.push(`🔵 <b>Telegram API</b>: 🟢 Healthy — @${escapeHtml(me.username ?? "?")}`);
   } catch (e) {
     lines.push(
-      `🔵 <b>Telegram API</b>: 🔴 قطع — <code>${escapeHtml(String(e))}</code>`,
+      `🔵 <b>Telegram API</b>: 🔴 Down — <code>${escapeHtml(String(e))}</code>`,
     );
   }
 
@@ -776,21 +778,21 @@ export async function handleHealth(
     const pending = hook.pending_update_count ?? 0;
     const lastErr = hook.last_error_message;
     if (pending > 0 || lastErr) {
-      lines.push(`🔗 <b>Webhook</b>: 🟡 هشدار — pending: <code>${pending}</code>`);
+      lines.push(`🔗 <b>Webhook</b>: 🟡 Warning — pending: <code>${pending}</code>`);
       if (lastErr) {
         const when = hook.last_error_date
           ? new Date(hook.last_error_date * 1000).toISOString()
           : "?";
         lines.push(
-          `   آخرین خطا: <code>${escapeHtml(lastErr)}</code> @ ${when}`,
+          `   Last error: <code>${escapeHtml(lastErr)}</code> @ ${when}`,
         );
       }
     } else {
-      lines.push(`🔗 <b>Webhook</b>: 🟢 سالم — pending: <code>0</code>`);
+      lines.push(`🔗 <b>Webhook</b>: 🟢 Healthy — pending: <code>0</code>`);
     }
   } catch (e) {
     lines.push(
-      `🔗 <b>Webhook</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>`,
+      `🔗 <b>Webhook</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>`,
     );
   }
 
@@ -801,11 +803,11 @@ export async function handleHealth(
     const latency = Date.now() - t0;
     const ok = rows.length > 0 && rows[0].ok === 1;
     lines.push(
-      `🗄 <b>D1 Database</b>: ${ok ? "🟢" : "🔴"} ${ok ? "سالم" : "خطا"} — latency: <code>${latency}ms</code>`,
+      `🗄 <b>D1 Database</b>: ${ok ? "🟢" : "🔴"} ${ok ? "Healthy" : "Error"} — latency: <code>${latency}ms</code>`,
     );
   } catch (e) {
     lines.push(
-      `🗄 <b>D1 Database</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>`,
+      `🗄 <b>D1 Database</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>`,
     );
   }
 
@@ -818,11 +820,11 @@ export async function handleHealth(
     const latency = Date.now() - t0;
     const ok = readBack === probeValue;
     lines.push(
-      `📦 <b>KV Namespace</b>: ${ok ? "🟢" : "🔴"} ${ok ? "سالم" : "خطا"} — latency: <code>${latency}ms</code>`,
+      `📦 <b>KV Namespace</b>: ${ok ? "🟢" : "🔴"} ${ok ? "Healthy" : "Error"} — latency: <code>${latency}ms</code>`,
     );
   } catch (e) {
     lines.push(
-      `📦 <b>KV Namespace</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>`,
+      `📦 <b>KV Namespace</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>`,
     );
   }
 
@@ -831,7 +833,7 @@ export async function handleHealth(
   // handler without enqueuing a real message. We only report that the binding
   // exists (bounded).
   lines.push(
-    `📨 <b>Queue</b>: 🟡 محدود (bounded) — تست مستقیم ممکن نیست، binding موجود است`,
+    `📨 <b>Queue</b>: 🟡 Bounded (bounded) — Direct test not possible, binding exists`,
   );
 
   // --- Global stats ---
@@ -839,12 +841,12 @@ export async function handleHealth(
     const stats = await getStats(env, "global");
     lines.push("");
     lines.push("<b>📊 Global Stats</b>");
-    lines.push(`📥 دریافت‌شده: <code>${stats.totalReceived}</code>`);
-    lines.push(`📤 منتشرشده: <code>${stats.totalPublished}</code>`);
+    lines.push(`📥 Received: <code>${stats.totalReceived}</code>`);
+    lines.push(`📤 Published: <code>${stats.totalPublished}</code>`);
     lines.push(`❌ Failed: <code>${stats.totalFailed}</code>`);
   } catch (e) {
     lines.push(
-      `📊 <b>آمار</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>`,
+      `📊 <b>Stats</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>`,
     );
   }
 
@@ -866,15 +868,15 @@ export async function handleDiag(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
   const out: string[] = [];
-  out.push("🔧 <b>Diag — گزارش تشخیصی کامل</b>\n");
+  out.push("🔧 <b>Diag — Full Diagnostic Report</b>\n");
 
   // --- Env config (masked secrets) ---
-  out.push("<b>⚙️ پیکربندی محیط</b>");
+  out.push("<b>⚙️ Environment Config</b>");
   out.push(`BOT_TOKEN: <code>${escapeHtml(maskSecret(env.BOT_TOKEN))}</code>`);
   out.push(`WEBHOOK_SECRET: <code>${escapeHtml(maskSecret(env.WEBHOOK_SECRET))}</code>`);
   out.push(`GEMINI_API_KEY: <code>${escapeHtml(maskSecret(env.GEMINI_API_KEY))}</code>`);
@@ -902,7 +904,7 @@ export async function handleDiag(
     const mgiPending = await execCount(env, "SELECT COUNT(*) as c FROM media_group_items WHERE finalized = 0");
     const debugCount = await execCount(env, "SELECT COUNT(*) as c FROM debug_events");
 
-    out.push("<b>🗄 D1 — تعداد ردیف‌ها</b>");
+    out.push("<b>🗄 D1 — Row Counts</b>");
     out.push(`admins: <code>${adminCount}</code>`);
     out.push(`settings: <code>${settingsCount}</code>`);
     out.push(`jobs (pending): <code>${jobsPending}</code>`);
@@ -915,22 +917,22 @@ export async function handleDiag(
     out.push("");
   } catch (e) {
     out.push(
-      `<b>🗄 D1</b>: 🔴 خطا در شمارش — <code>${escapeHtml(String(e))}</code>\n`,
+      `<b>🗄 D1</b>: 🔴 Count error — <code>${escapeHtml(String(e))}</code>\n`,
     );
   }
 
   // --- KV health cache entries ---
   try {
     const list = await env.AI_ADMIN_KV.list({ prefix: "ai:health:" });
-    out.push("<b>📦 KV — کش سلامت مدل‌ها</b>");
-    out.push(`تعداد کلیدها: <code>${list.keys.length}</code>`);
+    out.push("<b>📦 KV — Model Health Cache</b>");
+    out.push(`Key count: <code>${list.keys.length}</code>`);
     for (const k of list.keys) {
       out.push(`• <code>${escapeHtml(k.name)}</code>`);
     }
     out.push("");
   } catch (e) {
     out.push(
-      `<b>📦 KV</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>\n`,
+      `<b>📦 KV</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>\n`,
     );
   }
 
@@ -947,9 +949,9 @@ export async function handleDiag(
       env.DB,
       "SELECT id, actor_id, action, target, detail, created_at FROM audit_log ORDER BY created_at DESC LIMIT 5",
     );
-    out.push("<b>📜 audit_log — ۵ رویداد اخیر</b>");
+    out.push("<b>📜 audit_log — Last 5 Events</b>");
     if (auditRows.length === 0) {
-      out.push("(خالی)");
+      out.push("(empty)");
     } else {
       for (const r of auditRows) {
         const when = new Date(r.created_at).toISOString();
@@ -964,16 +966,16 @@ export async function handleDiag(
     out.push("");
   } catch (e) {
     out.push(
-      `<b>📜 audit_log</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>\n`,
+      `<b>📜 audit_log</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>\n`,
     );
   }
 
   // --- Recent debug_events ---
   try {
     const events = await listEvents(env, 5);
-    out.push("<b>🐞 debug_events — ۵ رویداد اخیر</b>");
+    out.push("<b>🐞 debug_events — Last 5 Events</b>");
     if (events.length === 0) {
-      out.push("(خالی)");
+      out.push("(empty)");
     } else {
       for (const e of events) {
         const when = new Date(e.created_at).toISOString();
@@ -987,7 +989,7 @@ export async function handleDiag(
     }
   } catch (e) {
     out.push(
-      `<b>🐞 debug_events</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>`,
+      `<b>🐞 debug_events</b>: 🔴 Error — <code>${escapeHtml(String(e))}</code>`,
     );
   }
 
@@ -1014,7 +1016,7 @@ export async function handleTest(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -1022,22 +1024,22 @@ export async function handleTest(
   const summary = runFormatterSelfTests();
 
   const lines: string[] = [];
-  lines.push("🧪 <b>تست‌های قالب‌بندی</b>\n");
-  lines.push(`✅ موفق: <code>${summary.passed}</code>`);
+  lines.push("🧪 <b>Formatter Tests</b>\n");
+  lines.push(`✅ Passed: <code>${summary.passed}</code>`);
   lines.push(`❌ Failed: <code>${summary.failed}</code>`);
 
   if (summary.failures.length > 0) {
-    lines.push("\n<b>جزئیات شکست‌ها:</b>");
+    lines.push("\n<b>Failure details:</b>");
     for (const f of summary.failures) {
       lines.push(
         `• <b>${escapeHtml(f.name)}</b>\n   <code>${escapeHtml(f.reason)}</code>`,
       );
     }
     lines.push(
-      "\n⚠️ لطفاً گزارش شکست را بررسی کنید — ممکن است یک رگرشن در formatter یا cleaner وجود داشته باشد.",
+      "\n⚠️ Please review the failure report — there may be a regression in formatter or cleaner.",
     );
   } else {
-    lines.push("\n🎉 همه تست‌ها موفق بودند.");
+    lines.push("\n🎉 All tests passed.");
   }
 
   const fullText = lines.join("\n");
@@ -1102,7 +1104,7 @@ export async function handleReset(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -1111,11 +1113,11 @@ export async function handleReset(
     await safeSend(
       env,
       message.chat.id,
-      "⚠️ استفاده: <code>/reset &lt;stats|debug|jobs|all&gt;</code>\n\n" +
-        "• <code>stats</code> — صفر کردن شمارنده‌های آماری\n" +
-        "• <code>debug</code> — حذف همه رویدادهای دیباگ\n" +
-        "• <code>jobs</code> — حذف شغل‌های تمام‌شده (pending نگه می‌ماند)\n" +
-        "• <code>all</code> — همه موارد بالا",
+      "⚠️ Usage: <code>/reset &lt;stats|debug|jobs|all&gt;</code>\n\n" +
+        "• <code>stats</code> — Reset statistics counters\n" +
+        "• <code>debug</code> — Delete all debug events\n" +
+        "• <code>jobs</code> — Delete finished jobs (pending ones are kept)\n" +
+        "• <code>all</code> — All of the above",
     );
     return;
   }
@@ -1147,17 +1149,17 @@ export async function handleReset(
     }
 
     const targetLabelFa: Record<ResetTarget, string> = {
-      stats: "آمار (stats)",
-      debug: "رویدادهای دیباگ (debug)",
-      jobs: "شغل‌های تمام‌شده (jobs)",
-      all: "همه (all)",
+      stats: "Stats (stats)",
+      debug: "Debug events",
+      jobs: "Finished jobs",
+      all: "All",
     };
     await safeSend(
       env,
       message.chat.id,
-      `⚠️ <b>این عمل غیرقابل بازگشت است.</b>\n` +
-        `هدف: <b>${escapeHtml(targetLabelFa[raw])}</b>\n` +
-        `برای تأیید، در عرض ۳۰ ثانیه دوباره بفرستید:\n` +
+      `⚠️ <b>This action is irreversible.</b>\n` +
+        `Target: <b>${escapeHtml(targetLabelFa[raw])}</b>\n` +
+        `To confirm, send again within 30 seconds:\n` +
         `<code>/reset ${escapeHtml(raw)}</code>`,
     );
     return;
@@ -1210,15 +1212,15 @@ export async function handleReset(
 
   // --- Reply ---
   const lines: string[] = [];
-  lines.push("🧹 <b>ریست اجرا شد</b>\n");
+  lines.push("🧹 <b>Reset Complete</b>\n");
   for (const r of results) {
     const icon = r.ok ? "✅" : "❌";
     lines.push(
-      `${icon} <b>${escapeHtml(r.target)}</b> — ${r.ok ? "انجام شد" : `<code>${escapeHtml(r.detail)}</code>`}`,
+      `${icon} <b>${escapeHtml(r.target)}</b> — ${r.ok ? "Done" : `<code>${escapeHtml(r.detail)}</code>`}`,
     );
   }
-  lines.push(`\n🎯 هدف: <code>${escapeHtml(raw)}</code>`);
-  lines.push("📜 در audit_log ثبت شد.");
+  lines.push(`\n🎯 Target: <code>${escapeHtml(raw)}</code>`);
+  lines.push("📜 Recorded in audit_log.");
 
   await safeSend(env, message.chat.id, lines.join("\n"));
 }
@@ -1333,7 +1335,7 @@ export async function handleQueue(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -1381,29 +1383,29 @@ export async function handleQueue(
     const approval = byType.get("approval") ?? 0;
 
     const lines: string[] = [];
-    lines.push("📥 <b>صف شغل‌ها</b>\n");
+    lines.push("📥 <b>Job Queue</b>\n");
 
     // --- Summary section ---
-    lines.push("<b>📊 خلاصه</b>");
-    lines.push(`کل: <code>${total}</code>`);
+    lines.push("<b>📊 Summary</b>");
+    lines.push(`Total: <code>${total}</code>`);
     lines.push(
-      `• در انتظار (pending): <code>${pending}</code>` +
-        (dueNow > 0 ? ` — از این تعداد <b>${dueNow}</b> موعد‌رسیده` : ""),
+      `• Pending: <code>${pending}</code>` +
+        (dueNow > 0 ? ` — — <b>${dueNow}</b> due now` : ""),
     );
-    lines.push(`• منتشرشده (published): <code>${published}</code>`);
-    lines.push(`• ردشده (rejected): <code>${rejected}</code>`);
-    lines.push(`• منقضی‌شده (expired): <code>${expired}</code>`);
-    lines.push(`• ناموفق (failed): <code>${failed}</code>`);
+    lines.push(`• Published: <code>${published}</code>`);
+    lines.push(`• Rejected: <code>${rejected}</code>`);
+    lines.push(`• Expired: <code>${expired}</code>`);
+    lines.push(`• Failed: <code>${failed}</code>`);
     lines.push("");
-    lines.push("<b>🔎 بر اساس نوع</b>");
+    lines.push("<b>🔎 By Type</b>");
     lines.push(`• Scheduled: <code>${scheduledPost}</code>`);
-    lines.push(`• تایید (approval): <code>${approval}</code>`);
+    lines.push(`• Approval: <code>${approval}</code>`);
 
     // --- Detail section: recent pending ---
     lines.push("");
-    lines.push("<b>🗂 ۵ شغل در انتظار اخیر</b>");
+    lines.push("<b>🗂 Recent 5 Pending Jobs</b>");
     if (recentPending.length === 0) {
-      lines.push("<i>(هیچ شغل در انتظاری وجود ندارد)</i>");
+      lines.push("<i>(no pending jobs)</i>");
     } else {
       for (const j of recentPending) {
         const sched = j.scheduled_for
@@ -1419,15 +1421,15 @@ export async function handleQueue(
 
     // --- Detail section: oldest failed ---
     lines.push("");
-    lines.push("<b>⚠️ ۳ شغل ناموفق قدیمی</b>");
+    lines.push("<b>⚠️ 3 Oldest Failed Jobs</b>");
     if (oldestFailed.length === 0) {
-      lines.push("<i>(هیچ شغل ناموفقی وجود ندارد)</i>");
+      lines.push("<i>(no failed jobs)</i>");
     } else {
       for (const j of oldestFailed) {
         const created = new Date(j.created_at).toISOString();
         const err = j.error_message
           ? escapeHtml(j.error_message.slice(0, 200))
-          : "<i>(بدون پیام خطا)</i>";
+          : "<i>(no error message)</i>";
         lines.push(
           `• <code>${escapeHtml(j.id)}</code> <i>${escapeHtml(j.type)}</i>\n` +
             `   created: <code>${created}</code>\n` +
@@ -1438,7 +1440,7 @@ export async function handleQueue(
 
     // --- Note ---
     lines.push("");
-    lines.push("ℹ️ Cron هر دقیقه این صف را پردازش می‌کند.");
+    lines.push("ℹ️ Cron processes this queue every 15 minutes.");
 
     const fullText = lines.join("\n");
     const parts = chunkHtml(fullText, 4000, "");
@@ -1471,7 +1473,7 @@ interface AuditRow {
  * /audit [limit] — owner ONLY. Show recent audit log entries.
  *
  * The optional limit arg defaults to 10 and is capped at 30. Entries are
- * formatted with a Persian relative timestamp (e.g. "۵ دقیقه پیش") plus the
+ * formatted with a Persian relative timestamp (e.g. "۵ min ago") plus the
  * actor_id, action, target, and detail. The whole entry is wrapped in a
  * <blockquote> for visual separation.
  */
@@ -1490,7 +1492,7 @@ export async function handleAudit(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -1503,7 +1505,7 @@ export async function handleAudit(
       await safeSend(
         env,
         message.chat.id,
-        "⚠️ استفاده: <code>/audit [n]</code>\nمثال: <code>/audit 20</code> — n عدد صحیح مثبت (حداکثر ۳۰)",
+        "⚠️ Usage: <code>/audit [n]</code>\nExample: <code>/audit 20</code> — n = positive integer (max 30)",
       );
       return;
     }
@@ -1528,12 +1530,12 @@ export async function handleAudit(
   }
 
   if (rows.length === 0) {
-    await safeSend(env, message.chat.id, "📜 هیچ رویداد حساسی ثبت نشده است.");
+    await safeSend(env, message.chat.id, "📜 No audit events recorded.");
     return;
   }
 
   const lines: string[] = [];
-  lines.push(`📜 <b>آخرین رویدادهای حساس</b> (${rows.length} مورد)\n`);
+  lines.push(`📜 <b>Recent Audit Events</b> (${rows.length} items)\n`);
   for (const r of rows) {
     const when = relativeTime(r.created_at);
     const actor = `<code>${r.actor_id}</code>`;
@@ -1556,10 +1558,10 @@ export async function handleAudit(
  * Format an epoch-ms timestamp as a short Persian relative-time string.
  *
  * Returns:
- *   • "همین الان"           for < 1 minute
- *   • "N دقیقه پیش"          for 1..59 minutes (N in Persian digits)
- *   • "N ساعت پیش"           for 1..23 hours
- *   • "N روز پیش"            for 1..29 days
+ *   • "just now"           for < 1 minute
+ *   • "N min ago"          for 1..59 minutes (N in Persian digits)
+ *   • "N hr ago"           for 1..23 hours
+ *   • "N day ago"            for 1..29 days
  *   • ISO date (yyyy-mm-dd)  for 30+ days
  */
 function relativeTime(ms: number): string {
@@ -1573,10 +1575,10 @@ function relativeTime(ms: number): string {
   const fa = (n: number): string =>
     n.toLocaleString("fa-IR", { useGrouping: false });
 
-  if (sec < 60) return "همین الان";
-  if (min < 60) return `${fa(min)} دقیقه پیش`;
-  if (hr < 24) return `${fa(hr)} ساعت پیش`;
-  if (day < 30) return `${fa(day)} روز پیش`;
+  if (sec < 60) return "just now";
+  if (min < 60) return `${fa(min)} min ago`;
+  if (hr < 24) return `${fa(hr)} hr ago`;
+  if (day < 30) return `${fa(day)} day ago`;
   return new Date(ms).toISOString().slice(0, 10);
 }
 
@@ -1622,7 +1624,7 @@ export async function handleWebhook(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -1650,12 +1652,12 @@ export async function handleWebhook(
       await safeSend(
         env,
         message.chat.id,
-        "⚠️ استفاده نادرست.\n\n" +
-          "<b>زیردستورها:</b>\n" +
-          "<code>/webhook</code> یا <code>/webhook info</code> — وضعیت وب‌هوک\n" +
-          "<code>/webhook set &lt;https-url&gt;</code> — تنظیم وب‌هوک\n" +
-          "<code>/webhook delete</code> — حذف وب‌هوک\n" +
-          "<code>/webhook test</code> — تست تحویل وب‌هوک",
+        "⚠️ Incorrect usage.\n\n" +
+          "<b>Subcommands:</b>\n" +
+          "<code>/webhook</code> or <code>/webhook info</code> — Webhook status\n" +
+          "<code>/webhook set &lt;https-url&gt;</code> — Set webhook\n" +
+          "<code>/webhook delete</code> — Delete webhook\n" +
+          "<code>/webhook test</code> — Test webhook delivery",
       );
   }
 }
@@ -1684,10 +1686,10 @@ async function handleWebhookInfo(
 
   const hasError = !!hook.last_error_message;
   const healthIcon = hasError ? "🔴" : "🟢";
-  const healthLabel = hasError ? "ناسالم" : "سالم";
+  const healthLabel = hasError ? "Unhealthy" : "Healthy";
 
   const lines: string[] = [];
-  lines.push(`${healthIcon} <b>وضعیت وب‌هوک: ${healthLabel}</b>\n`);
+  lines.push(`${healthIcon} <b>Webhook status: ${healthLabel}</b>\n`);
   lines.push(`URL: <code>${escapeHtml(hook.url || "(none)")}</code>`);
   lines.push(`pending updates: <code>${hook.pending_update_count ?? 0}</code>`);
   lines.push(`max connections: <code>${hook.max_connections ?? "?"}</code>`);
@@ -1704,14 +1706,14 @@ async function handleWebhookInfo(
       `⚠️ Last error: <code>${escapeHtml(hook.last_error_message)}</code> @ ${when}`,
     );
   } else {
-    lines.push("✅ خطایی ثبت نشده است.");
+    lines.push("✅ No errors recorded.");
   }
 
   if (hook.ip_address) {
     lines.push(`IP: <code>${escapeHtml(hook.ip_address)}</code>`);
   }
   if (hook.has_custom_certificate) {
-    lines.push("🔐 گواهی سفارشی: بله");
+    lines.push("🔐 Custom certificate: yes");
   }
 
   await safeSend(env, message.chat.id, lines.join("\n"));
@@ -1728,8 +1730,8 @@ async function handleWebhookSet(
     await safeSend(
       env,
       message.chat.id,
-      "⚠️ استفاده: <code>/webhook set &lt;https-url&gt;</code>\n" +
-        "مثال: <code>/webhook set https://example.com/webhook</code>",
+      "⚠️ Usage: <code>/webhook set &lt;https-url&gt;</code>\n" +
+        "Example: <code>/webhook set https://example.com/webhook</code>",
     );
     return;
   }
@@ -1737,8 +1739,8 @@ async function handleWebhookSet(
     await safeSend(
       env,
       message.chat.id,
-      "⛔ URL باید با <code>https://</code> شروع شود.\n" +
-        "برای جلوگیری از نشت ترافیک، http:// مجاز نیست.",
+      "⛔ URL must start with <code>https://</code>.\n" +
+        "http:// is not allowed to prevent traffic leakage.",
     );
     return;
   }
@@ -1756,7 +1758,7 @@ async function handleWebhookSet(
     await safeSend(
       env,
       message.chat.id,
-      "❌ تنظیم وب‌هوک ناموفق بود.\n<code>" +
+      "❌ Set webhook failed.\n<code>" +
         escapeHtml(String(e)) +
         "</code>",
     );
@@ -1773,10 +1775,10 @@ async function handleWebhookSet(
   await safeSend(
     env,
     message.chat.id,
-    "✅ وب‌هوک تنظیم شد.\n" +
+    "✅ Webhook set.\n" +
       `URL: <code>${escapeHtml(url)}</code>\n` +
       `allowed_updates: <code>${escapeHtml(WEBHOOK_ALLOWED_UPDATES.join(", "))}</code>\n` +
-      "📜 در audit_log ثبت شد.",
+      "📜 Recorded in audit_log.",
   );
 }
 
@@ -1795,7 +1797,7 @@ async function handleWebhookDelete(
     await safeSend(
       env,
       message.chat.id,
-      "❌ حذف وب‌هوک ناموفق بود.\n<code>" +
+      "❌ Delete webhook failed.\n<code>" +
         escapeHtml(String(e)) +
         "</code>",
     );
@@ -1812,9 +1814,9 @@ async function handleWebhookDelete(
   await safeSend(
     env,
     message.chat.id,
-    "🗑 وب‌هوک حذف شد.\n" +
-      "نکته: ربات اکنون به long-polling (getUpdates) برمی‌گردد که در V2 استفاده نمی‌شود.\n" +
-      "📜 در audit_log ثبت شد.",
+    "🗑 Webhook deleted.\n" +
+      "Note: Bot now falls back to long-polling (getUpdates) which is not used in V2.\n" +
+      "📜 Recorded in audit_log.",
   );
 }
 
@@ -1827,12 +1829,12 @@ async function handleWebhookTest(
   await safeSend(
     env,
     message.chat.id,
-    "✅ تست وب‌هوک موفق بود.\n\n" +
-      "اگر این پیام را می‌بینید، یعنی:\n" +
-      "• Telegram آپدیت را به URL وب‌هوک ارسال کرده\n" +
-      "• Worker آپدیت را دریافت و در صف گذاشته\n" +
-      "• مصرف‌کننده صف این دستور را پردازش کرده\n\n" +
-      `⏱ زمان سرور: <code>${now}</code>\n` +
+    "✅ Webhook test successful.\n\n" +
+      "If you see this message, it means:\n" +
+      "• Telegram sent the update to the webhook URL\n" +
+      "• Worker received the update and enqueued it\n" +
+      "• Queue consumer processed this command\n\n" +
+      `⏱ Server time: <code>${now}</code>\n` +
       `💬 chat_id: <code>${message.chat.id}</code>\n` +
       `👤 from_id: <code>${message.from?.id ?? "?"}</code>`,
   );
@@ -1865,7 +1867,7 @@ export async function handleBroadcast(
     return;
   }
   if (!ownerOk) {
-    await safeSend(env, message.chat.id, "⛔ این دستور فقط برای مالک قابل استفاده است.");
+    await safeSend(env, message.chat.id, "⛔ Owner only.");
     return;
   }
 
@@ -1874,8 +1876,8 @@ export async function handleBroadcast(
     await safeSend(
       env,
       message.chat.id,
-      "⚠️ متن پیام را بعد از /broadcast بنویسید.\n" +
-        "مثال: <code>/broadcast سلام به همه</code>",
+      "⚠️ Write the message text after /broadcast.\n" +
+        "Example: <code>/broadcast hello everyone</code>",
     );
     return;
   }
@@ -1901,14 +1903,14 @@ export async function handleBroadcast(
   }
 
   if (adminIds.length === 0) {
-    await safeSend(env, message.chat.id, "⚠️ هیچ ادمینی ثبت نشده است.");
+    await safeSend(env, message.chat.id, "⚠️ No admins registered.");
     return;
   }
 
   // HTML-escape the message text (sendMessage defaults to parse_mode=HTML).
   const safeText = escapeHtml(text);
   const header =
-    "📣 <b>پیام از مالک</b>\n\n";
+    "📣 <b>Broadcast from Owner</b>\n\n";
   const body = header + safeText;
 
   // Fan-out: Promise.allSettled so one failure doesn't abort the rest.
@@ -1947,18 +1949,18 @@ export async function handleBroadcast(
 
   // Report back to the sender.
   const lines: string[] = [];
-  lines.push("📣 <b>گزارش ارسال پیام</b>\n");
-  lines.push(`پیام به <b>${okCount}</b> از <b>${adminIds.length}</b> ادمین ارسال شد.`);
+  lines.push("📣 <b>Report Send Message</b>\n");
+  lines.push(`Sent to <b>${okCount}</b> of <b>${adminIds.length}</b> admins.`);
   if (failed.length > 0) {
-    lines.push("\n⚠️ <b>ارسال ناموفق به:</b>");
+    lines.push("\n⚠️ <b>Send failed to:</b>");
     for (const uid of failed) {
       lines.push(`• <code>${uid}</code>`);
     }
     lines.push(
-      "\nنکته: معمولاً به این دلیل است که کاربر ربات را <b>block</b> کرده یا هنوز <code>/start</code> نفرستاده است.",
+      "\nNote: Usually because the user has <b>blocked</b> the bot or has not sent <code>/start</code> yet.",
     );
   }
-  lines.push("\n📜 در audit_log ثبت شد.");
+  lines.push("\n📜 Recorded in audit_log.");
 
   await safeSend(env, message.chat.id, lines.join("\n"));
 }
@@ -1998,7 +2000,7 @@ export async function dispatchCommand(
     } catch (e) {
       log("warn", SCOPE, "schedule cancel: KV delete failed", { error: String(e) });
     }
-    await safeSend(env, message.chat.id, "✅ زمان‌بندی لغو شد.");
+    await safeSend(env, message.chat.id, "✅ Schedule cancelled.");
     return true;
   }
 
@@ -2061,7 +2063,7 @@ export async function dispatchCommand(
       await handleBroadcast(env, message, args);
       return true;
     default:
-      await safeSend(env, message.chat.id, "⚠️ دستور ناشناخته. /help را ببینید.");
+      await safeSend(env, message.chat.id, "⚠️ Unknown command. See /help.");
       return true;
   }
 }
@@ -2241,7 +2243,7 @@ async function readHealthFor(
  *
  * Format:
  *   ✅ <b>Gemini 2.5 Flash</b> (Stable default)
- *      <code>gemini-2.5-flash</code> — شکست‌ها: 0 🟢 فعال
+ *      <code>gemini-2.5-flash</code> — Failures: 0 🟢 Active
  */
 function formatModelLine(
   m: ModelEntry,
@@ -2252,8 +2254,8 @@ function formatModelLine(
   const notes = m.notes ? ` <i>(${escapeHtml(m.notes)})</i>` : "";
   const label = escapeHtml(m.label);
   const id = escapeHtml(m.id);
-  const fails = h ? ` — شکست‌ها: ${h.consecutiveFailures}` : " — بدون داده";
-  const activeBadge = isActive ? " 🟢 <b>فعال</b>" : "";
+  const fails = h ? ` — Failures: ${h.consecutiveFailures}` : " — no data";
+  const activeBadge = isActive ? " 🟢 <b>Active</b>" : "";
   return `${icon} <b>${label}</b>${notes}\n   <code>${id}</code>${fails}${activeBadge}`;
 }
 
