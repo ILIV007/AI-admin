@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   geminiModel: "gemini-2.5-flash",
   openrouterModel: "meta-llama/llama-3.3-70b-instruct:free",
   profile: "ilivir3",
+  uiLanguage: "en",
 };
 
 // ============================================================

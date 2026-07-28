@@ -157,6 +157,13 @@ export interface Settings {
   geminiModel: string;
   openrouterModel: string;
   profile: string; // channel profile key
+  /**
+   * UI language — controls bot-facing messages (command responses, menus,
+   * errors, etc.). SEPARATE from `languageMode` which controls AI output
+   * language. Optional so older stored settings rows still parse; the
+   * settings repo merges `DEFAULT_SETTINGS.uiLanguage` ("en") when missing.
+   */
+  uiLanguage?: "en" | "fa";
 }
 
 // ============================================================

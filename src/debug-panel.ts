@@ -15,7 +15,7 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.0.7";
+const VERSION = "2.0.8";
 
 // ============================================================
 // AUTH
@@ -1023,21 +1023,18 @@ async function loadHistory() {
   }
 }
 
-// Load AI models with health
+// Load AI models (no live health — just Test button per model)
 async function loadModels() {
   const data = await api('/Admi-bug/api/models');
   const c = document.getElementById('models-content');
   if (data.ok && data.models && data.models.length > 0) {
-    c.innerHTML = '<table><tr><th>Model</th><th>Provider</th><th>Health</th><th>Failures</th><th>Test</th></tr>' +
+    c.innerHTML = '<table><tr><th>Model</th><th>Provider</th><th>Max Tokens</th><th>Test</th></tr>' +
       data.models.map((m, i) => {
-        const healthPill = m.healthy === true ? 'pill-ok' : (m.healthy === false ? 'pill-err' : 'pill-warn');
-        const healthText = m.healthy === true ? '✓ Healthy' : (m.healthy === false ? '✗ Unhealthy' : '? Unknown');
         const providerColor = m.provider === 'gemini' ? 'var(--emerald)' : 'var(--sky)';
         return '<tr>' +
           '<td><code style="font-size:0.7rem">' + m.id + '</code><br><span style="font-size:0.75rem;color:var(--text-muted)">' + m.label + (m.notes ? ' (' + m.notes + ')' : '') + '</span></td>' +
           '<td><span style="color:' + providerColor + ';font-weight:600">' + m.provider + '</span></td>' +
-          '<td><span class="pill ' + healthPill + '">' + healthText + '</span></td>' +
-          '<td>' + (m.consecutiveFailures || 0) + '</td>' +
+          '<td>' + (m.maxTokens || '-') + '</td>' +
           '<td><button onclick="testModel(' + i + ')" class="secondary" style="padding:0.25rem 0.5rem;font-size:0.7rem" data-provider="' + m.provider + '" data-model="' + m.id + '">Test</button></td>' +
           '</tr>';
       }).join('') +

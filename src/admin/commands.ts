@@ -56,10 +56,11 @@ import {
   setWebhook,
   deleteWebhook,
 } from "../telegram/client";
-import { escapeHtml } from "../telegram/entities";
+import { escapeHtml, buildInlineKeyboard } from "../telegram/entities";
 import { can, roleLabel } from "../domain/roles";
 import { mainMenuKeyboard, adminListKeyboard } from "./keyboards";
 import { log } from "../observability/logger";
+import { t, getUiLanguage, SUPPORTED_LANGUAGES } from "../i18n";
 import { getRole, isAuthorized, isOwner, audit } from "../storage/repositories/admins";
 import {
   getSettings,
@@ -86,17 +87,41 @@ const BUILD_DATE = "2025-01-15";
 
 /** /start — welcome + bot intro. Anyone. */
 export async function handleStart(env: Env, message: TelegramMessage): Promise<void> {
+  const fromId = message.from?.id ?? 0;
+  // Get user settings to read UI language (default English)
+  let lang = getUiLanguage();
+  try {
+    if (fromId) {
+      const settings = await getSettings(env, fromId);
+      lang = getUiLanguage(settings);
+    }
+  } catch { /* use default */ }
+
   const name = message.from?.first_name ? ` ${escapeHtml(message.from.first_name)}` : "";
+  const welcome = t(lang, "start.welcome");
+  const desc = t(lang, "start.description");
+  const chooseLang = t(lang, "start.choose_language");
+
   const text =
-    `سلام${name}! 👋\n\n` +
-    `من <b>AI Admin</b> هستم — ربات مدیریت هوشمند کانال.\n` +
-    `📝 بازنویسی و قالب‌بندی خودکار مطالب با هوش مصنوعی\n` +
-    `✅ سیستم تایید پیش از انتشار\n` +
-    `📅 زمان‌بندی پست‌ها\n` +
-    `👥 مدیریت ادمین‌ها بر اساس نقش\n\n` +
-    `برای دیدن دستورات: /help\n` +
-    `برای باز کردن منو: /menu`;
-  await safeSend(env, message.chat.id, text);
+    `${welcome}${name}! 👋\n\n` +
+    `<b>AI Admin</b>\n` +
+    `${desc}\n\n` +
+    `📝 AI Rewrite & Formatting\n` +
+    `✅ Approval System\n` +
+    `📅 Post Scheduling\n` +
+    `👥 Role-based Admin Management\n\n` +
+    `/help — ${t(lang, "help.title")}\n` +
+    `/menu — ${t(lang, "menu.title")}\n\n` +
+    `${chooseLang}`;
+
+  // Build language selector keyboard
+  const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
+    text: `${l.flag} ${l.label}${l.code === lang ? " ✅" : ""}`,
+    callback_data: `set:uilang:${l.code}`,
+  }));
+  const keyboard = buildInlineKeyboard([langButtons]);
+
+  await safeSend(env, message.chat.id, text, keyboard);
 }
 
 /** /help — list commands + role permissions. Anyone. */

@@ -113,6 +113,34 @@ export async function handleCallbackQuery(
   }
 
   try {
+    // Language selector — anyone can change their own UI language
+    if (data.startsWith("set:uilang:")) {
+      const langCode = data.slice("set:uilang:".length) as "en" | "fa";
+      if (langCode !== "en" && langCode !== "fa") {
+        await safeAnswer(env, cq.id, "⚠️ Invalid language", true);
+        return;
+      }
+      const settings = await getSettingsFor(env, fromId);
+      settings.uiLanguage = langCode;
+      await saveSettings(env, fromId, settings);
+      const { t } = await import("../i18n");
+      const msg = t(langCode, "start.language_set");
+      await safeAnswer(env, cq.id, msg);
+      // Edit the message to show confirmation
+      try {
+        const { editMessageText } = await import("../telegram/client");
+        if (cq.message) {
+          await editMessageText(env.BOT_TOKEN, {
+            chat_id: cq.message.chat.id,
+            message_id: cq.message.message_id,
+            text: msg + "\n\n" + t(langCode, "start.welcome"),
+            parse_mode: "HTML",
+            reply_markup: undefined,
+          });
+        }
+      } catch { /* ignore */ }
+      return;
+    }
     if (data.startsWith("set:")) {
       await handleSet(env, cq, data, role);
     } else if (data.startsWith("pick:")) {

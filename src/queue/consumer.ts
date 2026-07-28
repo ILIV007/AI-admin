@@ -52,7 +52,8 @@ import {
   updateJobStatus,
 } from "../storage/repositories/jobs";
 import { recordScheduled } from "../storage/repositories/stats";
-import { sendMessage } from "../telegram/client";
+import { sendMessage, sendChatAction, editMessageText, sendPhoto, sendVideo, sendDocument, sendAnimation } from "../telegram/client";
+import { isAuthorized } from "../storage/repositories/admins";
 import { enqueueMediaGroupFinalize } from "./producer";
 import { MEDIA_GROUP_WINDOW_MS } from "../config/defaults";
 
@@ -216,6 +217,9 @@ async function handleProcessUpdate(
   // Stats: record received (fire-and-forget).
   ctx.waitUntil(safe(recordReceived(env, userId)));
 
+  // Check if user is admin (for admin-only features: typing, loading, report, copy)
+  const isAdmin = await isAuthorized(env, userId).catch(() => false);
+
   // ── Media group: aggregate, don't process yet ───────────────────
   if (content.mediaGroupId) {
     const item: MediaGroupItem = {
@@ -312,21 +316,43 @@ async function handleProcessUpdate(
   // ── Normal single message: pipeline ─────────────────────────────
   const settings = await getSettings(env, userId);
 
-  // Dynamic import per spec — pipeline module is owned by another agent.
+  // Send "typing" indicator to admin's private chat (shows bot is working)
+  if (isAdmin && content.chatType === "private") {
+    await sendChatAction(env.BOT_TOKEN, {
+      chat_id: userId,
+      action: "typing",
+    }).catch(() => undefined);
+  }
+
+  // Send a loading message to admin that will be edited to a report later
+  let loadingMsgId: number | undefined;
+  if (isAdmin && content.chatType === "private") {
+    try {
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      const loadingText = `<b>${t(lang, "processing")}</b>\n\n${t(lang, "processing.steps")}`;
+      const loadingResp = await sendMessage(env.BOT_TOKEN, {
+        chat_id: userId,
+        text: loadingText,
+        parse_mode: "HTML",
+      }).catch(() => undefined);
+      if (loadingResp && typeof loadingResp === "object" && "message_id" in loadingResp) {
+        loadingMsgId = (loadingResp as { message_id: number }).message_id;
+      }
+    } catch { /* ignore */ }
+  }
+
+  const t0 = Date.now();
   const pipelineMod: {
     runPipeline: (
       env: Env,
       content: ExtractedContent,
       settings: Settings,
-    ) => Promise<{
-      ok: boolean;
-      action: "published" | "preview" | "format_only" | "skipped" | "failed";
-      aiUsed: boolean;
-      errorMessage?: string;
-    }>;
+    ) => Promise<import("../types").PipelineResult>;
   } = await import("../processing/pipeline");
 
   const result = await pipelineMod.runPipeline(env, content, settings);
+  const elapsedMs = Date.now() - t0;
 
   // Record stats based on outcome. Fire-and-forget via ctx.waitUntil.
   if (result.aiUsed) {
@@ -334,10 +360,167 @@ async function handleProcessUpdate(
   }
   if (result.action === "published") {
     ctx.waitUntil(safe(recordPublished(env, userId)));
+    // Create a history record so /Admi-bug history tab can show it
+    ctx.waitUntil(safe(createHistoryRecord(env, userId, content, result, elapsedMs)));
   } else if (result.action === "preview") {
     ctx.waitUntil(safe(recordApproval(env, userId)));
   } else if (result.action === "failed") {
     ctx.waitUntil(safe(recordFailed(env, userId)));
+  }
+
+  // ── Send post copy to admin + edit loading → report ─────────────
+  if (isAdmin && content.chatType === "private") {
+    await sendAdminReport(env, userId, content, result, elapsedMs, loadingMsgId);
+  }
+}
+
+// ============================================================
+// createHistoryRecord — store every published post in jobs table for /Admi-bug history
+// ============================================================
+
+async function createHistoryRecord(
+  env: Env,
+  userId: number,
+  content: ExtractedContent,
+  result: import("../types").PipelineResult,
+  elapsedMs: number,
+): Promise<void> {
+  try {
+    const payload = JSON.stringify({
+      html: result.html.slice(0, 500), // truncate for storage
+      parts: result.parts.length,
+      media: content.media?.type || null,
+      category: result.classification.category,
+      language: result.classification.language,
+      aiUsed: result.aiUsed,
+      aiProvider: result.aiProvider || null,
+      aiModel: result.aiModel || null,
+      elapsedMs,
+      originalTextPreview: content.text.slice(0, 200),
+    });
+    await createJob(env, {
+      type: "approval", // reuse existing type (CHECK constraint allows this)
+      status: "published",
+      userId,
+      chatId: content.chatId,
+      messageId: content.messageId,
+      payload,
+      scheduledFor: null,
+    });
+  } catch (e) {
+    log("warn", "queue.consumer", "history record creation failed", { error: String(e) });
+  }
+}
+
+// ============================================================
+// sendAdminReport — send published post copy to admin + edit loading → report
+// ============================================================
+
+async function sendAdminReport(
+  env: Env,
+  userId: number,
+  content: ExtractedContent,
+  result: import("../types").PipelineResult,
+  elapsedMs: number,
+  loadingMsgId?: number,
+): Promise<void> {
+  try {
+    // Get UI language for report
+    const { t, getUiLanguage } = await import("../i18n");
+    let lang = getUiLanguage();
+    try {
+      const { getSettings } = await import("../storage/repositories/settings");
+      const settings = await getSettings(env, userId);
+      lang = getUiLanguage(settings);
+    } catch { /* use default */ }
+
+    // 1. Send the published post copy to admin (same content as channel)
+    if (result.parts.length > 0 && result.action === "published") {
+      try {
+        if (content.media) {
+          const mediaParams: Record<string, unknown> = {
+            chat_id: userId,
+            caption: result.parts[0],
+            parse_mode: "HTML",
+          };
+          if (content.media.type === "photo") {
+            mediaParams.photo = content.media.fileId;
+            await sendPhoto(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (content.media.type === "video") {
+            mediaParams.video = content.media.fileId;
+            await sendVideo(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (content.media.type === "document") {
+            mediaParams.document = content.media.fileId;
+            await sendDocument(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (content.media.type === "animation") {
+            mediaParams.animation = content.media.fileId;
+            await sendAnimation(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          }
+        } else {
+          for (const part of result.parts) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: userId,
+              text: part,
+              parse_mode: "HTML",
+            }).catch(() => undefined);
+          }
+        }
+        if (content.media && result.parts.length > 1) {
+          for (let i = 1; i < result.parts.length; i++) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: userId,
+              text: result.parts[i],
+              parse_mode: "HTML",
+            }).catch(() => undefined);
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // 2. Edit loading message → report
+    if (loadingMsgId) {
+      const statusKey = `report.${result.action}`;
+      const status = t(lang, statusKey);
+
+      const reportLines: string[] = [
+        `<b>${status}</b>`,
+        ``,
+        `<b>${t(lang, "report.title")}</b>`,
+        `• ${t(lang, "report.category")}: <code>${result.classification.category}</code>`,
+        `• ${t(lang, "report.language")}: <code>${result.classification.language}</code>`,
+        `• ${t(lang, "report.words")}: <code>${result.classification.wordCount}</code>`,
+        `• ${t(lang, "report.ai_used")}: <code>${result.aiUsed ? t(lang, "common.yes") : t(lang, "common.no")}</code>`,
+      ];
+
+      if (result.aiUsed && result.aiProvider && result.aiModel) {
+        reportLines.push(`• ${t(lang, "report.ai_provider")}: <code>${result.aiProvider}</code>`);
+        reportLines.push(`• ${t(lang, "report.ai_model")}: <code>${result.aiModel}</code>`);
+      }
+
+      reportLines.push(`• ${t(lang, "report.parts")}: <code>${result.parts.length}</code>`);
+      reportLines.push(`• ${t(lang, "report.has_media")}: <code>${content.media ? content.media.type : t(lang, "common.no")}</code>`);
+      reportLines.push(`• ${t(lang, "report.time")}: <code>${elapsedMs}ms</code>`);
+
+      if (result.errorMessage) {
+        reportLines.push(`• ${t(lang, "report.error")}: <code>${result.errorMessage.slice(0, 100)}</code>`);
+      }
+
+      if (content.text) {
+        const preview = content.text.slice(0, 100).replace(/<[^>]+>/g, "");
+        reportLines.push(``);
+        reportLines.push(`<b>${t(lang, "report.original_preview")}:</b>`);
+        reportLines.push(`<blockquote>${preview}</blockquote>`);
+      }
+
+      await editMessageText(env.BOT_TOKEN, {
+        chat_id: userId,
+        message_id: loadingMsgId,
+        text: reportLines.join("\n"),
+        parse_mode: "HTML",
+      }).catch(() => undefined);
+    }
+  } catch (e) {
+    log("warn", "queue.consumer", "admin report failed", { error: String(e) });
   }
 }
 
