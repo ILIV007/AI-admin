@@ -38,7 +38,7 @@ import type {
 import { ownerUserId } from "../config/env";
 import { answerCallbackQuery, editMessageText } from "../telegram/client";
 import { escapeHtml, buildInlineKeyboard } from "../telegram/entities";
-import { can, roleLabel } from "../domain/roles";
+import { can } from "../domain/roles";
 import { log } from "../observability/logger";
 import { handleApprovalCallback } from "./approval";
 import { setAddAdminFlag } from "./addadmin";
@@ -353,7 +353,7 @@ Channel: <code>${escapeHtml(
   }
 
   if (!mutated) {
-    await safeAnswer(env, cq.id, "⚠️ مقدار نامعتبر", true);
+    await safeAnswer(env, cq.id, "⚠️ Invalid value", true);
     return;
   }
 
@@ -362,7 +362,7 @@ Channel: <code>${escapeHtml(
     await saveSettings(env, fromId, settings);
   } catch (e) {
     log("error", SCOPE, "saveSettings failed", { error: String(e) });
-    await safeAnswer(env, cq.id, "❌ خطا در ذخیره", true);
+    await safeAnswer(env, cq.id, "❌ Failed to save", true);
     return;
   }
 
@@ -370,14 +370,28 @@ Channel: <code>${escapeHtml(
     void auditLog(env, fromId, auditAction, `u:${fromId}`, auditDetail);
   }
 
-  // Re-render the settings keyboard so the user sees the new value.
-  await safeAnswer(env, cq.id, "✅ ذخیره شد");
-  await editText(
-    env,
-    cq,
-    "⚙️ <b>Settings</b>\nSelect an option to change:",
-    settingsKeyboard(settings),
-  );
+  await safeAnswer(env, cq.id, "✅ Saved");
+
+  // If approval or channelEdit changed, return to main menu (so emoji updates)
+  if (parts[1] === "approval" || parts[1] === "channeledit") {
+    const { mainMenuKeyboard } = await import("./keyboards");
+    const { getRole } = await import("../storage/repositories/admins");
+    const role2 = await getRole(env, fromId).catch(() => null);
+    await editText(
+      env,
+      cq,
+      `<blockquote><b>🎛 Control Panel</b></blockquote>\n\n<b>Updated!</b>\nRole: <b>${role2 || "?"}</b>`,
+      mainMenuKeyboard(role2, settings),
+    );
+  } else {
+    // Re-render the settings keyboard so the user sees the new value.
+    await editText(
+      env,
+      cq,
+      "⚙️ <b>Settings</b>\nSelect an option to change:",
+      settingsKeyboard(settings),
+    );
+  }
 }
 
 // ============================================================
@@ -453,7 +467,7 @@ async function handleRmAdmin(
 ): Promise<void> {
   const fromId = cq.from.id;
   if (!(await isOwnerCheck(env, fromId))) {
-    await safeAnswer(env, cq.id, "⛔ فقط مالک می‌تواند ادمین حذف کند", true);
+    await safeAnswer(env, cq.id, "⛔ Owner only می‌تواند ادمین حذف کند", true);
     return;
   }
 
@@ -493,7 +507,7 @@ async function handleAddAdmin(
 ): Promise<void> {
   const fromId = cq.from.id;
   if (!(await isOwnerCheck(env, fromId))) {
-    await safeAnswer(env, cq.id, "⛔ فقط مالک می‌تواند ادمین اضافه کند", true);
+    await safeAnswer(env, cq.id, "⛔ Owner only می‌تواند ادمین اضافه کند", true);
     return;
   }
 
@@ -557,11 +571,22 @@ async function editToMainMenu(
   cq: TelegramCallbackQuery,
   role: Role,
 ): Promise<void> {
+  const fromId = cq.from.id;
+  let settings: import("../types").Settings | null = null;
+  let lang: import("../i18n").UiLanguage = "en";
+  try {
+    settings = await getSettingsFor(env, fromId);
+    const { getUiLanguage } = await import("../i18n");
+    lang = getUiLanguage(settings);
+  } catch { /* use defaults */ }
+  const { roleLabel: roleLabelFn } = await import("../domain/roles");
   const text =
-    `🎛 <b>Menuی مدیریت</b>\n\n` +
-    `نقش: <b>${escapeHtml(roleLabel(role))}</b>\n` +
-    `یک گزینه را انتخاب کنید:`;
-  await editText(env, cq, text, mainMenuKeyboard(role));
+    `<blockquote><b>🎛 Control Panel</b></blockquote>\n\n` +
+    `<b>Welcome back!</b>\n` +
+    `Role: <b>${escapeHtml(roleLabelFn(role, lang))}</b>\n\n` +
+    `Toggle <b>Approval</b> to require publish confirmation.\n` +
+    `Toggle <b>Channel Edit</b> to edit channel posts in place.`;
+  await editText(env, cq, text, mainMenuKeyboard(role, settings || undefined));
 }
 
 async function showAdminList(
@@ -570,7 +595,7 @@ async function showAdminList(
   _role: Role,
 ): Promise<void> {
   if (!(await isOwnerCheck(env, cq.from.id))) {
-    await safeAnswer(env, cq.id, "⛔ فقط مالک", true);
+    await safeAnswer(env, cq.id, "⛔ Owner only", true);
     return;
   }
 

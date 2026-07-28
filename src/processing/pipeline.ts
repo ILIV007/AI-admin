@@ -66,20 +66,29 @@ export async function runPipeline(
   const isAdmin = content.fromId != null && content.fromId === ownerUserId(env);
 
   // ── 1. Clean content + protect prompts ──────────────────────────
-  // First, strip any existing footer from the input text (prevents duplicate footer)
+  // First, strip ANY occurrence of the footer channel from the input text
+  // (prevents duplicate @channel appearing before the footer).
+  // This handles: footer at end, @channel in middle, @channel with emoji, etc.
   let inputText = content.text;
   if (settings.footerText) {
-    // Remove footer if it appears at the end of the text (with optional whitespace/newlines)
-    const footerEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const footerRegex = new RegExp(`\\s*${footerEscaped}\\s*$`, "i");
-    inputText = inputText.replace(footerRegex, "").trim();
-    // Also remove standalone @channel lines that match the footer's channel
-    const channelMatch = settings.footerText.match(/@(\w+)/);
+    // Extract channel name from footer (e.g. "🌀 @ILIVIR3" → "ILIVIR3")
+    const channelMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
     if (channelMatch) {
       const channelName = channelMatch[1];
-      const channelRegex = new RegExp(`\\s*@${channelName}\\s*$`, "i");
+      // Remove ALL occurrences of @channelName (with optional emoji prefix)
+      // Pattern: optional emoji/space + @channelName + word boundary
+      const channelRegex = new RegExp(
+        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${channelName}\\b[^\\n]*`,
+        "gu",
+      );
       inputText = inputText.replace(channelRegex, "").trim();
     }
+    // Also remove the full footer text if it appears anywhere
+    const footerEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const footerRegex = new RegExp(footerEscaped, "gi");
+    inputText = inputText.replace(footerRegex, "").trim();
+    // Clean up multiple blank lines
+    inputText = inputText.replace(/\n{3,}/g, "\n\n").trim();
   }
   const cleaned = cleanContent(inputText);
   const { text: protectedText, prompts } = protectPrompts(cleaned);

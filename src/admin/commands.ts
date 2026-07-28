@@ -89,10 +89,12 @@ const BUILD_DATE = "2025-01-15";
 export async function handleStart(env: Env, message: TelegramMessage): Promise<void> {
   const fromId = message.from?.id ?? 0;
   let lang = getUiLanguage();
+  let isAdmin = false;
   try {
     if (fromId) {
       const settings = await getSettings(env, fromId);
       lang = getUiLanguage(settings);
+      isAdmin = await isAuthorized(env, fromId).catch(() => false);
     }
   } catch { /* use default */ }
 
@@ -101,15 +103,20 @@ export async function handleStart(env: Env, message: TelegramMessage): Promise<v
   const desc = t(lang, "start.description");
 
   const text =
+    `<blockquote><b>🤖 AI Admin</b></blockquote>\n\n` +
     `${welcome}${name}! 👋\n\n` +
-    `<b>AI Admin</b>\n` +
     `${desc}\n\n` +
-    `📝 AI Rewrite & Formatting\n` +
-    `✅ Approval System\n` +
-    `📅 Post Scheduling\n` +
-    `👥 Role-based Admin Management\n\n` +
-    `/help — ${t(lang, "help.title")}\n` +
-    `/menu — ${t(lang, "menu.title")}`;
+    `<b>Features:</b>\n` +
+    `📝 AI-powered content rewriting & formatting\n` +
+    `✅ Approval system with Publish/Reject buttons\n` +
+    `📅 Post scheduling with cron trigger\n` +
+    `👥 Role-based admin management (Owner/Editor/Reviewer/Viewer)\n` +
+    `🎨 Rich Markdown support (bold, italic, code, links, quotes)\n` +
+    `✏️ Channel post editing in place\n\n` +
+    `<b>Quick Start:</b>\n` +
+    `• Send me any post to process & publish\n` +
+    `• Use /menu to open the control panel\n` +
+    `• Use /help to see all commands`;
 
   // Add a "UI Language" button below the start message
   const currentLang = SUPPORTED_LANGUAGES.find((l) => l.code === lang);
@@ -118,6 +125,18 @@ export async function handleStart(env: Env, message: TelegramMessage): Promise<v
   ]);
 
   await safeSend(env, message.chat.id, text, keyboard);
+
+  // If user is admin, send a separate "You are admin!" message with /menu button
+  if (isAdmin) {
+    const adminText =
+      `<blockquote><b>👑 You are Admin!</b></blockquote>\n\n` +
+      `You have access to the control panel.\n` +
+      `Click below to open the menu:`;
+    const adminKeyboard = buildInlineKeyboard([
+      [{ text: "🎛 Open Menu", callback_data: "menu" }],
+    ]);
+    await safeSend(env, message.chat.id, adminText, adminKeyboard);
+  }
 }
 
 /** /help — list commands + role permissions. Anyone. */
@@ -179,10 +198,11 @@ export async function handleMenu(env: Env, message: TelegramMessage): Promise<vo
   let role: Role | null = null;
   let authorized = false;
   let lang = getUiLanguage();
+  let settingsObj: import("../types").Settings | null = null;
   try {
     if (fromId) {
-      const settings = await getSettings(env, fromId);
-      lang = getUiLanguage(settings);
+      settingsObj = await getSettings(env, fromId);
+      lang = getUiLanguage(settingsObj);
     }
     authorized = await isAuthorized(env, fromId);
     if (authorized) role = await getRole(env, fromId);
@@ -198,9 +218,12 @@ export async function handleMenu(env: Env, message: TelegramMessage): Promise<vo
   }
 
   const text =
-    `<blockquote><b>${t(lang, "menu.title")}</b></blockquote>\n\n` +
-    `${t(lang, "menu.title")}: <b>${escapeHtml(roleLabel(role))}</b>`;
-  await safeSend(env, message.chat.id, text, mainMenuKeyboard(role));
+    `<blockquote><b>🎛 Control Panel</b></blockquote>\n\n` +
+    `<b>Welcome back!</b>\n` +
+    `Role: <b>${escapeHtml(roleLabel(role, lang))}</b>\n\n` +
+    `Toggle <b>Approval</b> to require publish confirmation.\n` +
+    `Toggle <b>Channel Edit</b> to edit channel posts in place.`;
+  await safeSend(env, message.chat.id, text, mainMenuKeyboard(role, settingsObj || undefined));
 }
 
 /** /footer <text> — change footer. Owner or editor. */

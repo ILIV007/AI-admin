@@ -419,6 +419,11 @@ async function handleReject(
     } catch (e) {
       log("warn", SCOPE, "audit failed", { error: String(e) });
     }
+    // Clear any KV cache related to this job (optimize KV usage)
+    try {
+      await env.AI_ADMIN_KV.delete(`approval:${jobId}`).catch(() => undefined);
+      await env.AI_ADMIN_KV.delete(`job:${jobId}`).catch(() => undefined);
+    } catch { /* ignore */ }
     await safeAnswer(env, cq.id, "🚫 Rejected");
     // Don't delete or replace the message — just update the keyboard to show "Rejected"
     await updateKeyboardOnly(env, cq, "🚫 Rejected");
@@ -445,23 +450,38 @@ async function updateKeyboardOnly(
 ): Promise<void> {
   const msg = cq.message;
   if (!msg) return;
+  // Get original message text to preserve it
+  const originalText = msg.text || msg.caption || "";
+  const hasMedia = !!msg.photo || !!msg.video || !!msg.document || !!msg.animation;
   try {
     // Try editMessageReplyMarkup first (only changes keyboard, preserves message)
     const { tgApi } = await import("../telegram/client");
     await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
       chat_id: msg.chat.id,
       message_id: msg.message_id,
-      reply_markup: disabledKeyboard(statusText),
+      reply_markup: JSON.parse(disabledKeyboard(statusText)),
     });
   } catch (e) {
-    // Fallback: try editMessageText (keeps original text, adds keyboard)
+    // Fallback: editMessageText/Caption preserving original content + add status prefix
     try {
-      await editMessageText(env.BOT_TOKEN, {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        text: `<blockquote>${escapeHtml(statusText)}</blockquote>`,
-        reply_markup: disabledKeyboard(statusText),
-      });
+      if (hasMedia && msg.caption !== undefined) {
+        const { editMessageCaption } = await import("../telegram/client");
+        await editMessageCaption(env.BOT_TOKEN, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          caption: `<blockquote>${escapeHtml(statusText)}</blockquote>\n\n${originalText}`,
+          parse_mode: "HTML",
+          reply_markup: disabledKeyboard(statusText),
+        });
+      } else {
+        await editMessageText(env.BOT_TOKEN, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          text: `<blockquote>${escapeHtml(statusText)}</blockquote>\n\n${originalText}`,
+          parse_mode: "HTML",
+          reply_markup: disabledKeyboard(statusText),
+        });
+      }
     } catch (e2) {
       log("warn", SCOPE, "updateKeyboardOnly failed", { error: String(e2) });
     }

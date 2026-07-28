@@ -46,19 +46,30 @@ function mark(current: boolean): string {
 // Main menu
 // ============================================================
 
-export function mainMenuKeyboard(role: Role | null): string {
+export function mainMenuKeyboard(role: Role | null, settings?: import("../types").Settings): string {
   const rows: { text: string; callback_data: string }[][] = [
     [
       { text: "⚙️ Settings", callback_data: "set:settings" },
       { text: "📊 Stats", callback_data: "set:stats" },
       { text: "📅 Schedule", callback_data: "set:schedule" },
     ],
-    [
-      { text: "🧪 Test AI", callback_data: "set:testai" },
-      { text: "🔍 Status", callback_data: "set:status" },
-      { text: "❓ Help", callback_data: "set:help" },
-    ],
   ];
+
+  // Approval + Channel Edit toggles directly in main menu
+  if (settings) {
+    const approvalOther = settings.approvalMode ? "off" : "on";
+    const channelEditOther = settings.channelEditing ? "off" : "on";
+    rows.push([
+      { text: `✅ Approval: ${settings.approvalMode ? "On ✅" : "Off"}`, callback_data: `set:approval:${approvalOther}` },
+      { text: `📝 Channel Edit: ${settings.channelEditing ? "On ✅" : "Off"}`, callback_data: `set:channeledit:${channelEditOther}` },
+    ]);
+  }
+
+  rows.push([
+    { text: "🧪 Test AI", callback_data: "set:testai" },
+    { text: "🔍 Status", callback_data: "set:status" },
+    { text: "❓ Help", callback_data: "set:help" },
+  ]);
 
   if (role === "owner") {
     rows.push([

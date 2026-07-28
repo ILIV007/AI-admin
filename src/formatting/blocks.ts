@@ -41,17 +41,25 @@ export function markdownToBlocks(md: string): ContentBlock[] {
   while (i < lines.length) {
     const line = lines[i];
 
-    // --- Code fence ---
-    const fenceMatch = /^```(.*)$/.exec(line);
+    // --- Code fence (``` or ~~~) ---
+    // Support both ``` and ~~~ as fence markers (CommonMark spec)
+    // Also handle cases where AI emits """ or ''' by mistake
+    const fenceMatch = /^(```|~~~|\"\"\"|''')(.*)$/.exec(line);
     if (fenceMatch) {
-      const language = fenceMatch[1].trim();
+      const fence = fenceMatch[1]; // the fence marker (```, ~~~, """, ''')
+      const language = fenceMatch[2].trim();
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !/^```/.test(lines[i])) {
+      // Look for matching closing fence
+      while (i < lines.length) {
+        if (fence === "```" && /^```/.test(lines[i])) break;
+        if (fence === "~~~" && /^~~~/.test(lines[i])) break;
+        if (fence === '"""' && /^"""/.test(lines[i])) break;
+        if (fence === "'''" && /^'''/.test(lines[i])) break;
         codeLines.push(lines[i]);
         i++;
       }
-      i++; // skip closing ``` (or run off the end if missing)
+      i++; // skip closing fence (or run off the end if missing)
       blocks.push({
         kind: "code",
         language: language || undefined,
