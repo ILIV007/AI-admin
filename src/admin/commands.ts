@@ -88,7 +88,6 @@ const BUILD_DATE = "2025-01-15";
 /** /start — welcome + bot intro. Anyone. */
 export async function handleStart(env: Env, message: TelegramMessage): Promise<void> {
   const fromId = message.from?.id ?? 0;
-  // Get user settings to read UI language (default English)
   let lang = getUiLanguage();
   try {
     if (fromId) {
@@ -100,7 +99,6 @@ export async function handleStart(env: Env, message: TelegramMessage): Promise<v
   const name = message.from?.first_name ? ` ${escapeHtml(message.from.first_name)}` : "";
   const welcome = t(lang, "start.welcome");
   const desc = t(lang, "start.description");
-  const chooseLang = t(lang, "start.choose_language");
 
   const text =
     `${welcome}${name}! 👋\n\n` +
@@ -111,15 +109,13 @@ export async function handleStart(env: Env, message: TelegramMessage): Promise<v
     `📅 Post Scheduling\n` +
     `👥 Role-based Admin Management\n\n` +
     `/help — ${t(lang, "help.title")}\n` +
-    `/menu — ${t(lang, "menu.title")}\n\n` +
-    `${chooseLang}`;
+    `/menu — ${t(lang, "menu.title")}`;
 
-  // Build language selector keyboard
-  const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
-    text: `${l.flag} ${l.label}${l.code === lang ? " ✅" : ""}`,
-    callback_data: `set:uilang:${l.code}`,
-  }));
-  const keyboard = buildInlineKeyboard([langButtons]);
+  // Add a "UI Language" button below the start message
+  const currentLang = SUPPORTED_LANGUAGES.find((l) => l.code === lang);
+  const keyboard = buildInlineKeyboard([
+    [{ text: `🌐 UI Language: ${currentLang?.flag} ${currentLang?.label}`, callback_data: "set:uilang" }],
+  ]);
 
   await safeSend(env, message.chat.id, text, keyboard);
 }
@@ -177,24 +173,28 @@ export async function handleMenu(env: Env, message: TelegramMessage): Promise<vo
   const fromId = message.from?.id ?? 0;
   let role: Role | null = null;
   let authorized = false;
+  let lang = getUiLanguage();
   try {
+    if (fromId) {
+      const settings = await getSettings(env, fromId);
+      lang = getUiLanguage(settings);
+    }
     authorized = await isAuthorized(env, fromId);
     if (authorized) role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "menu: auth check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی. بعداً تلاش کنید.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error. Please try again.");
     return;
   }
 
   if (!authorized || !role) {
-    await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+    await safeSend(env, message.chat.id, t(lang, "unauthorized"));
     return;
   }
 
   const text =
-    `🎛 <b>منوی مدیریت</b>\n\n` +
-    `نقش: <b>${escapeHtml(roleLabel(role))}</b>\n` +
-    `یک گزینه را انتخاب کنید:`;
+    `<blockquote><b>${t(lang, "menu.title")}</b></blockquote>\n\n` +
+    `${t(lang, "menu.title")}: <b>${escapeHtml(roleLabel(role))}</b>`;
   await safeSend(env, message.chat.id, text, mainMenuKeyboard(role));
 }
 

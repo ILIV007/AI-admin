@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.0.9";
+const VERSION = "2.1.0";
 
 // ============================================================
 // MAIN EXPORT
@@ -170,12 +170,38 @@ async function handleWebhook(
     ctx.waitUntil(markSeen(env, update.update_id));
   }
 
-  // 4. Enqueue for async processing (fixes V1 #2 — no long waitUntil)
+  // 4. FAST PATH: Handle commands + callbacks DIRECTLY (no queue delay).
+  //    Commands like /menu, /help, /stats need instant response.
+  //    Only regular messages (content for publishing) go through the queue.
+  const isCallback = !!update.callback_query;
+  const msg = update.message || update.edited_message;
+  const isCommand = !!msg?.text?.startsWith("/");
+
+  if (isCallback || isCommand) {
+    // Send "typing" indicator for commands
+    if (isCommand && msg?.chat?.id && msg?.from?.id) {
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const { sendChatAction } = await import("./telegram/client");
+            await sendChatAction(env.BOT_TOKEN, {
+              chat_id: msg.chat.id,
+              action: "typing",
+            });
+          } catch { /* ignore */ }
+        })(),
+      );
+    }
+    // Process directly in background — respond 200 immediately
+    ctx.waitUntil(handleFastUpdate(env, update));
+    return new Response("ok", { status: 200 });
+  }
+
+  // 5. SLOW PATH: Enqueue regular messages for async pipeline processing
   try {
     await enqueueUpdate(env, update);
   } catch (e) {
     log("error", "webhook", "enqueue failed", { error: String(e) });
-    // Return 500 so Telegram retries the update
     return new Response("Internal Server Error", { status: 500 });
   }
 
@@ -419,3 +445,46 @@ function json(data: unknown, status = 200): Response {
 
 // Re-export assertEnv for tooling that wants to validate at boot.
 export { assertEnv, VERSION };
+
+// ============================================================
+// FAST UPDATE HANDLER — processes commands + callbacks directly
+// (no queue delay). Uses ctx.waitUntil so the webhook returns 200
+// immediately while processing happens in background.
+// ============================================================
+
+async function handleFastUpdate(env: Env, update: TelegramUpdate): Promise<void> {
+  try {
+    // Callback queries
+    if (update.callback_query) {
+      const { handleCallbackQuery } = await import("./admin/callbacks");
+      await handleCallbackQuery(env, update.callback_query);
+      return;
+    }
+
+    // Commands
+    const msg = update.message || update.edited_message;
+    if (msg?.text?.startsWith("/")) {
+      const { extractContent } = await import("./telegram/updates");
+      const content = extractContent(update);
+      if (!content) return;
+
+      const { dispatchCommand } = await import("./admin/commands");
+      await dispatchCommand(env, ctx_placeholder, msg, content);
+      return;
+    }
+  } catch (e) {
+    log("error", "webhook.fastUpdate", "fast update failed", { error: String(e) });
+  }
+}
+
+// Placeholder ExecutionContext for dispatchCommand (commands don't use ctx
+// for queue operations, only for waitUntil which we can skip in fast path).
+const ctx_placeholder = {
+  waitUntil(p: Promise<unknown>) {
+    // Fire and forget — in fast path we don't need to track
+    p.catch(() => undefined);
+  },
+  passThroughOnException() {
+    /* no-op */
+  },
+} as unknown as ExecutionContext;

@@ -234,12 +234,21 @@ export async function runPipeline(
         ) => Promise<{ ok: boolean; messageId?: number; error?: string }>;
       } = await import("../telegram/publisher");
       if (publisherMod.sendPreview && content.fromId != null) {
+        // Build approval keyboard with Publish/Reject buttons
+        let approvalKb: string | undefined;
+        if (jobId) {
+          try {
+            const { approvalKeyboard } = await import("../admin/keyboards");
+            approvalKb = approvalKeyboard(jobId);
+          } catch { /* ignore */ }
+        }
         const preview = await publisherMod.sendPreview(
           env,
           content.fromId,
           html,
           parts,
           content.media,
+          approvalKb,
         );
         if (!preview?.ok) {
           log("warn", scope, "preview send failed", { error: preview?.error });

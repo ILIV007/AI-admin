@@ -37,7 +37,7 @@ import type {
 } from "../types";
 import { ownerUserId } from "../config/env";
 import { answerCallbackQuery, editMessageText } from "../telegram/client";
-import { escapeHtml } from "../telegram/entities";
+import { escapeHtml, buildInlineKeyboard } from "../telegram/entities";
 import { can, roleLabel } from "../domain/roles";
 import { log } from "../observability/logger";
 import { handleApprovalCallback } from "./approval";
@@ -113,7 +113,24 @@ export async function handleCallbackQuery(
   }
 
   try {
-    // Language selector — anyone can change their own UI language
+    // UI Language selector — anyone can change their own UI language
+    if (data === "set:uilang") {
+      // Show language selector
+      const { SUPPORTED_LANGUAGES, t, getUiLanguage } = await import("../i18n");
+      const settings = await getSettingsFor(env, fromId);
+      const currentLang = getUiLanguage(settings);
+      const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
+        text: `${l.flag} ${l.label}${l.code === currentLang ? " ✅" : ""}`,
+        callback_data: `set:uilang:${l.code}`,
+      }));
+      const keyboard = buildInlineKeyboard([
+        langButtons,
+        [{ text: "🔙 Back", callback_data: "menu" }],
+      ]);
+      await safeAnswer(env, cq.id, "");
+      await editText(env, cq, t(currentLang, "start.choose_language"), keyboard);
+      return;
+    }
     if (data.startsWith("set:uilang:")) {
       const langCode = data.slice("set:uilang:".length) as "en" | "fa";
       if (langCode !== "en" && langCode !== "fa") {
@@ -126,16 +143,25 @@ export async function handleCallbackQuery(
       const { t } = await import("../i18n");
       const msg = t(langCode, "start.language_set");
       await safeAnswer(env, cq.id, msg);
-      // Edit the message to show confirmation
+      // Re-show language selector with updated selection
+      const { SUPPORTED_LANGUAGES } = await import("../i18n");
+      const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
+        text: `${l.flag} ${l.label}${l.code === langCode ? " ✅" : ""}`,
+        callback_data: `set:uilang:${l.code}`,
+      }));
+      const keyboard = buildInlineKeyboard([
+        langButtons,
+        [{ text: "🔙 Back", callback_data: "menu" }],
+      ]);
       try {
         const { editMessageText } = await import("../telegram/client");
         if (cq.message) {
           await editMessageText(env.BOT_TOKEN, {
             chat_id: cq.message.chat.id,
             message_id: cq.message.message_id,
-            text: msg + "\n\n" + t(langCode, "start.welcome"),
+            text: msg + "\n\n" + t(langCode, "start.choose_language"),
             parse_mode: "HTML",
-            reply_markup: undefined,
+            reply_markup: keyboard,
           });
         }
       } catch { /* ignore */ }
