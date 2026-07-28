@@ -61,9 +61,9 @@ dead_letter_queue = "ai-admin-dlq"
 # ============================================================
 [vars]
 DEFAULT_AI_PROVIDER = "gemini"
-GEMINI_MODEL = "gemini-2.5-flash"
-OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
-OPENROUTER_FALLBACK_MODELS = "nvidia/nemotron-3-ultra-550b-a55b:free,qwen/qwen3-coder:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openai/gpt-oss-20b:free,meta-llama/llama-3.3-70b-instruct:free"
+GEMINI_MODEL = "gemini-3.6-flash"
+OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+OPENROUTER_FALLBACK_MODELS = "qwen/qwen3-coder:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openai/gpt-oss-20b:free,meta-llama/llama-3.3-70b-instruct:free,nvidia/nemotron-3-ultra-550b-a55b:free"
 DEBUG_MODE = "false"
 CHANNEL_PROFILE = "ilivir3"
 

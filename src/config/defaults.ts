@@ -21,8 +21,8 @@ export const DEFAULT_SETTINGS: Settings = {
   channelEditing: false,
   footerText: "🌀 @ILIVIR3",
   aiProvider: "gemini",
-  geminiModel: "gemini-2.5-flash",
-  openrouterModel: "meta-llama/llama-3.3-70b-instruct:free",
+  geminiModel: "gemini-3.6-flash",
+  openrouterModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
   profile: "ilivir3",
   uiLanguage: "en",
 };

@@ -47,10 +47,10 @@ import {
   editIntensityKeyboard,
   emojiLevelKeyboard,
   geminiModelKeyboard,
-  languageModeKeyboard,
+  languageKeyboard,
   mainMenuKeyboard,
   openrouterModelKeyboard,
-  personalityModeKeyboard,
+  personalityKeyboard,
   providerKeyboard,
   rewriteModeKeyboard,
   settingsKeyboard,
@@ -376,7 +376,7 @@ async function handlePick(
       text = "✍️ <b>حالت بازنویسی</b>\nیک گزینه را انتخاب کنید:";
       break;
     case "personality":
-      keyboard = personalityModeKeyboard(settings.personalityMode);
+      keyboard = personalityKeyboard(settings.personalityMode);
       text = "🎭 <b>شخصیت</b>\nیک گزینه را انتخاب کنید:";
       break;
     case "editint":
@@ -388,7 +388,7 @@ async function handlePick(
       text = "😀 <b>سطح ایموجی</b>\nمقدار را انتخاب کنید:";
       break;
     case "lang":
-      keyboard = languageModeKeyboard(settings.languageMode);
+      keyboard = languageKeyboard(settings.languageMode);
       text = "🌐 <b>زبان</b>\nیک گزینه را انتخاب کنید:";
       break;
     case "provider":

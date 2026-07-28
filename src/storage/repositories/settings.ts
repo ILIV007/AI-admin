@@ -34,10 +34,18 @@ function kvKey(userId: number): string {
 // Merge helpers
 // ============================================================
 
-/** Merge a partial settings blob over DEFAULT_SETTINGS. */
-function mergeSettings(partial: Partial<Settings> | null | undefined): Settings {
-  if (!partial) return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...partial };
+/** Merge a partial settings blob over DEFAULT_SETTINGS.
+ * Also applies env.FOOTER_TEXT override if set (takes priority over default).
+ */
+function mergeSettings(env: Env, partial: Partial<Settings> | null | undefined): Settings {
+  const base = { ...DEFAULT_SETTINGS };
+  // env.FOOTER_TEXT (if set as a secret) overrides the default footer
+  if (env.FOOTER_TEXT) {
+    base.footerText = env.FOOTER_TEXT;
+  }
+  if (!partial) return base;
+  // User's stored footer (if explicitly set) still wins over env default
+  return { ...base, ...partial };
 }
 
 // ============================================================
@@ -54,7 +62,7 @@ export async function getSettings(env: Env, userId: number): Promise<Settings> {
   if (cached) {
     try {
       const parsed = JSON.parse(cached) as Partial<Settings>;
-      return mergeSettings(parsed);
+      return mergeSettings(env, parsed);
     } catch {
       // Corrupt cache — fall through to D1.
     }
@@ -70,7 +78,7 @@ export async function getSettings(env: Env, userId: number): Promise<Settings> {
     // No overrides → return defaults. Don't pollute the cache with defaults
     // (the next write will populate it), but DO cache for 30s to avoid
     // repeat D1 hits when a user has no overrides row yet.
-    const defaults = { ...DEFAULT_SETTINGS };
+    const defaults = mergeSettings(env, null);
     await kvPut(env, kvKey(userId), JSON.stringify(defaults), SETTINGS_KV_TTL_SEC);
     return defaults;
   }
@@ -80,9 +88,9 @@ export async function getSettings(env: Env, userId: number): Promise<Settings> {
     parsed = JSON.parse(rows[0].payload) as Partial<Settings>;
   } catch {
     // Corrupt row — fall back to defaults.
-    return { ...DEFAULT_SETTINGS };
+    return mergeSettings(env, null);
   }
-  const settings = mergeSettings(parsed);
+  const settings = mergeSettings(env, parsed);
   await kvPut(env, kvKey(userId), JSON.stringify(settings), SETTINGS_KV_TTL_SEC);
   return settings;
 }

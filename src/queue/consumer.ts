@@ -330,7 +330,7 @@ async function handleProcessUpdate(
     try {
       const { t, getUiLanguage } = await import("../i18n");
       const lang = getUiLanguage(settings);
-      const loadingText = `<b>${t(lang, "processing")}</b>\n\n${t(lang, "processing.steps")}`;
+      const loadingText = `<blockquote><b>${t(lang, "processing")}</b></blockquote>\n\n${t(lang, "processing.steps")}`;
       const loadingResp = await sendMessage(env.BOT_TOKEN, {
         chat_id: userId,
         text: loadingText,
@@ -483,9 +483,10 @@ async function sendAdminReport(
       const status = t(lang, statusKey);
 
       const reportLines: string[] = [
-        `<b>${status}</b>`,
+        `<blockquote><b>${status}</b></blockquote>`,
         ``,
         `<b>${t(lang, "report.title")}</b>`,
+        `<blockquote>`,
         `• ${t(lang, "report.category")}: <code>${result.classification.category}</code>`,
         `• ${t(lang, "report.language")}: <code>${result.classification.language}</code>`,
         `• ${t(lang, "report.words")}: <code>${result.classification.wordCount}</code>`,
@@ -504,6 +505,8 @@ async function sendAdminReport(
       if (result.errorMessage) {
         reportLines.push(`• ${t(lang, "report.error")}: <code>${result.errorMessage.slice(0, 100)}</code>`);
       }
+
+      reportLines.push(`</blockquote>`);
 
       if (content.text) {
         const preview = content.text.slice(0, 100).replace(/<[^>]+>/g, "");

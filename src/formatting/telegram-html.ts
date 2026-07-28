@@ -37,6 +37,50 @@ export function escapeHtml(s: string): string {
 }
 
 // ============================================================
+// shortenUrl — condense long URLs into a compact inline link
+// ============================================================
+
+/**
+ * Convert a long URL into a short display text while preserving the full URL
+ * as the href. Example:
+ *   https://chat.z.ai/c/0af503f3-60ee-4dc2-8772-e0e83fb8bb0d
+ *   → "chat.z.ai/c/"
+ *
+ * Rules:
+ *   - Strip protocol (https://, http://)
+ *   - Strip trailing slash
+ *   - If URL has a path, show "domain/first-path-segment/"
+ *   - If URL is just domain, show "domain"
+ *   - If original URL has query/fragment, append "…"
+ */
+export function shortenUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const domain = u.hostname.replace(/^www\./, "");
+    const pathParts = u.pathname.split("/").filter(Boolean);
+
+    if (pathParts.length === 0) {
+      // Just domain
+      return domain;
+    }
+
+    // Show domain + first path segment + trailing slash
+    const firstSeg = pathParts[0];
+    let short = `${domain}/${firstSeg}/`;
+
+    // If there's more to the URL, indicate truncation
+    if (pathParts.length > 1 || u.search || u.hash) {
+      short += "…";
+    }
+
+    return short;
+  } catch {
+    // Not a valid URL — return as-is (truncated to 40 chars)
+    return url.length > 40 ? url.slice(0, 37) + "…" : url;
+  }
+}
+
+// ============================================================
 // renderSpan — recursive
 // ============================================================
 
@@ -57,7 +101,8 @@ export function renderSpan(span: Span): string {
     case "code":
       return `<code>${escapeHtml(span.code)}</code>`;
     case "link":
-      return `<a href="${escapeHtml(span.url)}">${escapeHtml(span.text)}</a>`;
+      // Shorten long URLs into compact inline links, wrapped in blockquote
+      return `<a href="${escapeHtml(span.url)}">${escapeHtml(shortenUrl(span.url))}</a>`;
     case "mention": {
       if (span.userId !== undefined) {
         return `<a href="tg://user?id=${span.userId}">${escapeHtml(span.text)}</a>`;
@@ -119,7 +164,7 @@ export function blocksToTelegramHtml(
       }
 
       case "divider":
-        parts.push("\n─────────\n");
+        // Removed: separator line caused visual clutter. Use blockquote instead.
         break;
     }
   }
