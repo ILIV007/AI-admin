@@ -113,6 +113,16 @@ export async function runPipeline(
   let finalText = workingText;
 
   if (useAi) {
+    // Send typing again before AI call (typing expires after ~5s)
+    if (isAdmin && content.chatType === "private" && content.fromId != null) {
+      try {
+        const { sendChatAction } = await import("../telegram/client");
+        await sendChatAction(env.BOT_TOKEN, {
+          chat_id: content.fromId,
+          action: "typing",
+        });
+      } catch { /* ignore */ }
+    }
     try {
       // Dynamic import per spec — other agents own ../ai/fallback.
       const aiMod: {

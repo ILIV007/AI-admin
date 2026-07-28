@@ -804,30 +804,30 @@ async function handleFinalizeMediaGroup(
   // finalized=1 next time and skip.
   await mediaGroupsRepo.markFinalized(env, mediaGroupId);
 
-  // Combine: concatenate captions in order; take the first item's media as
-  // the "primary" media (the publisher only handles one media per post).
+  // Combine: concatenate captions in order for the text
   const combinedText = items
     .map((i) => i.text)
     .filter((t) => t && t.trim().length > 0)
     .join("\n\n");
 
-  const firstWithMedia = items.find((i) => i.media);
-  const primaryMedia = firstWithMedia?.media;
+  // Collect ALL media items for album sending
+  const allMedia = items
+    .filter((i) => i.media)
+    .map((i) => i.media!) as NonNullable<ExtractedContent["media"]>[];
+
+  // Primary media = first one (for backward compat with pipeline)
+  const primaryMedia = allMedia[0];
 
   const firstItem = items[0];
   const content: ExtractedContent = {
     fromId: firstItem.fromId,
     fromName: "",
     chatId: firstItem.chatId,
-    // chatType isn't preserved in the media_group_items table; the pipeline
-    // doesn't depend on it. Use "channel" as a sensible default (albums
-    // usually come from channels).
     chatType: "channel",
     messageId: firstItem.messageId,
     text: combinedText,
     entities: [],
     media: primaryMedia,
-    // Intentionally omit mediaGroupId — we're past aggregation.
     mediaGroupId: undefined,
     isChannelPost: false,
     isEdit: false,
@@ -835,20 +835,106 @@ async function handleFinalizeMediaGroup(
 
   const settings = await getSettings(env, firstItem.fromId);
 
+  // Send typing indicator
+  if (firstItem.fromId) {
+    await sendChatAction(env.BOT_TOKEN, {
+      chat_id: firstItem.fromId,
+      action: "typing",
+    }).catch(() => undefined);
+  }
+
   const pipelineMod: {
     runPipeline: (
       env: Env,
       content: ExtractedContent,
       settings: Settings,
-    ) => Promise<{
-      ok: boolean;
-      action: "published" | "preview" | "format_only" | "skipped" | "failed" | "scheduled";
-      aiUsed: boolean;
-      errorMessage?: string;
-    }>;
+    ) => Promise<import("../types").PipelineResult>;
   } = await import("../processing/pipeline");
 
   const result = await pipelineMod.runPipeline(env, content, settings);
+  // elapsedMs not needed for media groups // timing not critical for media groups
+
+  // If published, send ALL media as album + text as separate message
+  if (result.action === "published" && result.parts.length > 0) {
+    try {
+      // Send album with first part as caption
+      if (allMedia.length > 1) {
+        const { sendMediaGroup } = await import("../telegram/client");
+        const mediaItems = allMedia.map((m, i) => ({
+          type: m.type,
+          media: m.fileId,
+          caption: i === 0 ? result.parts[0] : undefined,
+          parse_mode: i === 0 ? "HTML" as const : undefined,
+        }));
+        await sendMediaGroup(env.BOT_TOKEN, {
+          chat_id: env.TARGET_CHANNEL,
+          media: mediaItems,
+        }).catch(() => undefined);
+      }
+      // Send remaining text parts
+      for (let i = 1; i < result.parts.length; i++) {
+        await sendMessage(env.BOT_TOKEN, {
+          chat_id: env.TARGET_CHANNEL,
+          text: result.parts[i],
+          parse_mode: "HTML",
+        }).catch(() => undefined);
+      }
+      // Send copy to admin PV
+      if (firstItem.fromId) {
+        if (allMedia.length > 1) {
+          const { sendMediaGroup } = await import("../telegram/client");
+          const adminMediaItems = allMedia.map((m, i) => ({
+            type: m.type,
+            media: m.fileId,
+            caption: i === 0 ? result.parts[0] : undefined,
+            parse_mode: i === 0 ? "HTML" as const : undefined,
+          }));
+          await sendMediaGroup(env.BOT_TOKEN, {
+            chat_id: firstItem.fromId,
+            media: adminMediaItems,
+          }).catch(() => undefined);
+        } else if (primaryMedia) {
+          // Single media → sendPhoto/sendVideo etc to admin
+          const mediaParams: Record<string, unknown> = {
+            chat_id: firstItem.fromId,
+            caption: result.parts[0],
+            parse_mode: "HTML",
+          };
+          if (primaryMedia.type === "photo") {
+            mediaParams.photo = primaryMedia.fileId;
+            await sendPhoto(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (primaryMedia.type === "video") {
+            mediaParams.video = primaryMedia.fileId;
+            await sendVideo(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (primaryMedia.type === "document") {
+            mediaParams.document = primaryMedia.fileId;
+            await sendDocument(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          }
+        } else {
+          // No media → text only
+          for (const part of result.parts) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: firstItem.fromId,
+              text: part,
+              parse_mode: "HTML",
+            }).catch(() => undefined);
+          }
+        }
+        // Remaining parts to admin
+        if (allMedia.length <= 1) {
+          for (let i = 1; i < result.parts.length; i++) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: firstItem.fromId,
+              text: result.parts[i],
+              parse_mode: "HTML",
+            }).catch(() => undefined);
+          }
+        }
+      }
+    } catch (e) {
+      log("warn", "queue.consumer", "media group publish/admin copy failed", { error: String(e) });
+    }
+  }
 
   if (result.aiUsed) {
     ctx.waitUntil(safe(recordAiCall(env, firstItem.fromId)));
