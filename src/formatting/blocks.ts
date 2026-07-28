@@ -174,10 +174,43 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       i++;
     }
     if (paraLines.length > 0) {
+      const paraText = paraLines.join("\n");
+      // Check if this paragraph ends with ":" (colon) — DETERMINISTIC rule
+      // If so, the NEXT paragraph should be a blockquote (quote)
+      const endsWithColon = /[:：]\s*$/.test(paraText.trim());
+
       blocks.push({
         kind: "paragraph",
-        spans: parseInlineSpans(paraLines.join("\n")),
+        spans: parseInlineSpans(paraText),
       });
+
+      // If ends with colon, collect the following paragraph as a quote block
+      if (endsWithColon && i < lines.length && lines[i].trim() !== "") {
+        // Skip blank lines between colon and content
+        while (i < lines.length && lines[i].trim() === "") i++;
+
+        // Collect the quote paragraph
+        const quoteLines: string[] = [];
+        while (
+          i < lines.length &&
+          lines[i].trim() !== "" &&
+          !/^```/.test(lines[i]) &&
+          !/^#{2,3}\s+/.test(lines[i]) &&
+          !/^---+\s*$/.test(lines[i]) &&
+          !/^>\s?/.test(lines[i]) &&
+          !/^[-*]\s+/.test(lines[i]) &&
+          !/^\d+\.\s+/.test(lines[i])
+        ) {
+          quoteLines.push(lines[i]);
+          i++;
+        }
+        if (quoteLines.length > 0) {
+          blocks.push({
+            kind: "quote",
+            spans: parseInlineSpans(quoteLines.join("\n")),
+          });
+        }
+      }
     }
   }
 

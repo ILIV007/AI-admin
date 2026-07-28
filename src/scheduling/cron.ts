@@ -67,32 +67,33 @@ export async function runCron(
   log("info", "cron.runCron", "starting");
 
   // ── 1. Publish scheduled posts due now ──────────────────────────
-  ctx.waitUntil(
-    (async () => {
+  try {
+    log("info", "cron.runCron", "step 1 start: publish scheduled posts due");
+    const due = await listPendingScheduledDue(env, Date.now(), SCHEDULED_BATCH_SIZE);
+    log("info", "cron.runCron", `step 1: ${due.length} due job(s)`, {
+      count: due.length,
+      jobIds: due.map((j) => j.id),
+    });
+    for (const job of due) {
       try {
-        log("info", "cron.runCron", "step 1 start: publish scheduled posts due");
-        const due = await listPendingScheduledDue(env, Date.now(), SCHEDULED_BATCH_SIZE);
-        log("info", "cron.runCron", `step 1: ${due.length} due job(s)`, {
-          count: due.length,
+        log("info", "cron.runCron", `step 1: enqueueing job ${job.id}`, {
+          jobId: job.id,
+          scheduledFor: job.scheduledFor,
+          status: job.status,
         });
-        for (const job of due) {
-          // Enqueue rather than publish inline — keeps the cron fast and
-          // lets the queue consumer do the heavy lifting with retries.
-          ctx.waitUntil(
-            enqueuePublish(env, job.id).catch((e) => {
-              log("error", "cron.runCron", `step 1: failed to enqueue job`, {
-                jobId: job.id,
-                error: String(e),
-              });
-            }),
-          );
-        }
-        log("info", "cron.runCron", "step 1 done");
+        await enqueuePublish(env, job.id);
+        log("info", "cron.runCron", `step 1: enqueued job ${job.id} successfully`);
       } catch (e) {
-        log("error", "cron.runCron", `step 1 failed: ${String(e)}`);
+        log("error", "cron.runCron", `step 1: failed to enqueue job`, {
+          jobId: job.id,
+          error: String(e),
+        });
       }
-    })(),
-  );
+    }
+    log("info", "cron.runCron", "step 1 done");
+  } catch (e) {
+    log("error", "cron.runCron", `step 1 failed: ${String(e)}`);
+  }
 
   // ── 2. Expire stale approvals ───────────────────────────────────
   ctx.waitUntil(

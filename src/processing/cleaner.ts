@@ -35,8 +35,14 @@ const NUL = "\u0000";
 
 const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
 
-// Telegram invite / sticker URLs — these are REMOVED, not preserved.
-const TG_INVITE_RE = /^https?:\/\/t\.me\/(?:joinchat|\+|addstickers)/i;
+// Telegram promo URLs (t.me/username without post number) — REMOVED
+// Also matches bare t.me/username (without https://)
+const TG_PROMO_LINE_RE = /(?:https?:\/\/)?t\.me\/(?:joinchat|\+|addstickers|addemoji|[A-Za-z0-9_]+)\/?(?!\d)/gi;
+// t.me/username/123 = specific post link — KEEP
+const TG_POST_LINK_RE = /(?:https?:\/\/)?t\.me\/[A-Za-z0-9_]+\/\d+/i;
+
+// "source: ..." attribution (with URL or @username) — removes the whole line
+const SOURCE_ATTR_FULL_RE = /\s*(?:source|src|منبع|credit)\s*[:：]\s*[^\n]+/gi;
 
 // GitHub URLs (used by contentStats + classifier). Non-global, safe for .test().
 const GITHUB_RE = /(?:github\.com|gist\.github\.com|raw\.githubusercontent\.com)/i;
@@ -49,7 +55,7 @@ const GITHUB_RE = /(?:github\.com|gist\.github\.com|raw\.githubusercontent\.com)
 const VIA_ATTR_RE = /\s+(?:[—–-]\s+)?via\s+@[A-Za-z0-9_]+/gi;
 
 // " source: @user" / "src: @user" / "منبع: @user"
-const SOURCE_ATTR_RE = /\s*(?:source|src|منبع)\s*[:：]?\s*@[A-Za-z0-9_]+/gi;
+// const SOURCE_ATTR_RE = /\s*(?:source|src|منبع)\s*[:：]?\s*@[A-Za-z0-9_]+/gi;
 
 // Whole-line signature: "@user | some description"
 const SIGNATURE_LINE_RE = /^[ \t]*@[A-Za-z0-9_]+\s*[|｜]\s*.+$/gm;
@@ -111,10 +117,24 @@ function restoreInlineCode(text: string, codes: string[]): string {
 function extractUrls(text: string): { text: string; urls: string[] } {
   const urls: string[] = [];
   text = text.replace(URL_RE, (url) => {
-    // Drop Telegram invite links entirely (do NOT placeholder them).
-    if (TG_INVITE_RE.test(url)) return " ";
+    // Drop Telegram promo links (t.me/username, joinchat, +xxx, addstickers)
+    // BUT keep t.me/username/123 (specific post links — legitimate content)
+    if (TG_POST_LINK_RE.test(url)) {
+      // Post link — keep it
+      urls.push(url);
+      return `${NUL}URL${urls.length - 1}${NUL}`;
+    }
+    if (/t\.me\//i.test(url)) {
+      // t.me link but not a post link → promo → remove
+      return " ";
+    }
     urls.push(url);
     return `${NUL}URL${urls.length - 1}${NUL}`;
+  });
+  // Also remove bare t.me/username (without https://)
+  text = text.replace(TG_PROMO_LINE_RE, (match) => {
+    if (TG_POST_LINK_RE.test(match)) return match; // keep post links
+    return " ";
   });
   return { text, urls };
 }
@@ -155,8 +175,8 @@ export function cleanContent(
   // "via @user" attribution
   text = text.replace(VIA_ATTR_RE, " ");
 
-  // "source: @user" attribution
-  text = text.replace(SOURCE_ATTR_RE, " ");
+  // "source: ..." attribution (full line removal — @username, URL, or anything)
+  text = text.replace(SOURCE_ATTR_FULL_RE, " ");
 
   // "@user | desc" signature lines
   text = text.replace(SIGNATURE_LINE_RE, "");
@@ -283,7 +303,7 @@ const PROMPT_KEYWORDS = [
 // Paragraphs that start with one of these prefixes are ALWAYS treated as
 // prompts, regardless of length or language. Matches Latin OR Persian colon.
 const PROMPT_PREFIX_RE =
-  /^\s*(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i;
+  /^\s*(?:.*\s)?(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i;
 
 function isPromptParagraph(text: string): boolean {
   // Explicit prefix → always a prompt (skip very short false positives).
@@ -332,16 +352,23 @@ export function protectPrompts(text: string): {
 
 export function restorePrompts(text: string, prompts: string[]): string {
   if (!text || prompts.length === 0) return text;
-  // Wrap each restored prompt in a fenced code block with language "prompt".
-  // The formatter (blocks.ts → telegram-html.ts) recognizes this language and
-  // renders the block as:
-  //   <blockquote expandable><pre><code>...</code></pre></blockquote>
-  // — collapsible AND monospace (copyable). Surrounded by blank lines so the
-  // markdown parser treats the fence as a standalone block even when the
-  // AI emitted the placeholder inline with surrounding text.
-  return text.replace(/\u0000PROMPT_(\d+)\u0000/g, (_, i) => {
-    const promptText = prompts[Number(i)] ?? "";
-    return "\n\n```prompt\n" + promptText.trim() + "\n```\n\n";
+  // Combine ALL prompts into a SINGLE code block (not separate blocks).
+  // This prevents prompts from being split apart.
+  // Use ```prompt fence → rendered as <pre><code> (copyable monospace).
+  // NOT wrapped in blockquote expandable (that can interfere with copy).
+  const allPrompts = prompts
+    .map((p, i) => (prompts.length > 1 ? `--- Prompt ${i + 1} ---\n` : "") + p.trim())
+    .join("\n\n");
+
+  // Replace all placeholders with a single combined block
+  let firstReplaced = false;
+  return text.replace(/\u0000PROMPT_(\d+)\u0000/g, () => {
+    if (!firstReplaced) {
+      firstReplaced = true;
+      return "\n\n```prompt\n" + allPrompts + "\n```\n\n";
+    }
+    // Additional placeholders → remove (already included in the combined block)
+    return "";
   });
 }
 

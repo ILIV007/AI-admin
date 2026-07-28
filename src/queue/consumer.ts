@@ -835,12 +835,30 @@ async function handleFinalizeMediaGroup(
 
   const settings = await getSettings(env, firstItem.fromId);
 
-  // Send typing indicator
-  if (firstItem.fromId) {
+  // Send typing indicator + loading message for admin
+  const isAdmin = await isAuthorized(env, firstItem.fromId).catch(() => false);
+  let loadingMsgId: number | undefined;
+  if (isAdmin && firstItem.fromId) {
+    // Typing
     await sendChatAction(env.BOT_TOKEN, {
       chat_id: firstItem.fromId,
       action: "typing",
     }).catch(() => undefined);
+
+    // Loading message
+    try {
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      const loadingText = `<blockquote><b>${t(lang, "processing")}</b></blockquote>\n\n${t(lang, "processing.steps")}`;
+      const loadingResp = await sendMessage(env.BOT_TOKEN, {
+        chat_id: firstItem.fromId,
+        text: loadingText,
+        parse_mode: "HTML",
+      }).catch(() => undefined);
+      if (loadingResp && typeof loadingResp === "object" && "message_id" in loadingResp) {
+        loadingMsgId = (loadingResp as { message_id: number }).message_id;
+      }
+    } catch { /* ignore */ }
   }
 
   const pipelineMod: {
@@ -947,6 +965,35 @@ async function handleFinalizeMediaGroup(
     ctx.waitUntil(safe(recordScheduled(env, firstItem.fromId)));
   } else if (result.action === "failed") {
     ctx.waitUntil(safe(recordFailed(env, firstItem.fromId)));
+  }
+
+  // Edit loading message → report
+  if (loadingMsgId && firstItem.fromId) {
+    try {
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      const statusKey = `report.${result.action}`;
+      const status = t(lang, statusKey);
+      const reportLines: string[] = [
+        `<blockquote><b>${status}</b></blockquote>`,
+        ``,
+        `<b>${t(lang, "report.title")}</b>`,
+        `<blockquote>`,
+        `• ${t(lang, "report.category")}: <code>${result.classification?.category || "media"}</code>`,
+        `• AI Used: <code>${result.aiUsed ? "Yes" : "No"}</code>`,
+      ];
+      if (result.aiUsed && result.aiModel) {
+        reportLines.push(`• AI Model: <code>${result.aiModel}</code>`);
+      }
+      reportLines.push(`• Media items: <code>${allMedia.length}</code>`);
+      reportLines.push(`</blockquote>`);
+      await editMessageText(env.BOT_TOKEN, {
+        chat_id: firstItem.fromId,
+        message_id: loadingMsgId,
+        text: reportLines.join("\n"),
+        parse_mode: "HTML",
+      }).catch(() => undefined);
+    } catch { /* ignore */ }
   }
 }
 
