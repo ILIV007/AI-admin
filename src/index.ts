@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.1.0";
+const VERSION = "2.1.1";
 
 // ============================================================
 // MAIN EXPORT
@@ -197,7 +197,22 @@ async function handleWebhook(
     return new Response("ok", { status: 200 });
   }
 
-  // 5. SLOW PATH: Enqueue regular messages for async pipeline processing
+  // 5. SLOW PATH: Send typing immediately, then enqueue for pipeline
+  // Send typing indicator IMMEDIATELY (before queue delay)
+  if (msg?.chat?.id) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const { sendChatAction } = await import("./telegram/client");
+          await sendChatAction(env.BOT_TOKEN, {
+            chat_id: msg.chat.id,
+            action: "typing",
+          });
+        } catch { /* ignore */ }
+      })(),
+    );
+  }
+
   try {
     await enqueueUpdate(env, update);
   } catch (e) {

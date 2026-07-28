@@ -124,7 +124,12 @@ export async function handleStart(env: Env, message: TelegramMessage): Promise<v
 export async function handleHelp(env: Env, message: TelegramMessage): Promise<void> {
   const fromId = message.from?.id ?? 0;
   let role: Role | null = null;
+  let lang = getUiLanguage();
   try {
+    if (fromId) {
+      const settings = await getSettings(env, fromId);
+      lang = getUiLanguage(settings);
+    }
     const authorized = await isAuthorized(env, fromId);
     if (authorized) role = await getRole(env, fromId);
   } catch (e) {
@@ -132,37 +137,37 @@ export async function handleHelp(env: Env, message: TelegramMessage): Promise<vo
   }
 
   const lines: string[] = [];
-  lines.push("📚 <b>دستورات ربات</b>\n");
-  lines.push("/start — معرفی ربات");
-  lines.push("/help — همین راهنما");
-  lines.push("/version — اطلاعات نسخه و ساخت (همه)");
-  lines.push("/menu — باز کردن منوی اصلی (ادمین‌ها)");
-  lines.push("/footer &lt;متن&gt; — تغییر فوتر (مالک/ویراستار)");
-  lines.push("/checkperms — بررسی دسترسی‌های ربات در کانال (مالک/ویراستار)");
-  lines.push("/stats — آمار فعالیت (همه ادمین‌ها)");
-  lines.push("/models — لیست مدل‌های هوش مصنوعی + سلامت (همه ادمین‌ها)");
-  lines.push("/admins — مدیریت ادمین‌ها (فقط مالک)");
-  lines.push("/schedule &lt;زمان&gt; — زمان‌بندی پست بعدی");
-  lines.push("/ping — وضعیت ربات (فقط مالک)");
-  lines.push("/health — بررسی سلامت سیستم (فقط مالک)");
-  lines.push("/diag — گزارش تشخیصی کامل (فقط مالک)");
-  lines.push("/test — اجرای تست‌های قالب‌بندی (فقط مالک)");
-  lines.push("/reset &lt;stats|debug|jobs|all&gt; — صفر کردن آمار/لاگ/شغل‌ها (فقط مالک)");
-  lines.push("/queue — وضعیت صف شغل‌ها (فقط مالک)");
-  lines.push("/audit [n] — رویدادهای حساس اخیر (فقط مالک)");
-  lines.push("/webhook &lt;info|set &lt;url&gt;|delete|test&gt; — مدیریت وب‌هوک (فقط مالک)");
-  lines.push("/broadcast &lt;متن&gt; — پیام به همه ادمین‌ها (فقط مالک)");
+  lines.push("📚 <b>Bot Commands</b>\n");
+  lines.push("/start — Bot introduction");
+  lines.push("/help — This help message");
+  lines.push("/version — Version and build info (all)");
+  lines.push("/menu — Open main menu (admins)");
+  lines.push("/footer &lt;text&gt; — Change footer (owner/editor)");
+  lines.push("/checkperms — Check bot permissions in channel (owner/editor)");
+  lines.push("/stats — Activity stats (all admins)");
+  lines.push("/models — List AI models + health (all admins)");
+  lines.push("/admins — Manage admins (owner only)");
+  lines.push("/schedule &lt;time&gt; — Schedule next post");
+  lines.push("/ping — Bot status (owner only)");
+  lines.push("/health — System health check (owner only)");
+  lines.push("/diag — Full diagnostic report (owner only)");
+  lines.push("/test — Run formatter tests (owner only)");
+  lines.push("/reset &lt;stats|debug|jobs|all&gt; — Reset stats/logs/jobs (owner only)");
+  lines.push("/queue — Queue status (owner only)");
+  lines.push("/audit [n] — Recent audit events (owner only)");
+  lines.push("/webhook &lt;info|set &lt;url&gt;|delete|test&gt; — Manage webhook (owner only)");
+  lines.push("/broadcast &lt;text&gt; — Message to all admins (owner only)");
 
-  lines.push("\n👥 <b>نقش‌ها</b>");
-  lines.push("• مالک — دسترسی کامل + مدیریت ادمین‌ها");
-  lines.push("• ویراستار — انتشار/تایید/رد/زمان‌بندی + تنظیمات");
-  lines.push("• بازبین — تایید/رد + آمار");
-  lines.push("• بیننده — فقط آمار");
+  lines.push("\n👥 <b>Roles</b>");
+  lines.push("• Owner — Full access + Manage admins");
+  lines.push("• Editor — Publish/approve/reject/schedule + settings");
+  lines.push("• Reviewer — Approve/reject + stats");
+  lines.push("• Viewer — View stats only");
 
   if (role) {
-    lines.push(`\n🎫 نقش شما: <b>${escapeHtml(roleLabel(role))}</b>`);
+    lines.push(`\n🎫 Your role: <b>${escapeHtml(roleLabel(role, lang))}</b>`);
   } else {
-    lines.push("\n🎫 شما ادمین نیستید. دستور /menu برای ادمین‌هاست.");
+    lines.push("\n🎫 You are not an admin. /menu is for admins only.");
   }
 
   await safeSend(env, message.chat.id, lines.join("\n"));
@@ -210,18 +215,18 @@ export async function handleFooter(
   try {
     const authorized = await isAuthorized(env, fromId);
     if (!authorized) {
-      await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+      await safeSend(env, message.chat.id, "⛔ Unauthorized");
       return;
     }
     role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "footer: auth failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
 
   if (!can(role, "change_footer")) {
-    await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+    await safeSend(env, message.chat.id, "⛔ Unauthorized");
     return;
   }
 
@@ -230,7 +235,7 @@ export async function handleFooter(
     await safeSend(
       env,
       message.chat.id,
-      "⚠️ استفاده: <code>/footer متن فوتر</code>\nمثال: <code>/footer 🌀 @ILIVIR3</code>",
+      "⚠️ Usage: <code>/footer &lt;text&gt;</code>\nExample: <code>/footer 🌀 @ILIVIR3</code>",
     );
     return;
   }
@@ -241,14 +246,14 @@ export async function handleFooter(
     await saveSettings(env, fromId, settings);
   } catch (e) {
     log("error", SCOPE, "footer: saveSettings failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "❌ خطا در ذخیره تنظیمات.");
+    await safeSend(env, message.chat.id, "❌ Failed to save settings.");
     return;
   }
 
   await safeSend(
     env,
     message.chat.id,
-    `✅ فوتر بروزرسانی شد:\n<blockquote>${escapeHtml(newFooter)}</blockquote>`,
+    `✅ Footer updated:\n<blockquote>${escapeHtml(newFooter)}</blockquote>`,
   );
 }
 
@@ -262,18 +267,18 @@ export async function handleCheckperms(
   try {
     const authorized = await isAuthorized(env, fromId);
     if (!authorized) {
-      await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+      await safeSend(env, message.chat.id, "⛔ Unauthorized");
       return;
     }
     role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "checkperms: auth failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
 
   if (!can(role, "change_settings")) {
-    await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+    await safeSend(env, message.chat.id, "⛔ Unauthorized");
     return;
   }
 
@@ -290,12 +295,12 @@ export async function handleCheckperms(
     hook = await getWebhookInfo(env.BOT_TOKEN);
   } catch (e) {
     log("error", SCOPE, "checkperms: getMe/getWebhookInfo failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "❌ خطا در دریافت اطلاعات ربات.");
+    await safeSend(env, message.chat.id, "❌ Failed to get bot info.");
     return;
   }
 
   const lines: string[] = [];
-  lines.push("🔍 <b>وضعیت ربات</b>\n");
+  lines.push("🔍 <b>Bot status</b>\n");
   lines.push(`نام: ${escapeHtml(me.first_name ?? "?")}`);
   lines.push(`یوزرنیم: @${escapeHtml(me.username ?? "?")}`);
   lines.push(`کانال هدف: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>`);
@@ -308,7 +313,7 @@ export async function handleCheckperms(
     const when = hook.last_error_date
       ? new Date(hook.last_error_date * 1000).toISOString()
       : "?";
-    lines.push(`⚠️ آخرین خطا: <code>${escapeHtml(hook.last_error_message)}</code> @ ${when}`);
+    lines.push(`⚠️ Last error: <code>${escapeHtml(hook.last_error_message)}</code> @ ${when}`);
   }
   lines.push("");
   lines.push("ℹ️ نکته: برای ارسال پیام به کانال، ربات باید ادمین کانال با دسترسی <b>Post Messages</b> باشد. این دسترسی در Bot API قابل مشاهده نیست؛ از تنظیمات کانال بررسی کنید.");
@@ -326,18 +331,18 @@ export async function handleStats(
   try {
     const authorized = await isAuthorized(env, fromId);
     if (!authorized) {
-      await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+      await safeSend(env, message.chat.id, "⛔ Unauthorized");
       return;
     }
     role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "stats: auth failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
 
   if (!can(role, "view_stats")) {
-    await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+    await safeSend(env, message.chat.id, "⛔ Unauthorized");
     return;
   }
 
@@ -348,7 +353,7 @@ export async function handleStats(
     mine = await getStats(env, `u:${fromId}`);
   } catch (e) {
     log("error", SCOPE, "stats: getStats failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "❌ خطا در دریافت آمار.");
+    await safeSend(env, message.chat.id, "❌ Failed to get stats.");
     return;
   }
 
@@ -357,11 +362,11 @@ export async function handleStats(
       `${title}:\n` +
       `  📥 دریافت‌شده: ${s.totalReceived}\n` +
       `  📤 منتشرشده: ${s.totalPublished}\n` +
-      `  ✍️ بازنویسی‌شده: ${s.totalRewritten}\n` +
-      `  ❌ ناموفق: ${s.totalFailed}\n` +
-      `  ✅ تاییدها: ${s.totalApprovals}\n` +
+      `  ✍️ Rewritten: ${s.totalRewritten}\n` +
+      `  ❌ Failed: ${s.totalFailed}\n` +
+      `  ✅ Approvals: ${s.totalApprovals}\n` +
       `  🚫 ردشده: ${s.totalRejected}\n` +
-      `  📅 زمان‌بندی‌شده: ${s.totalScheduled}\n` +
+      `  📅 Scheduled: ${s.totalScheduled}\n` +
       `  🤖 فراخوانی AI: ${s.aiCalls}\n` +
       `  ⚠️ شکست AI: ${s.aiFailures}`
     );
@@ -377,13 +382,13 @@ export async function handleStats(
   const aiBlock = renderAiMetrics(global);
 
   const text =
-    `📊 <b>آمار فعالیت</b>\n\n` +
+    `📊 <b>Activity stats</b>\n\n` +
     `${fmt(global, "🌐 کلی")}\n\n` +
     `${chartBlock}\n\n` +
     `${successRateBlock}\n\n` +
     `${aiBlock}\n\n` +
     `${fmt(mine, "👤 شما")}\n\n` +
-    `آخرین بروزرسانی: <code>${last}</code>`;
+    `Last updated: <code>${last}</code>`;
 
   // Keep under Telegram's 4096 visible-char limit; chunk if needed.
   const parts = chunkHtml(text, 4000, "");
@@ -409,7 +414,7 @@ const MAX_BAR_CHARS = 20;
 function renderStatsChart(s: Stats): string {
   const items: { label: string; value: number }[] = [
     { label: "📤 انتشار", value: s.totalPublished },
-    { label: "✏️ بازنویسی", value: s.totalRewritten },
+    { label: "✏️ Rewrite", value: s.totalRewritten },
     { label: "❌ خطا", value: s.totalFailed },
   ];
 
@@ -449,12 +454,12 @@ function renderSuccessRate(s: Stats): string {
  */
 function renderAiMetrics(s: Stats): string {
   if (s.aiCalls === 0) {
-    return "<b>🤖 هوش مصنوعی</b>: <i>بدون فراخوانی</i>";
+    return "<b>🤖 AI</b>: <i>No calls</i>";
   }
   const rate = (s.aiFailures / s.aiCalls) * 100;
   const rounded = Math.round(rate * 10) / 10;
   return (
-    `<b>🤖 هوش مصنوعی</b>\n` +
+    `<b>🤖 AI</b>\n` +
     `   فراخوانی: <code>${s.aiCalls}</code>\n` +
     `   شکست: <code>${s.aiFailures}</code> (<code>${rounded}%</code>)`
   );
@@ -474,7 +479,7 @@ export async function handleAdmins(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "admins: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
 
@@ -488,13 +493,13 @@ export async function handleAdmins(
     admins = await listAdmins(env);
   } catch (e) {
     log("error", SCOPE, "admins: listAdmins failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "❌ خطا در دریافت لیست ادمین‌ها.");
+    await safeSend(env, message.chat.id, "❌ Failed to get admin list.");
     return;
   }
 
   const keyboard = adminListKeyboard(admins, ownerUserId(env));
   const text =
-    `👥 <b>مدیریت ادمین‌ها</b>\n\n` +
+    `👥 <b>Manage admins</b>\n\n` +
     `تعداد: ${admins.length}\n` +
     `برای حذف، روی ردیف ادمین ضربه بزنید. مالک قابل حذف نیست.\n` +
     `برای افزودن، «➕ افزودن ادمین» را بزنید.`;
@@ -512,18 +517,18 @@ export async function handleSchedule(
   try {
     const authorized = await isAuthorized(env, fromId);
     if (!authorized) {
-      await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+      await safeSend(env, message.chat.id, "⛔ Unauthorized");
       return;
     }
     role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "schedule: auth failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
 
   if (!can(role, "schedule")) {
-    await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+    await safeSend(env, message.chat.id, "⛔ Unauthorized");
     return;
   }
 
@@ -551,7 +556,7 @@ export async function handleSchedule(
     });
   } catch (e) {
     log("error", SCOPE, "schedule: KV put failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "❌ خطا در ذخیره زمان‌بندی.");
+    await safeSend(env, message.chat.id, "❌ Failed to save schedule.");
     return;
   }
 
@@ -564,7 +569,7 @@ export async function handleSchedule(
   await safeSend(
     env,
     message.chat.id,
-    `✅ زمان‌بندی فعال شد.\n\n` +
+    `✅ Schedule activated.\n\n` +
       `📅 پست بعدی شما در: <b>${escapeHtml(tehranTime)}</b>\n` +
       `⏱ شمارش معکوس: ${Math.max(0, Math.round((when - Date.now()) / 1000))} ثانیه\n\n` +
       `حالا پیام مورد نظر را بفرستید تا در زمان تعیین‌شده منتشر شود.\n` +
@@ -583,7 +588,7 @@ export async function handlePing(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "ping: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
 
@@ -613,7 +618,7 @@ export async function handlePing(
     `زمان سرور: <code>${now.toISOString()}</code>\n` +
     `زمان تهران: <code>${escapeHtml(tehranNow)}</code>\n` +
     `صف Webhook: <code>${hookPending}</code>\n` +
-    `کانال: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>\n` +
+    `Channel: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>\n` +
     `مالک: <code>${ownerUserId(env)}</code>`;
   await safeSend(env, message.chat.id, text);
 }
@@ -631,14 +636,14 @@ export async function handleVersion(
   }).format(now);
 
   const text =
-    `🏷 <b>اطلاعات نسخه</b>\n\n` +
+    `🏷 <b>Version Info</b>\n\n` +
     `<b>نسخه</b>: <code>${VERSION}</code>\n` +
     `<b>تاریخ ساخت</b>: <code>${BUILD_DATE}</code>\n` +
     `<b>زمان سرور</b>: <code>${now.toISOString()}</code>\n` +
     `<b>زمان تهران</b>: <code>${escapeHtml(tehranNow)}</code>\n\n` +
     `<b>📦 آمار ساخت</b>\n` +
     `• فایل‌های تایپ‌اسکریپت: <code>40</code>\n` +
-    `• مدل‌های هوش مصنوعی: <code>${ALL_MODELS.length}</code>\n` +
+    `• مدل‌های AI: <code>${ALL_MODELS.length}</code>\n` +
     `• کرون‌تریگرها: <code>1</code>\n\n` +
     `🌀 <i>AI Admin V2 — ساخته‌شده برای Cloudflare Workers</i>`;
   await safeSend(env, message.chat.id, text);
@@ -655,11 +660,11 @@ export async function handleModels(
     authorized = await isAuthorized(env, fromId);
   } catch (e) {
     log("error", SCOPE, "models: auth check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!authorized) {
-    await safeSend(env, message.chat.id, "⛔ دسترسی غیرمجاز");
+    await safeSend(env, message.chat.id, "⛔ Unauthorized");
     return;
   }
 
@@ -685,7 +690,7 @@ export async function handleModels(
   );
 
   const lines: string[] = [];
-  lines.push("🤖 <b>لیست مدل‌های هوش مصنوعی</b>");
+  lines.push("🤖 <b>List AI models</b>");
   lines.push(`تعداد کل: <code>${ALL_MODELS.length}</code>`);
   lines.push(`ارائه‌دهنده فعال: <code>${escapeHtml(activeProvider)}</code>`);
   lines.push("");
@@ -721,7 +726,7 @@ export async function handleHealth(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "health: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -810,10 +815,10 @@ export async function handleHealth(
   try {
     const stats = await getStats(env, "global");
     lines.push("");
-    lines.push("<b>📊 آمار کلی</b>");
+    lines.push("<b>📊 Global Stats</b>");
     lines.push(`📥 دریافت‌شده: <code>${stats.totalReceived}</code>`);
     lines.push(`📤 منتشرشده: <code>${stats.totalPublished}</code>`);
-    lines.push(`❌ ناموفق: <code>${stats.totalFailed}</code>`);
+    lines.push(`❌ Failed: <code>${stats.totalFailed}</code>`);
   } catch (e) {
     lines.push(
       `📊 <b>آمار</b>: 🔴 خطا — <code>${escapeHtml(String(e))}</code>`,
@@ -834,7 +839,7 @@ export async function handleDiag(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "diag: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -982,7 +987,7 @@ export async function handleTest(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "test: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -996,7 +1001,7 @@ export async function handleTest(
   const lines: string[] = [];
   lines.push("🧪 <b>تست‌های قالب‌بندی</b>\n");
   lines.push(`✅ موفق: <code>${summary.passed}</code>`);
-  lines.push(`❌ ناموفق: <code>${summary.failed}</code>`);
+  lines.push(`❌ Failed: <code>${summary.failed}</code>`);
 
   if (summary.failures.length > 0) {
     lines.push("\n<b>جزئیات شکست‌ها:</b>");
@@ -1070,7 +1075,7 @@ export async function handleReset(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "reset: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -1113,7 +1118,7 @@ export async function handleReset(
       await safeSend(
         env,
         message.chat.id,
-        "❌ خطا در ذخیره وضعیت تأیید. دوباره تلاش کنید.",
+        "❌ Failed to save approval status. Try again.",
       );
       return;
     }
@@ -1301,7 +1306,7 @@ export async function handleQueue(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "queue: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -1368,7 +1373,7 @@ export async function handleQueue(
     lines.push(`• ناموفق (failed): <code>${failed}</code>`);
     lines.push("");
     lines.push("<b>🔎 بر اساس نوع</b>");
-    lines.push(`• زمان‌بندی‌شده: <code>${scheduledPost}</code>`);
+    lines.push(`• Scheduled: <code>${scheduledPost}</code>`);
     lines.push(`• تایید (approval): <code>${approval}</code>`);
 
     // --- Detail section: recent pending ---
@@ -1422,7 +1427,7 @@ export async function handleQueue(
     await safeSend(
       env,
       message.chat.id,
-      "❌ خطا در دریافت وضعیت صف.\n<code>" + escapeHtml(String(e)) + "</code>",
+      "❌ Failed to get queue status.\n<code>" + escapeHtml(String(e)) + "</code>",
     );
   }
 }
@@ -1458,7 +1463,7 @@ export async function handleAudit(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "audit: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -1494,7 +1499,7 @@ export async function handleAudit(
     await safeSend(
       env,
       message.chat.id,
-      "❌ خطا در خواندن audit_log.\n<code>" + escapeHtml(String(e)) + "</code>",
+      "❌ Failed to read audit_log.\n<code>" + escapeHtml(String(e)) + "</code>",
     );
     return;
   }
@@ -1590,7 +1595,7 @@ export async function handleWebhook(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "webhook: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -1647,7 +1652,7 @@ async function handleWebhookInfo(
     await safeSend(
       env,
       message.chat.id,
-      "❌ خطا در دریافت اطلاعات وب‌هوک.\n<code>" +
+      "❌ Failed to get webhook info.\n<code>" +
         escapeHtml(String(e)) +
         "</code>",
     );
@@ -1673,7 +1678,7 @@ async function handleWebhookInfo(
       ? new Date(hook.last_error_date * 1000).toISOString()
       : "?";
     lines.push(
-      `⚠️ آخرین خطا: <code>${escapeHtml(hook.last_error_message)}</code> @ ${when}`,
+      `⚠️ Last error: <code>${escapeHtml(hook.last_error_message)}</code> @ ${when}`,
     );
   } else {
     lines.push("✅ خطایی ثبت نشده است.");
@@ -1833,7 +1838,7 @@ export async function handleBroadcast(
     ownerOk = await isOwner(env, fromId);
   } catch (e) {
     log("error", SCOPE, "broadcast: isOwner check failed", { error: String(e) });
-    await safeSend(env, message.chat.id, "⚠️ خطای داخلی.");
+    await safeSend(env, message.chat.id, "⚠️ Internal error.");
     return;
   }
   if (!ownerOk) {
@@ -1865,7 +1870,7 @@ export async function handleBroadcast(
     await safeSend(
       env,
       message.chat.id,
-      "❌ خطا در دریافت لیست ادمین‌ها.\n<code>" +
+      "❌ Failed to get admin list.\n<code>" +
         escapeHtml(String(e)) +
         "</code>",
     );

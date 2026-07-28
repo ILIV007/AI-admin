@@ -303,7 +303,7 @@ async function handleProcessUpdate(
         const faTime = new Date(schedFor).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" });
         await sendMessage(env.BOT_TOKEN, {
           chat_id: content.chatId,
-          text: `📅 پست زمان‌بندی شد برای ${faTime}\n🆔 <code>${jobId}</code>`,
+          text: `📅 Post scheduled for ${faTime}\n🆔 <code>${jobId}</code>`,
           parse_mode: "HTML",
         }).catch(() => undefined);
         return;

@@ -3,11 +3,11 @@
  * -----------------------------------------------------------------------------
  * Add-admin reply flow.
  *
- * The owner starts the flow by clicking "➕ افزودن ادمین" (callback
+ * The owner starts the flow by clicking "➕ Add Admin" (callback
  * `addadmin`). The callback router:
  *   1. Re-checks `isOwner` (V1 bug #4: any admin could add admins).
  *   2. Sets a short-lived KV flag `addadmin_next:{ownerUserId}` with TTL 120s.
- *   3. Replies: "آیدی عددی کاربر را بفرستید".
+ *   3. Replies: "Send the user numeric ID".
  *
  * The webhook/queue consumer must call `handleAddAdminReply(env, message)`
  * BEFORE routing the message through the content pipeline. If the KV flag is
@@ -15,7 +15,7 @@
  *   - First token must be a numeric Telegram user ID.
  *   - Optional second token is a role name (viewer/editor/reviewer). Owner
  *     role CANNOT be granted here — only `env.ADMIN_ID` is the owner, ever.
- *   - On success: `upsertAdmin`, reply "✅ ادمین اضافه شد", delete the KV
+ *   - On success: `upsertAdmin`, reply "✅ Admin added", delete the KV
  *     flag, return true so the caller skips the pipeline.
  *   - On parse failure: reply with a usage hint, delete the flag, return true
  *     (still consumed — don't let a typo leak into the channel pipeline).
@@ -151,14 +151,14 @@ export async function handleAddAdminReply(
   await reply(
     env,
     message.chat.id,
-    `✅ ادمین اضافه شد.\nآیدی: <code>${userIdNum}</code>\nنقش: <b>${roleFa(role)}</b>`,
+    `✅ Admin added.\nآیدی: <code>${userIdNum}</code>\nنقش: <b>${roleFa(role)}</b>`,
   );
   return true;
 }
 
 /**
  * Set the add-admin KV flag for the given owner. Called by the callback
- * router when the owner clicks "➕ افزودن ادمین".
+ * router when the owner clicks "➕ Add Admin".
  */
 export async function setAddAdminFlag(
   env: Env,

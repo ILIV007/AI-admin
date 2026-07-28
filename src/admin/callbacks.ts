@@ -84,7 +84,7 @@ export async function handleCallbackQuery(
 
   // Info-only buttons (e.g. owner row in admin list) — silent answer.
   if (data === "noop") {
-    await safeAnswer(env, cq.id, "ℹ️ این دکمه قابل کلیک نیست");
+    await safeAnswer(env, cq.id, "ℹ️ This button is not clickable");
     return;
   }
 
@@ -103,12 +103,12 @@ export async function handleCallbackQuery(
     if (authorized) role = await getRole(env, fromId);
   } catch (e) {
     log("error", SCOPE, "auth check failed", { error: String(e) });
-    await safeAnswer(env, cq.id, "⚠️ خطای داخلی", true);
+    await safeAnswer(env, cq.id, "⚠️ Internal error", true);
     return;
   }
 
   if (!authorized || !role) {
-    await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+    await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
     return;
   }
 
@@ -180,11 +180,11 @@ export async function handleCallbackQuery(
     } else if (data === "menu" || data.startsWith("menu:")) {
       await editToMainMenu(env, cq, role);
     } else {
-      await safeAnswer(env, cq.id, "⚠️ عملیات ناشناخته", true);
+      await safeAnswer(env, cq.id, "⚠️ Unknown action", true);
     }
   } catch (e) {
     log("error", SCOPE, "callback handler threw", { error: String(e), data });
-    await safeAnswer(env, cq.id, "⚠️ خطای داخلی", true);
+    await safeAnswer(env, cq.id, "⚠️ Internal error", true);
   }
 }
 
@@ -205,21 +205,21 @@ async function handleSet(
   switch (data) {
     case "set:settings": {
       if (!can(role, "change_settings")) {
-        await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+        await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
         return;
       }
       const settings = await getSettingsFor(env, fromId);
       await editText(
         env,
         cq,
-        "⚙️ <b>تنظیمات</b>\nیک گزینه را برای تغییر انتخاب کنید:",
+        "⚙️ <b>Settings</b>\nSelect an option to change:",
         settingsKeyboard(settings),
       );
       return;
     }
     case "set:stats": {
       if (!can(role, "view_stats")) {
-        await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+        await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
         return;
       }
       const text = await buildStatsText(env, fromId);
@@ -228,22 +228,26 @@ async function handleSet(
     }
     case "set:schedule": {
       if (!can(role, "schedule")) {
-        await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+        await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
         return;
       }
       const flag = await env.AI_ADMIN_KV.get(`sched_next:${fromId}`).catch(() => null);
       const text = flag
-        ? `📅 <b>زمان‌بندی فعال</b>\n\nپست بعدی شما در <code>${new Date(
+        ? `📅 <b>Schedule Active</b>\n\nYour next post will be published at <code>${new Date(
             Number(flag),
-          ).toISOString()}</code> منتشر خواهد شد.\nبرای لغو: <code>/schedule cancel</code>`
-        : "📅 <b>زمان‌بندی</b>\n\nهیچ زمان‌بندی فعالی ندارید.\nبرای فعال‌سازی: <code>/schedule in 30m</code>";
+          ).toISOString()}</code> will be published.
+To cancel:: <code>/schedule cancel</code>`
+        : "📅 <b>Schedule</b>\n\nNo active schedule.\nTo activate: <code>/schedule in 30m</code>";
       await editText(env, cq, text);
       return;
     }
     case "set:status": {
-      const text = `🔍 <b>وضعیت</b>\n\nربات: آنلاین ✅\nکانال: <code>${escapeHtml(
+      const text = `🔍 <b>Status</b>
+
+Bot: Online ✅
+Channel: <code>${escapeHtml(
         env.TARGET_CHANNEL,
-      )}</code>\nمالک: <code>${ownerUserId(env)}</code>`;
+      )}</code>\nOwner: <code>${ownerUserId(env)}</code>`;
       await editText(env, cq, text);
       return;
     }
@@ -253,10 +257,10 @@ async function handleSet(
     }
     case "set:help": {
       const text =
-        "❓ <b>راهنما</b>\n\n" +
-        "/start — معرفی\n/help — دستورات\n/menu — منو\n/footer &lt;متن&gt; — فوتر\n" +
-        "/checkperms — دسترسی‌های ربات\n/stats — آمار\n/admins — ادمین‌ها\n" +
-        "/schedule &lt;زمان&gt; — زمان‌بندی\n/ping — وضعیت سرور";
+        "❓ <b>Help</b>\n\n" +
+        "/start — Introduction\n/help — Commands\n/menu — Menu\n/footer &lt;متن&gt; — Footer\n" +
+        "/checkperms — Bot permissions\n/stats — Stats\n/admins — Admins\n" +
+        "/schedule &lt;زمان&gt; — Schedule\n/ping — Server status";
       await editText(env, cq, text);
       return;
     }
@@ -271,7 +275,7 @@ async function handleSet(
   // a reviewer might want — but per role matrix, only owner+editor have
   // change_settings, so we gate ALL set:* updates on change_settings.
   if (!can(role, "change_settings")) {
-    await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+    await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
     return;
   }
 
@@ -371,7 +375,7 @@ async function handleSet(
   await editText(
     env,
     cq,
-    "⚙️ <b>تنظیمات</b>\nیک گزینه را برای تغییر انتخاب کنید:",
+    "⚙️ <b>Settings</b>\nSelect an option to change:",
     settingsKeyboard(settings),
   );
 }
@@ -387,7 +391,7 @@ async function handlePick(
   role: Role,
 ): Promise<void> {
   if (!can(role, "change_settings")) {
-    await safeAnswer(env, cq.id, "⛔ دسترسی غیرمجاز", true);
+    await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
     return;
   }
   const fromId = cq.from.id;
@@ -430,7 +434,7 @@ async function handlePick(
       text = "🦙 <b>مدل OpenRouter</b>\nیک مدل را انتخاب کنید:";
       break;
     default:
-      await safeAnswer(env, cq.id, "⚠️ عملیات ناشناخته", true);
+      await safeAnswer(env, cq.id, "⚠️ Unknown action", true);
       return;
   }
   await safeAnswer(env, cq.id, "");
@@ -530,7 +534,7 @@ async function handleBack(
       await editText(
         env,
         cq,
-        "⚙️ <b>تنظیمات</b>\nیک گزینه را برای تغییر انتخاب کنید:",
+        "⚙️ <b>Settings</b>\nSelect an option to change:",
         settingsKeyboard(settings),
       );
       return;
@@ -554,7 +558,7 @@ async function editToMainMenu(
   role: Role,
 ): Promise<void> {
   const text =
-    `🎛 <b>منوی مدیریت</b>\n\n` +
+    `🎛 <b>Menuی مدیریت</b>\n\n` +
     `نقش: <b>${escapeHtml(roleLabel(role))}</b>\n` +
     `یک گزینه را انتخاب کنید:`;
   await editText(env, cq, text, mainMenuKeyboard(role));
@@ -581,7 +585,7 @@ async function showAdminList(
 
   const keyboard = adminListKeyboard(admins, ownerUserId(env));
   const text =
-    `👥 <b>مدیریت ادمین‌ها</b>\n\n` +
+    `👥 <b>مدیریت Admins</b>\n\n` +
     `تعداد: ${admins.length}\n` +
     `برای حذف، روی ردیف ادمین ضربه بزنید. مالک قابل حذف نیست.`;
   await editText(env, cq, text, keyboard);
@@ -686,7 +690,7 @@ async function buildStatsText(env: Env, userId: number): Promise<string> {
       `📅 ${s.totalScheduled}  🤖 ${s.aiCalls}  ⚠️ ${s.aiFailures}`
     );
   };
-  return `📊 <b>آمار</b>\n\n${fmt(global, "🌐 کلی")}\n\n${fmt(mine, "👤 شما")}`;
+  return `📊 <b>Stats</b>\n\n${fmt(global, "🌐 کلی")}\n\n${fmt(mine, "👤 شما")}`;
 }
 
 /**

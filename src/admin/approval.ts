@@ -40,7 +40,7 @@
  *   (stats, audit) and best-effort delete our duplicate published message.
  *
  * BUTTON DISABLING (fixes V1 bug — buttons remained clickable after approval):
- *   Before publishing, we edit the preview message to a "⏳ در حال انتشار…"
+ *   Before publishing, we edit the preview message to a "⏳ Publishing…"
  *   state with a single disabled button. This PREVENTS the user from
  *   double-clicking Publish while we're doing the slow network I/O. After the
  *   publish completes (or fails), we edit again to the final state. The
@@ -147,7 +147,7 @@ export async function handleApprovalCallback(
   }
 
   if (!jobId) {
-    await safeAnswer(env, cq.id, "⚠️ شناسه نامعتبر");
+    await safeAnswer(env, cq.id, "⚠️ Invalid ID");
     return;
   }
 
@@ -179,7 +179,7 @@ export async function handleApprovalCallback(
   }
 
   if (!job || job.status !== "pending") {
-    await safeAnswer(env, cq.id, "⚠️ این پیش‌نمایش دیگر معتبر نیست", true);
+    await safeAnswer(env, cq.id, "⚠️ This preview is no longer valid", true);
     await disablePreviewKeyboard(env, cq, "⏳ پیش‌نمایش دیگر معتبر نیست");
     return;
   }
@@ -218,8 +218,8 @@ async function handlePublish(
   // Disable the keyboard BEFORE the slow publish I/O so the user can't
   // double-click Publish while we're working. This is the visible half of
   // the "buttons remain clickable after callback" fix.
-  await disablePreviewKeyboard(env, cq, "⏳ در حال انتشار…");
-  await safeAnswer(env, cq.id, "⏳ در حال انتشار…");
+  await disablePreviewKeyboard(env, cq, "⏳ Publishing…");
+  await safeAnswer(env, cq.id, "⏳ Publishing…");
 
   // Publish to TARGET_CHANNEL.
   let publishOk = false;
@@ -337,11 +337,11 @@ async function handlePublish(
     }
     // Our failure stuck.
     void audit(env, job.userId, "approval.failed", `job:${jobId}`, publishError ?? "unknown");
-    await safeAnswer(env, cq.id, "❌ خطا در انتشار", true);
+    await safeAnswer(env, cq.id, "❌ Publish failed", true);
     await disablePreviewKeyboard(
       env,
       cq,
-      `❌ خطا در انتشار: ${truncate(publishError ?? "نامشخص", 200)}`,
+      `❌ Publish failed: ${truncate(publishError ?? "نامشخص", 200)}`,
     );
     return;
   }
@@ -352,8 +352,8 @@ async function handlePublish(
     log("warn", SCOPE, "could not verify publish transition; skipping stats", {
       jobId,
     });
-    await safeAnswer(env, cq.id, "✅ منتشر شد");
-    await disablePreviewKeyboard(env, cq, "✅ منتشر شد");
+    await safeAnswer(env, cq.id, "✅ Published");
+    await disablePreviewKeyboard(env, cq, "✅ Published");
     return;
   }
 
@@ -372,8 +372,8 @@ async function handlePublish(
     log("warn", SCOPE, "audit failed", { error: String(e) });
   }
 
-  await safeAnswer(env, cq.id, "✅ منتشر شد");
-  await disablePreviewKeyboard(env, cq, "✅ منتشر شد");
+  await safeAnswer(env, cq.id, "✅ Published");
+  await disablePreviewKeyboard(env, cq, "✅ Published");
 }
 
 // ============================================================
@@ -419,18 +419,54 @@ async function handleReject(
     } catch (e) {
       log("warn", SCOPE, "audit failed", { error: String(e) });
     }
-    await safeAnswer(env, cq.id, "🚫 رد شد");
-    await disablePreviewKeyboard(env, cq, "🚫 رد شد");
+    await safeAnswer(env, cq.id, "🚫 Rejected");
+    // Don't delete or replace the message — just update the keyboard to show "Rejected"
+    await updateKeyboardOnly(env, cq, "🚫 Rejected");
   } else {
     // Someone else resolved it (published or failed). Don't record a rejection.
-    await safeAnswer(env, cq.id, "⚠️ این پیش‌نمایش قبلاً پردازش شده", true);
-    await disablePreviewKeyboard(env, cq, "⏳ قبلاً پردازش شده");
+    await safeAnswer(env, cq.id, "⚠️ Already processed", true);
+    await updateKeyboardOnly(env, cq, "⏳ Already processed");
   }
 }
 
 // ============================================================
 // Helpers
 // ============================================================
+
+/**
+ * Update ONLY the inline keyboard (not the message text). Uses
+ * editMessageReplyMarkup to avoid changing the preview content.
+ * Falls back to editMessageText if reply_markup edit fails.
+ */
+async function updateKeyboardOnly(
+  env: Env,
+  cq: TelegramCallbackQuery,
+  statusText: string,
+): Promise<void> {
+  const msg = cq.message;
+  if (!msg) return;
+  try {
+    // Try editMessageReplyMarkup first (only changes keyboard, preserves message)
+    const { tgApi } = await import("../telegram/client");
+    await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
+      chat_id: msg.chat.id,
+      message_id: msg.message_id,
+      reply_markup: disabledKeyboard(statusText),
+    });
+  } catch (e) {
+    // Fallback: try editMessageText (keeps original text, adds keyboard)
+    try {
+      await editMessageText(env.BOT_TOKEN, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+        text: `<blockquote>${escapeHtml(statusText)}</blockquote>`,
+        reply_markup: disabledKeyboard(statusText),
+      });
+    } catch (e2) {
+      log("warn", SCOPE, "updateKeyboardOnly failed", { error: String(e2) });
+    }
+  }
+}
 
 /**
  * Swap the preview message's keyboard for a single disabled button showing

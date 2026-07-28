@@ -92,8 +92,15 @@ export function can(role: Role | null, permission: string): boolean {
 }
 
 // ============================================================
-// Human-readable labels (Persian)
+// Human-readable labels (i18n)
 // ============================================================
+
+const ROLE_LABELS_EN: Record<Role, string> = {
+  owner: "Owner",
+  editor: "Editor",
+  reviewer: "Reviewer",
+  viewer: "Viewer",
+};
 
 const ROLE_LABELS_FA: Record<Role, string> = {
   owner: "مالک",
@@ -103,9 +110,10 @@ const ROLE_LABELS_FA: Record<Role, string> = {
 };
 
 /**
- * Return the Persian label for a role. Used in admin lists, help text, and
- * audit logs.
+ * Return the label for a role in the given language.
+ * Defaults to English if lang is not provided.
  */
-export function roleLabel(role: Role): string {
-  return ROLE_LABELS_FA[role] ?? role;
+export function roleLabel(role: Role, lang?: "en" | "fa"): string {
+  if (lang === "fa") return ROLE_LABELS_FA[role] ?? role;
+  return ROLE_LABELS_EN[role] ?? role;
 }

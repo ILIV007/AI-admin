@@ -60,6 +60,21 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       continue;
     }
 
+    // --- Indented code block (4+ spaces or tab) ---
+    if (/^(    |\t)/.test(line)) {
+      const codeLines: string[] = [];
+      while (i < lines.length && /^(    |\t)/.test(lines[i])) {
+        // Strip 4 spaces or 1 tab
+        codeLines.push(lines[i].replace(/^(    |\t)/, ""));
+        i++;
+      }
+      blocks.push({
+        kind: "code",
+        code: codeLines.join("\n"),
+      });
+      continue;
+    }
+
     // --- Heading (only levels 2 and 3) ---
     const headingMatch = /^(#{2,3})\s+(.+)$/.exec(line);
     if (headingMatch) {

@@ -66,7 +66,22 @@ export async function runPipeline(
   const isAdmin = content.fromId != null && content.fromId === ownerUserId(env);
 
   // ── 1. Clean content + protect prompts ──────────────────────────
-  const cleaned = cleanContent(content.text);
+  // First, strip any existing footer from the input text (prevents duplicate footer)
+  let inputText = content.text;
+  if (settings.footerText) {
+    // Remove footer if it appears at the end of the text (with optional whitespace/newlines)
+    const footerEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const footerRegex = new RegExp(`\\s*${footerEscaped}\\s*$`, "i");
+    inputText = inputText.replace(footerRegex, "").trim();
+    // Also remove standalone @channel lines that match the footer's channel
+    const channelMatch = settings.footerText.match(/@(\w+)/);
+    if (channelMatch) {
+      const channelName = channelMatch[1];
+      const channelRegex = new RegExp(`\\s*@${channelName}\\s*$`, "i");
+      inputText = inputText.replace(channelRegex, "").trim();
+    }
+  }
+  const cleaned = cleanContent(inputText);
   const { text: protectedText, prompts } = protectPrompts(cleaned);
   let workingText = protectedText;
 
