@@ -120,6 +120,40 @@ export async function handleCallbackQuery(
   }
 
   try {
+    // Cancel scheduled post — admin can cancel a scheduled post before it's published
+    if (data.startsWith("cancelsched:")) {
+      const jobId = data.slice("cancelsched:".length);
+      try {
+        const { getJob, updateJobStatus } = await import("../storage/repositories/jobs");
+        const job = await getJob(env, jobId);
+        if (!job) {
+          await safeAnswer(env, cq.id, "⚠️ Job not found", true);
+          return;
+        }
+        if (job.status !== "pending") {
+          await safeAnswer(env, cq.id, "⚠️ Already processed", true);
+          return;
+        }
+        // Mark as rejected (reuse 'rejected' status)
+        await updateJobStatus(env, jobId, "rejected");
+        await safeAnswer(env, cq.id, "🚫 Scheduled post cancelled");
+        // Update keyboard to show cancelled
+        try {
+          const { tgApi } = await import("../telegram/client");
+          const { disabledKeyboard } = await import("./keyboards");
+          if (cq.message) {
+            await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
+              chat_id: cq.message.chat.id,
+              message_id: cq.message.message_id,
+              reply_markup: JSON.parse(disabledKeyboard("🚫 Cancelled")),
+            });
+          }
+        } catch { /* ignore */ }
+      } catch (e) {
+        await safeAnswer(env, cq.id, "❌ Failed to cancel", true);
+      }
+      return;
+    }
     // UI Language selector — anyone can change their own UI language
     if (data === "set:uilang") {
       // Show language selector

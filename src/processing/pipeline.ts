@@ -417,6 +417,37 @@ export async function runPipeline(
         pendingCount: pendingFors.length,
       });
 
+      // Send preview to admin with Reject button (like approval mode)
+      try {
+        const publisherMod: {
+          sendPreview?: (
+            env: Env,
+            userId: number,
+            html: string,
+            parts: string[],
+            media?: ExtractedContent["media"],
+            keyboard?: string,
+          ) => Promise<{ ok: boolean; messageId?: number; error?: string }>;
+        } = await import("../telegram/publisher");
+        if (publisherMod.sendPreview && content.fromId != null) {
+          // Build a reject keyboard for the scheduled post
+          const { buildInlineKeyboard } = await import("../telegram/entities");
+          const rejectKb = buildInlineKeyboard([
+            [{ text: "🚫 Cancel Scheduled Post", callback_data: `cancelsched:${jobId}` }],
+          ]);
+          await publisherMod.sendPreview(
+            env,
+            content.fromId,
+            html,
+            parts,
+            content.media,
+            rejectKb,
+          );
+        }
+      } catch (e) {
+        log("warn", scope, "schedule preview send failed", { error: String(e) });
+      }
+
       return {
         ok: true,
         action: "scheduled",

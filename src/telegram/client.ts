@@ -74,6 +74,15 @@ export async function tgApi<T = unknown>(
   method: string,
   body: Record<string, unknown>,
 ): Promise<T> {
+  // CRITICAL: Remove undefined/null values — Telegram API rejects them.
+  // This matches V1 behavior (tgCall cleaned payload before sending).
+  const cleanBody: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (value !== undefined && value !== null) {
+      cleanBody[key] = value;
+    }
+  }
+
   // At most 2 iterations: initial attempt + one retry on 429.
   for (let attempt = 0; attempt < 2; attempt++) {
     const url = `${API_BASE}${token}/${method}`;
@@ -83,7 +92,7 @@ export async function tgApi<T = unknown>(
       response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body ?? {}),
+        body: JSON.stringify(cleanBody),
       });
     } catch (err) {
       // Network error — no point retrying; surface immediately.

@@ -30,8 +30,8 @@ export const DEFAULT_SETTINGS: Settings = {
   //   When enabled with these defaults, every post is published 24h after
   //   receipt, one per 24h cycle (i.e. daily).
   scheduleEnabled: false,
-  scheduleMessagesPerDay: 1,
-  scheduleIntervalHours: 24,
+  scheduleMessagesPerDay: 4,
+  scheduleIntervalHours: 6,
 };
 
 // ============================================================
