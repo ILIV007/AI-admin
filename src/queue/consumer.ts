@@ -257,6 +257,32 @@ async function handleProcessUpdate(
     return;
   }
 
+  // ── Channel post: edit in place if channelEditing is enabled ────
+  // This matches V1 behavior: when a post appears in the target channel
+  // (not from the bot itself), clean + AI rewrite + format, then EDIT
+  // the original channel post (not publish a new one).
+  if (content.isChannelPost && content.chatType === "channel") {
+    // Check if channel editing is enabled
+    const channelSettings = await getSettings(env, userId || Number(env.ADMIN_ID));
+    if (channelSettings.channelEditing) {
+      // Skip if this is the bot's own post (prevent infinite loop)
+      const { getMe } = await import("../telegram/client");
+      try {
+        const me = await getMe(env.BOT_TOKEN);
+        if (content.fromId === me.id) {
+          log("info", "queue.consumer", "skipping self-post in channel");
+          return;
+        }
+      } catch { /* ignore — proceed */ }
+      // Run channel edit pipeline
+      await runChannelEditPipeline(env, content, channelSettings);
+      return;
+    } else {
+      log("info", "queue.consumer", "channel post ignored (channelEditing OFF)");
+      return;
+    }
+  }
+
   // ── addadmin flow: owner sending a numeric user id ──────────────
   if (content.chatType === "private" && userId !== null) {
     try {
@@ -525,6 +551,171 @@ async function sendAdminReport(
   } catch (e) {
     log("warn", "queue.consumer", "admin report failed", { error: String(e) });
   }
+}
+
+// ============================================================
+// runChannelEditPipeline — edit an existing channel post in place
+// (matches V1 behavior: clean + AI rewrite + format, then editMessageText/Caption)
+// ============================================================
+
+async function runChannelEditPipeline(
+  env: Env,
+  content: ExtractedContent,
+  settings: import("../types").Settings,
+): Promise<void> {
+  const scope = "queue.consumer.channelEdit";
+  const startTime = Date.now();
+  log("info", scope, "editing channel post", { messageId: content.messageId, chatId: content.chatId });
+
+  try {
+    // 1. Clean content + protect prompts
+    const { cleanContent, protectPrompts, restorePrompts } = await import("../processing/cleaner");
+    let inputText = content.text;
+    // Strip existing footer (prevent duplicate)
+    if (settings.footerText) {
+      const footerEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const footerRegex = new RegExp(`\\s*${footerEscaped}\\s*$`, "i");
+      inputText = inputText.replace(footerRegex, "").trim();
+      const channelMatch = settings.footerText.match(/@(\w+)/);
+      if (channelMatch) {
+        const channelName = channelMatch[1];
+        const channelRegex = new RegExp(`\\s*@${channelName}\\s*$`, "i");
+        inputText = inputText.replace(channelRegex, "").trim();
+      }
+    }
+    const cleaned = cleanContent(inputText);
+    const { text: protectedText, prompts } = protectPrompts(cleaned);
+    let workingText = protectedText;
+
+    // 2. Classify
+    const { classify } = await import("../processing/classifier");
+    const classification = classify(workingText);
+
+    // 3. AI rewrite (if enabled)
+    let aiUsed = false;
+    let aiModel: string | undefined;
+    const isAdmin = true; // channel posts are always processed
+    if (settings.rewriteMode !== "none" && isAdmin) {
+      if (classification.recommendedNeedsRewrite || settings.rewriteMode !== "normal") {
+        try {
+          const { rewriteWithFallback } = await import("../ai/fallback");
+          const { getProfile } = await import("../config/defaults");
+          const profile = getProfile(settings.profile);
+          const aiReq: import("../types").AIRequest = {
+            text: workingText,
+            classification,
+            settings,
+            profile,
+            mode: "rewrite",
+          };
+          const ai = await rewriteWithFallback(env, aiReq);
+          if (ai?.ok && ai?.text) {
+            workingText = ai.text;
+            aiUsed = true;
+            aiModel = ai.model;
+          }
+        } catch (e) {
+          log("warn", scope, "AI failed in channel edit", { error: String(e) });
+        }
+      }
+    }
+
+    // 4. Sanitize + restore prompts
+    const { sanitizeAiOutput } = await import("../formatting/sanitizer");
+    workingText = sanitizeAiOutput(workingText);
+    workingText = restorePrompts(workingText, prompts);
+
+    // 5. Format to HTML
+    const { markdownToBlocks } = await import("../formatting/blocks");
+    const { blocksToTelegramHtml } = await import("../formatting/telegram-html");
+    const { chunkHtml } = await import("../formatting/chunker");
+    const blocks = markdownToBlocks(workingText);
+    const html = blocksToTelegramHtml(blocks, settings.footerText);
+    const parts = chunkHtml(html, 4000, settings.footerText);
+
+    // Channel posts are single message — use first part only
+    const editHtml = parts[0] || html;
+
+    // 6. Edit the channel post
+    const { editMessageText, editMessageCaption, sendMessage } = await import("../telegram/client");
+    let editResult: { ok: boolean; error?: string };
+
+    if (content.media) {
+      // Has media → editMessageCaption
+      try {
+        await editMessageCaption(env.BOT_TOKEN, {
+          chat_id: content.chatId,
+          message_id: content.messageId,
+          caption: editHtml,
+          parse_mode: "HTML",
+        });
+        editResult = { ok: true };
+      } catch (e) {
+        editResult = { ok: false, error: String(e) };
+      }
+    } else {
+      // Text only → editMessageText
+      try {
+        await editMessageText(env.BOT_TOKEN, {
+          chat_id: content.chatId,
+          message_id: content.messageId,
+          text: editHtml,
+          parse_mode: "HTML",
+        });
+        editResult = { ok: true };
+      } catch (e) {
+        editResult = { ok: false, error: String(e) };
+      }
+    }
+
+    const elapsedMs = Date.now() - startTime;
+
+    // 7. Notify admin
+    const adminId = Number(env.ADMIN_ID);
+
+    if (editResult.ok) {
+      // Stats
+      try {
+        const { recordPublished, recordAiCall } = await import("../storage/repositories/stats");
+        await recordPublished(env, adminId);
+        if (aiUsed) await recordAiCall(env, adminId);
+      } catch { /* ignore */ }
+
+      const reportText =
+        `<blockquote><b>✏️ Channel Post Edited</b></blockquote>\n\n` +
+        `<b>📊 Report</b>\n` +
+        `<blockquote>\n` +
+        `• Message ID: <code>${content.messageId}</code>\n` +
+        `• Category: <code>${classification.category}</code>\n` +
+        `• AI Used: <code>${aiUsed ? "Yes" : "No"}</code>\n` +
+        (aiUsed ? `• AI Model: <code>${aiModel}</code>\n` : "") +
+        `• Time: <code>${elapsedMs}ms</code>\n` +
+        `</blockquote>`;
+
+      await sendMessage(env.BOT_TOKEN, {
+        chat_id: adminId,
+        text: reportText,
+        parse_mode: "HTML",
+      }).catch(() => undefined);
+    } else {
+      const errorText =
+        `<blockquote><b>❌ Channel Edit Failed</b></blockquote>\n\n` +
+        `<b>Error:</b> <code>${escapeHtmlSimple(editResult.error || "unknown")}</code>\n` +
+        `<b>Message ID:</b> <code>${content.messageId}</code>`;
+
+      await sendMessage(env.BOT_TOKEN, {
+        chat_id: adminId,
+        text: errorText,
+        parse_mode: "HTML",
+      }).catch(() => undefined);
+    }
+  } catch (e) {
+    log("error", scope, "channel edit pipeline threw", { error: String(e) });
+  }
+}
+
+function escapeHtmlSimple(s: string): string {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // ============================================================
