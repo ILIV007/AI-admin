@@ -151,7 +151,7 @@ export async function handleAddAdminReply(
   await reply(
     env,
     message.chat.id,
-    `✅ Admin added.\nآیدی: <code>${userIdNum}</code>\nنقش: <b>${roleFa(role)}</b>`,
+    `✅ Admin added.\nID: <code>${userIdNum}</code>\nRole: <b>${roleLabel(role)}</b>`,
   );
   return true;
 }
@@ -179,16 +179,16 @@ export async function setAddAdminFlag(
 // Internal helpers
 // ============================================================
 
-function roleFa(role: Role): string {
+function roleLabel(role: Role): string {
   switch (role) {
     case "owner":
-      return "مالک";
+      return "Owner";
     case "editor":
-      return "ویراستار";
+      return "Editor";
     case "reviewer":
-      return "بازبین";
+      return "Reviewer";
     case "viewer":
-      return "بیننده";
+      return "Viewer";
   }
 }
 

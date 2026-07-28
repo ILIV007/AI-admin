@@ -258,9 +258,9 @@ Channel: <code>${escapeHtml(
     case "set:help": {
       const text =
         "❓ <b>Help</b>\n\n" +
-        "/start — Introduction\n/help — Commands\n/menu — Menu\n/footer &lt;متن&gt; — Footer\n" +
+        "/start — Introduction\n/help — Commands\n/menu — Menu\n/footer &lt;text&gt; — Footer\n" +
         "/checkperms — Bot permissions\n/stats — Stats\n/admins — Admins\n" +
-        "/schedule &lt;زمان&gt; — Schedule\n/ping — Server status";
+        "/schedule &lt;time&gt; — Schedule\n/ping — Server status";
       await editText(env, cq, text);
       return;
     }
@@ -454,7 +454,7 @@ async function handlePick(
       break;
     case "gemodel":
       keyboard = geminiModelKeyboard(settings.geminiModel);
-      text = "💎 <b>مدل Gemini</b>\nیک مدل را انتخاب کنید:";
+      text = "💎 <b>Gemini Model</b>\nSelect a model:";
       break;
     case "ormodel":
       keyboard = openrouterModelKeyboard(settings.openrouterModel);
@@ -480,17 +480,17 @@ async function handleRmAdmin(
 ): Promise<void> {
   const fromId = cq.from.id;
   if (!(await isOwnerCheck(env, fromId))) {
-    await safeAnswer(env, cq.id, "⛔ Owner only می‌تواند ادمین حذف کند", true);
+    await safeAnswer(env, cq.id, "⛔ Owner only can remove admins", true);
     return;
   }
 
   const targetId = parseInt(data.slice("rmadmin:".length), 10);
   if (!Number.isInteger(targetId) || targetId <= 0) {
-    await safeAnswer(env, cq.id, "⚠️ آیدی نامعتبر", true);
+    await safeAnswer(env, cq.id, "⚠️ Invalid ID", true);
     return;
   }
   if (targetId === ownerUserId(env)) {
-    await safeAnswer(env, cq.id, "⚠️ مالک قابل حذف نیست", true);
+    await safeAnswer(env, cq.id, "⚠️ Owner cannot be removed", true);
     return;
   }
 
@@ -498,12 +498,12 @@ async function handleRmAdmin(
     await removeAdmin(env, targetId);
   } catch (e) {
     log("error", SCOPE, "removeAdmin failed", { error: String(e) });
-    await safeAnswer(env, cq.id, "❌ خطا در حذف", true);
+    await safeAnswer(env, cq.id, "❌ Failed to remove", true);
     return;
   }
 
   void auditLog(env, fromId, "admin.remove", `u:${targetId}`);
-  await safeAnswer(env, cq.id, "✅ ادمین حذف شد");
+  await safeAnswer(env, cq.id, "✅ Admin removed");
 
   // Refresh the admin list keyboard.
   await showAdminList(env, cq, "owner");
@@ -520,7 +520,7 @@ async function handleAddAdmin(
 ): Promise<void> {
   const fromId = cq.from.id;
   if (!(await isOwnerCheck(env, fromId))) {
-    await safeAnswer(env, cq.id, "⛔ Owner only می‌تواند ادمین اضافه کند", true);
+    await safeAnswer(env, cq.id, "⛔ Owner only can add admins", true);
     return;
   }
 
@@ -529,11 +529,11 @@ async function handleAddAdmin(
   await editText(
     env,
     cq,
-    "➕ <b>افزودن ادمین</b>\n\nآیدی عددی کاربر را بفرستید.\n" +
-      "فرمت: <code>آیدی نقش</code>\n" +
-      "نقش‌ها: <code>editor</code>, <code>reviewer</code>, <code>viewer</code>\n\n" +
-      "مثال: <code>123456789 editor</code>\n" +
-      "⚠️ این حالت تا ۲ دقیقه فعال است.",
+    "➕ <b>Add Admin</b>\n\nSend the user numeric ID.\n" +
+      "Format: <code>ID role</code>\n" +
+      "Roles: <code>editor</code>, <code>reviewer</code>, <code>viewer</code>\n\n" +
+      "Example: <code>123456789 editor</code>\n" +
+      "⚠️ This mode is active for 2 minutes.",
   );
 }
 
@@ -617,15 +617,15 @@ async function showAdminList(
     admins = await listAdmins(env);
   } catch (e) {
     log("error", SCOPE, "listAdmins failed", { error: String(e) });
-    await safeAnswer(env, cq.id, "❌ خطا", true);
+    await safeAnswer(env, cq.id, "❌ Error", true);
     return;
   }
 
   const keyboard = adminListKeyboard(admins, ownerUserId(env));
   const text =
-    `👥 <b>مدیریت Admins</b>\n\n` +
-    `تعداد: ${admins.length}\n` +
-    `برای حذف، روی ردیف ادمین ضربه بزنید. مالک قابل حذف نیست.`;
+    `👥 <b>Manage Admins</b>\n\n` +
+    `Count: ${admins.length}\n` +
+    `To remove, tap the admin row. Owner cannot be removed.`;
   await editText(env, cq, text, keyboard);
 }
 
@@ -634,7 +634,7 @@ async function runAiTest(
   cq: TelegramCallbackQuery,
 ): Promise<void> {
   // Quick answer so the spinner clears; we'll edit the message with results.
-  await safeAnswer(env, cq.id, "🧪 در حال آزمایش…");
+  await safeAnswer(env, cq.id, "🧪 Testing...");
 
   const fromId = cq.from.id;
   const settings = await getSettingsFor(env, fromId);
@@ -674,21 +674,21 @@ async function runAiTest(
     const dt = Date.now() - t0;
     if (r.ok) {
       resultText =
-        `🧪 <b>تست AI موفق</b>\n\n` +
+        `🧪 <b>AI Test Success</b>\n\n` +
         `<blockquote>${escapeHtml(r.text)}</blockquote>\n\n` +
-        `ارائه‌دهنده: <code>${escapeHtml(r.provider)}</code>\n` +
-        `مدل: <code>${escapeHtml(r.model)}</code>\n` +
-        `زمان: ${dt}ms\n` +
-        `توکن: ${r.tokensIn ?? "?"} → ${r.tokensOut ?? "?"}`;
+        `Provider: <code>${escapeHtml(r.provider)}</code>\n` +
+        `Model: <code>${escapeHtml(r.model)}</code>\n` +
+        `Time: ${dt}ms\n` +
+        `Tokens: ${r.tokensIn ?? "?"} → ${r.tokensOut ?? "?"}`;
     } else {
       resultText =
-        `🧪 <b>تست AI ناموفق</b>\n\n` +
-        `خطا: <code>${escapeHtml(r.error ?? "نامشخص")}</code>\n` +
-        `ارائه‌دهنده: <code>${escapeHtml(r.provider)}</code>\n` +
-        `مدل: <code>${escapeHtml(r.model)}</code>`;
+        `🧪 <b>AI Test Failed</b>\n\n` +
+        `Error: <code>${escapeHtml(r.error ?? "unknown")}</code>\n` +
+        `Provider: <code>${escapeHtml(r.provider)}</code>\n` +
+        `Model: <code>${escapeHtml(r.model)}</code>`;
     }
   } catch (e) {
-    resultText = `🧪 <b>تست AI خطا</b>\n\n<code>${escapeHtml(String(e))}</code>`;
+    resultText = `🧪 <b>AI Test Error</b>\n\n<code>${escapeHtml(String(e))}</code>`;
   }
   await editText(env, cq, resultText);
 }
@@ -721,14 +721,14 @@ async function buildStatsText(env: Env, userId: number): Promise<string> {
     log("warn", SCOPE, "getStats failed", { error: String(e) });
   }
   const fmt = (s: Stats | null, t: string): string => {
-    if (!s) return `${t}: (داده‌ای ثبت نشده)`;
+    if (!s) return `${t}: (no data)`;
     return (
       `${t}:\n📥 ${s.totalReceived}  📤 ${s.totalPublished}  ✍️ ${s.totalRewritten}\n` +
       `❌ ${s.totalFailed}  ✅ ${s.totalApprovals}  🚫 ${s.totalRejected}\n` +
       `📅 ${s.totalScheduled}  🤖 ${s.aiCalls}  ⚠️ ${s.aiFailures}`
     );
   };
-  return `📊 <b>Stats</b>\n\n${fmt(global, "🌐 کلی")}\n\n${fmt(mine, "👤 شما")}`;
+  return `📊 <b>Stats</b>\n\n${fmt(global, "🌐 Global")}\n\n${fmt(mine, "👤 You")}`;
 }
 
 /**

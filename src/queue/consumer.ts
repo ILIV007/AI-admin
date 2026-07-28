@@ -671,8 +671,14 @@ async function runChannelEditPipeline(
     const { editMessageText, editMessageCaption, sendMessage } = await import("../telegram/client");
     let editResult: { ok: boolean; error?: string };
 
+    log("info", scope, "attempting edit", {
+      chatId: content.chatId,
+      messageId: content.messageId,
+      hasMedia: !!content.media,
+      htmlLength: editHtml.length,
+    });
+
     if (content.media) {
-      // Has media → editMessageCaption
       try {
         await editMessageCaption(env.BOT_TOKEN, {
           chat_id: content.chatId,
@@ -681,11 +687,12 @@ async function runChannelEditPipeline(
           parse_mode: "HTML",
         });
         editResult = { ok: true };
+        log("info", scope, "editMessageCaption success");
       } catch (e) {
         editResult = { ok: false, error: String(e) };
+        log("error", scope, "editMessageCaption failed", { error: String(e), chatId: content.chatId, messageId: content.messageId });
       }
     } else {
-      // Text only → editMessageText
       try {
         await editMessageText(env.BOT_TOKEN, {
           chat_id: content.chatId,
@@ -694,8 +701,10 @@ async function runChannelEditPipeline(
           parse_mode: "HTML",
         });
         editResult = { ok: true };
+        log("info", scope, "editMessageText success");
       } catch (e) {
         editResult = { ok: false, error: String(e) };
+        log("error", scope, "editMessageText failed", { error: String(e), chatId: content.chatId, messageId: content.messageId });
       }
     }
 

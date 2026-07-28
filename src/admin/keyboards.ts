@@ -60,8 +60,8 @@ export function mainMenuKeyboard(role: Role | null, settings?: import("../types"
     const approvalOther = settings.approvalMode ? "off" : "on";
     const channelEditOther = settings.channelEditing ? "off" : "on";
     rows.push([
-      { text: `✅ Approval: ${settings.approvalMode ? "On ✅" : "Off"}`, callback_data: `set:approval:${approvalOther}` },
-      { text: `📝 Channel Edit: ${settings.channelEditing ? "On ✅" : "Off"}`, callback_data: `set:channeledit:${channelEditOther}` },
+      { text: `${settings.approvalMode ? "🟢" : "⚪"} Approval: ${settings.approvalMode ? "ON" : "OFF"}`, callback_data: `set:approval:${approvalOther}` },
+      { text: `${settings.channelEditing ? "🟢" : "⚪"} Channel Edit: ${settings.channelEditing ? "ON" : "OFF"}`, callback_data: `set:channeledit:${channelEditOther}` },
     ]);
   }
 
@@ -115,13 +115,13 @@ export function settingsKeyboard(settings: Settings): string {
         callback_data: "pick:lang",
       },
       {
-        text: `✅ Approval: ${settings.approvalMode ? "On" : "Off"}`,
+        text: `${settings.approvalMode ? "🟢" : "⚪"} Approval: ${settings.approvalMode ? "ON" : "OFF"}`,
         callback_data: `set:approval:${approvalOther}`,
       },
     ],
     [
       {
-        text: `📝 Channel Edit: ${settings.channelEditing ? "On" : "Off"}`,
+        text: `${settings.channelEditing ? "🟢" : "⚪"} Channel Edit: ${settings.channelEditing ? "ON" : "OFF"}`,
         callback_data: `set:channeledit:${channelEditOther}`,
       },
       {
