@@ -340,7 +340,12 @@ export function protectPrompts(text: string): {
       if (isPromptParagraph(part)) {
         const idx = prompts.length;
         prompts.push(part);
-        return `${NUL}PROMPT_${idx}${NUL}`;
+        // Use a TEXT-BASED placeholder (not NUL) so it survives AI API
+        // round-trips. NUL bytes are stripped by JSON serialization in the
+        // Gemini/OpenRouter APIs, leaving "PROMPT_0" as visible text.
+        // Unicode angle brackets (U+27E8/U+27E9) are distinctive enough
+        // to never appear in normal Telegram message text.
+        return `⟨⟨PROMPT_BLOCK_${idx}⟩⟩`;
       }
       return part;
     })
@@ -354,7 +359,7 @@ export function restorePrompts(text: string, prompts: string[]): string {
   // Combine ALL prompts into a SINGLE code block (not separate blocks).
   // PRESERVE "prompt:" / "system:" / "instruction:" labels — they are part of
   // the content the user wants to keep. Do NOT strip them.
-  // Use ```prompt fence → rendered as <blockquote expandable><code>
+  // Use ```prompt fence → rendered as <blockquote expandable><pre><code>
   // (collapsible AND copyable monospace).
   const allPrompts = prompts
     .map((p) => p.trim())
@@ -364,15 +369,31 @@ export function restorePrompts(text: string, prompts: string[]): string {
 
   if (!allPrompts) return text; // nothing left after cleaning
 
-  // Replace all placeholders with a single combined block
+  // Replace all text-based placeholders with a single combined block.
+  // Regex matches: ⟨⟨PROMPT_BLOCK_0⟩⟩ (with optional whitespace from AI).
   let firstReplaced = false;
-  return text.replace(/\u0000PROMPT_(\d+)\u0000/g, () => {
+  const result = text.replace(/⟨⟨\s*PROMPT_BLOCK_(\d+)\s*⟩⟩/g, () => {
     if (!firstReplaced) {
       firstReplaced = true;
       return "\n\n```prompt\n" + allPrompts + "\n```\n\n";
     }
     return "";
   });
+
+  // Fallback: if the AI stripped the angle brackets but left "PROMPT_BLOCK_0",
+  // catch that too (case-insensitive, with optional surrounding whitespace).
+  if (!firstReplaced) {
+    const fallback = result.replace(/\bPROMPT_BLOCK_\d+\b/gi, () => {
+      if (!firstReplaced) {
+        firstReplaced = true;
+        return "\n\n```prompt\n" + allPrompts + "\n```\n\n";
+      }
+      return "";
+    });
+    return fallback;
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------

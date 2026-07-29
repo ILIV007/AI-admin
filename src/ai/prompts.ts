@@ -65,7 +65,8 @@ export function buildSystemPrompt(
       `- NEVER use markdown tables (| col | col |). Use bullet/numbered lists instead. (P2-3)\n` +
       `- Use ONLY ## (H2) and ### (H3) for headings. NEVER use # (H1) or ####+. (P2-4)\n` +
       `- CRITICAL: NEVER add pagination ("Part 1/2", "Page 1", "1/N"). The system handles splitting. (P1-3)\n` +
-      `- CRITICAL: Preserve ALL links EXACTLY. [text](url) stays [text](url). Bare URLs stay as-is. NEVER remove/shorten/reformat any URL.\n` +
+      `- CRITICAL: Preserve ALL links EXACTLY as they appear in the source. [text](url) MUST stay as [text](url] in your output. NEVER strip the URL part and leave only the text. NEVER convert a markdown link to plain text. If the source has [click here](https://example.com), your output MUST have [click here](https://example.com) — NOT just "click here".\n` +
+      `- CRITICAL: GitHub links [text](https://github.com/owner/repo) MUST be preserved EXACTLY. Do NOT strip them to plain text. Do NOT remove the URL. The entire [text](url) must appear in your output.\n` +
       `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit" lines. Do NOT add "مخزن گیت‌هاب:" before links.\n` +
       `- CRITICAL: NEVER translate. Preserve the original language exactly. English stays English, Persian stays Persian. Keep technical terms (AI, API, GPU, LLM) as-is.\n` +
@@ -79,6 +80,7 @@ export function buildSystemPrompt(
       `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically. (G)\n` +
       `- RTL: Persian paragraphs should begin with Persian text when natural. If the subject is an English technical term (e.g. Python, React, API), starting with the English term is ACCEPTABLE and natural. Do NOT force artificial Persian prefixes like "زبان Python" or "فریم‌ورک React". (P1-2)\n` +
       `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words (می‌رود, می‌تواند).\n` +
+      `- CRITICAL PERSIAN: Do NOT double letters. Pay special attention to the letter ه (heh) — write it ONCE, never "هه". Check every word. If unsure, write the simpler form. Proofread your output for doubled letters before returning.\n` +
       `- EMOJI: NEVER at the END of sentences/paragraphs. NEVER 🤖⚡🔥🚀 randomly. Max 1-2 per post, only when genuinely enhances content.\n` +
       `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance.`,
   );

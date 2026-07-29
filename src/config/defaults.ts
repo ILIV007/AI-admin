@@ -21,8 +21,8 @@ export const DEFAULT_SETTINGS: Settings = {
   channelEditing: false,
   footerText: "🌀 @ILIVIR3",
   aiProvider: "gemini",
-  geminiModel: "gemini-2.5-flash",
-  openrouterModel: "meta-llama/llama-3.3-70b-instruct:free",
+  geminiModel: "gemini-3.6-flash",
+  openrouterModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
   profile: "ilivir3",
   uiLanguage: "en",
   // Schedule system (task 26):
@@ -47,21 +47,21 @@ export interface ModelEntry {
 }
 
 export const GEMINI_MODELS: ModelEntry[] = [
+  { id: "gemini-3.6-flash", provider: "gemini", label: "Gemini 3.6 Flash", maxTokens: 8192, notes: "Newest" },
+  { id: "gemini-3.5-flash", provider: "gemini", label: "Gemini 3.5 Flash", maxTokens: 8192 },
+  { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash-Lite", maxTokens: 8192, notes: "Fastest" },
+  { id: "gemini-3-flash", provider: "gemini", label: "Gemini 3 Flash", maxTokens: 8192 },
   { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", maxTokens: 8192, notes: "Stable default" },
-  { id: "gemini-2.5-flash-lite", provider: "gemini", label: "Gemini 2.5 Flash-Lite", maxTokens: 8192, notes: "Fastest" },
-  { id: "gemini-2.0-flash", provider: "gemini", label: "Gemini 2.0 Flash", maxTokens: 8192 },
-  { id: "gemini-2.0-flash-lite", provider: "gemini", label: "Gemini 2.0 Flash-Lite", maxTokens: 8192 },
-  { id: "gemini-1.5-flash", provider: "gemini", label: "Gemini 1.5 Flash", maxTokens: 8192 },
-  { id: "gemini-1.5-flash-8b", provider: "gemini", label: "Gemini 1.5 Flash-8B", maxTokens: 8192, notes: "Lightweight" },
+  { id: "gemini-2.5-flash-lite", provider: "gemini", label: "Gemini 2.5 Flash-Lite", maxTokens: 8192 },
 ];
 
 export const OPENROUTER_MODELS: ModelEntry[] = [
-  { id: "meta-llama/llama-3.3-70b-instruct:free", provider: "openrouter", label: "Llama 3.3 70B", maxTokens: 4096, notes: "Stable default" },
+  { id: "nvidia/nemotron-3-ultra-550b-a55b:free", provider: "openrouter", label: "Nemotron 3 Ultra 550B", maxTokens: 4096 },
+  { id: "qwen/qwen3-coder:free", provider: "openrouter", label: "Qwen3 Coder", maxTokens: 4096, notes: "Code-focused" },
+  { id: "nvidia/nemotron-3-super-120b-a12b:free", provider: "openrouter", label: "Nemotron 3 Super 120B", maxTokens: 4096 },
+  { id: "google/gemma-4-31b-it:free", provider: "openrouter", label: "Gemma 4 31B", maxTokens: 4096 },
   { id: "openai/gpt-oss-20b:free", provider: "openrouter", label: "GPT-OSS 20B", maxTokens: 4096, notes: "Lightweight" },
-  { id: "google/gemma-2-9b-it:free", provider: "openrouter", label: "Gemma 2 9B", maxTokens: 4096 },
-  { id: "qwen/qwen-2.5-7b-instruct:free", provider: "openrouter", label: "Qwen 2.5 7B", maxTokens: 4096, notes: "Multilingual" },
-  { id: "microsoft/phi-3-medium-128k-instruct:free", provider: "openrouter", label: "Phi-3 Medium 128K", maxTokens: 4096, notes: "Long context" },
-  { id: "nvidia/llama-3.1-nemotron-70b-instruct:free", provider: "openrouter", label: "Nemotron 70B", maxTokens: 4096 },
+  { id: "meta-llama/llama-3.3-70b-instruct:free", provider: "openrouter", label: "Llama 3.3 70B", maxTokens: 4096, notes: "Stable default" },
 ];
 
 export const ALL_MODELS: ModelEntry[] = [...GEMINI_MODELS, ...OPENROUTER_MODELS];

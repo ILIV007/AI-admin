@@ -77,7 +77,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.6.0";
+const VERSION = "v2.7.0";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -221,7 +221,7 @@ export async function handleMenu(env: Env, message: TelegramMessage): Promise<vo
   }
 
   const text =
-    `<blockquote><b>🎛 Control Panel</b> <code>v2.6.0</code></blockquote>\n\n` +
+    `<blockquote><b>🎛 Control Panel</b> <code>${VERSION}</code></blockquote>\n\n` +
     `<b>Welcome back!</b>\n` +
     `Role: <b>${escapeHtml(roleLabel(role, lang))}</b>\n\n` +
     `Toggle <b>Approval</b> to require publish confirmation.\n` +

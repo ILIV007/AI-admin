@@ -120,9 +120,10 @@ export async function handleCallbackQuery(
   }
 
   try {
-    // Cancel scheduled post — admin can cancel a scheduled post before it's published.
-    // P2-SS7 fix: two-step confirmation. First tap asks "are you sure?";
-    // second tap within 30s actually cancels. Prevents accidental taps.
+    // Cancel scheduled post — single-tap cancel (reverted from two-step
+    // confirmation which failed due to KV eventual consistency: the `put`
+    // on the first tap was not visible to the `get` on the second tap
+    // when they hit different Cloudflare edge locations).
     if (data.startsWith("cancelsched:")) {
       const jobId = data.slice("cancelsched:".length);
       try {
@@ -136,43 +137,7 @@ export async function handleCallbackQuery(
           await safeAnswer(env, cq.id, "⚠️ Already processed", true);
           return;
         }
-
-        // Two-step confirmation via KV.
-        const confirmKey = `cancelsched_confirm:${jobId}`;
-        const confirmed = await env.AI_ADMIN_KV.get(confirmKey);
-        if (!confirmed) {
-          // First tap: set confirmation flag + show "confirm" keyboard.
-          await env.AI_ADMIN_KV.put(confirmKey, "1", { expirationTtl: 30 });
-          await safeAnswer(
-            env,
-            cq.id,
-            "⚠️ Tap Cancel AGAIN within 30s to confirm",
-            true,
-          );
-          // Update keyboard to show a "Confirm Cancel" button.
-          try {
-            const { tgApi } = await import("../telegram/client");
-            const { buildInlineKeyboard } = await import("../telegram/entities");
-            const confirmKb = buildInlineKeyboard([
-              [
-                {
-                  text: "🚫 Confirm Cancel",
-                  callback_data: `cancelsched:${jobId}`,
-                },
-              ],
-            ]);
-            if (cq.message) {
-              await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
-                chat_id: cq.message.chat.id,
-                message_id: cq.message.message_id,
-                reply_markup: JSON.parse(confirmKb),
-              });
-            }
-          } catch { /* ignore */ }
-          return;
-        }
-        // Second tap: actually cancel.
-        await env.AI_ADMIN_KV.delete(confirmKey);
+        // Cancel immediately.
         await updateJobStatus(env, jobId, "rejected");
         await safeAnswer(env, cq.id, "🚫 Scheduled post cancelled");
         // Update keyboard to show cancelled

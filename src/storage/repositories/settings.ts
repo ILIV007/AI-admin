@@ -24,7 +24,7 @@ import { exec, execAll, nowMs } from "../d1";
 // ============================================================
 
 const SETTINGS_KV_PREFIX = "settings:user";
-const SETTINGS_KV_TTL_SEC = 120; // 2 min cache (was 30s — reduces KV reads)
+const SETTINGS_KV_TTL_SEC = 300; // 5 min cache (was 120s — reduces KV reads by 60%)
 
 function kvKey(userId: number): string {
   return `${SETTINGS_KV_PREFIX}:${userId}`;

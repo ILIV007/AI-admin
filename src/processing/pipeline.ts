@@ -70,11 +70,76 @@ import { log } from "../observability/logger";
 // for the footer and any entity-expansion surprises.
 const CHUNK_MAX_VISIBLE = 4000;
 
+// Telegram caption hard cap is 1024 visible chars. We chunk at 1000 for headroom.
+const CAPTION_MAX_VISIBLE = 1000;
+
 // 48-hour edit window for Telegram message edits.
 const TELEGRAM_EDIT_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 // Max pending scheduled posts per user (prevents unbounded D1 growth).
 const MAX_PENDING_SCHEDULED_PER_USER = 50;
+
+// ============================================================
+// chunkMixedMedia — two-level chunking for media posts
+// ============================================================
+
+/**
+ * Chunk HTML for posts that may have media.
+ *
+ * CRITICAL FIX: when a post has media AND needs multiple parts, the FIRST
+ * part is a media caption (1024 char limit) but subsequent parts are
+ * text-only messages (4096 char limit). Previously, ALL parts used the
+ * caption limit (1000), making text-only parts unnecessarily short —
+ * a 4000-char text message was split into 4 pieces of 1000 instead of
+ * 1 piece of 4000.
+ *
+ * This function:
+ * 1. If no media → chunk everything at textMax (simple case).
+ * 2. If media → first chunk at captionMax to see if it fits in one caption.
+ *    a. If 1 part → done (single caption + footer).
+ *    b. If multiple parts → first part = caption (at captionMax),
+ *       remaining content re-chunked at textMax (much larger) → fewer parts.
+ *
+ * @param html       Full HTML to chunk (footer already embedded by renderer).
+ * @param hasMedia   Whether the post has media (photo/video/document/animation).
+ * @param footer     Footer text (passed to chunker so it strips + re-appends).
+ * @param captionMax Max visible chars for the caption part (media only).
+ * @param textMax    Max visible chars for text-message parts.
+ * @returns Array of HTML chunks.
+ */
+function chunkMixedMedia(
+  html: string,
+  hasMedia: boolean,
+  footer: string,
+  captionMax: number,
+  textMax: number,
+): string[] {
+  if (!hasMedia) {
+    // No media: all parts are text messages. Simple chunk.
+    return chunkHtml(html, textMax, footer);
+  }
+
+  // Media: first pass — chunk at caption limit WITHOUT footer to see how
+  // many caption-sized parts we'd need.
+  const captionParts = chunkHtml(html, captionMax, "");
+  if (captionParts.length <= 1) {
+    // Fits in a single caption. Re-chunk WITH footer (so footer is appended
+    // to the single part).
+    return chunkHtml(html, captionMax, footer);
+  }
+
+  // Multiple parts needed:
+  // - Part 0 = media caption (at captionMax, no footer — publisher adds it)
+  // - Parts 1+ = text messages (at textMax, WITH footer on the last one)
+  //
+  // We take the first caption part as-is, then concatenate the remaining
+  // caption parts and re-chunk them at the much larger textMax. This
+  // dramatically reduces the number of text parts (e.g. 3×1000 → 1×3000).
+  const captionPart = captionParts[0];
+  const remainingHtml = captionParts.slice(1).join("\n\n");
+  const textParts = chunkHtml(remainingHtml, textMax, footer);
+  return [captionPart, ...textParts];
+}
 
 // ============================================================
 // runPipeline
@@ -258,11 +323,19 @@ export async function runPipeline(
   const html = blocksToTelegramHtml(blocks, settings.footerText);
 
   // ── 11. Chunk by visible length ──────
-  // For media posts: caption limit is 1024 chars. Use 1000 for caption.
-  // For text-only: message limit is 4096 chars. Use 4000.
+  // CRITICAL FIX: when a post has media AND needs multiple parts, the FIRST
+  // part is a media caption (1024 char limit) but subsequent parts are
+  // text-only messages (4096 char limit). Using the caption limit for ALL
+  // parts made text-only parts unnecessarily short. chunkMixedMedia handles
+  // this by chunking the caption at 1000 and the rest at 4000.
   const hasMedia = !!content.media;
-  const chunkMax = hasMedia ? 1000 : CHUNK_MAX_VISIBLE;
-  let parts = chunkHtml(html, chunkMax, settings.footerText);
+  let parts = chunkMixedMedia(
+    html,
+    hasMedia,
+    settings.footerText,
+    CAPTION_MAX_VISIBLE,
+    CHUNK_MAX_VISIBLE,
+  );
 
   // Check if this post contains prompts (from protectPrompts)
   const hasPrompts = prompts.length > 0;
@@ -308,7 +381,7 @@ export async function runPipeline(
       if (summaryResult?.ok && summaryResult?.text) {
         const summaryBlocks = markdownToBlocks(summaryResult.text);
         const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
-        const newParts = chunkHtml(summaryHtml, chunkMax, settings.footerText);
+        const newParts = chunkMixedMedia(summaryHtml, hasMedia, settings.footerText, CAPTION_MAX_VISIBLE, CHUNK_MAX_VISIBLE);
         if (newParts.length < parts.length) {
           log("info", scope, "summarize reduced parts", { before: parts.length, after: newParts.length });
           parts = newParts;
@@ -354,7 +427,7 @@ export async function runPipeline(
         if (ultraResult?.ok && ultraResult?.text) {
           const ultraBlocks = markdownToBlocks(ultraResult.text);
           const ultraHtml = blocksToTelegramHtml(ultraBlocks, settings.footerText);
-          const ultraParts = chunkHtml(ultraHtml, chunkMax, settings.footerText);
+          const ultraParts = chunkMixedMedia(ultraHtml, hasMedia, settings.footerText, CAPTION_MAX_VISIBLE, CHUNK_MAX_VISIBLE);
           if (ultraParts.length < parts.length) {
             log("info", scope, "ultra-summarize reduced parts", { before: parts.length, after: ultraParts.length });
             parts = ultraParts;
@@ -381,11 +454,12 @@ export async function runPipeline(
       const footerBlock = settings.footerText
         ? `<blockquote>${escapeFooter(settings.footerText)}</blockquote>`
         : "";
-      // Hard cap to chunkMax (minus footer room) so we never exceed Telegram's
-      // caption limit (1024 for media) or message limit (4096 for text).
-      // truncateVisible keeps HTML tags balanced.
+      // Hard cap to the appropriate limit (minus footer room) so we never
+      // exceed Telegram's caption limit (1024 for media) or message limit
+      // (4096 for text). truncateVisible keeps HTML tags balanced.
+      const forceMax = hasMedia ? CAPTION_MAX_VISIBLE : CHUNK_MAX_VISIBLE;
       const footerRoom = footerBlock ? footerBlock.length + 2 : 0; // +2 for "\n"
-      const cap = chunkMax - footerRoom;
+      const cap = forceMax - footerRoom;
       let single = parts[0];
       // Only truncate if it exceeds the cap.
       // truncateVisible is now a static import.
@@ -405,8 +479,16 @@ export async function runPipeline(
       log("info", scope, "using reply chain split", { parts: parts.length });
       // Re-chunk the BEST html (summarized if available) with a smaller max
       // to leave room for the footer + page number on every part.
-      const splitMax = (hasMedia ? 1000 : CHUNK_MAX_VISIBLE) - 150;
-      parts = chunkHtml(bestHtml, splitMax, settings.footerText);
+      // CRITICAL FIX: use chunkMixedMedia so the caption part uses 850
+      // (1000-150) and text parts use 3850 (4000-150), not 850 for ALL.
+      const replyRoom = 150; // room for footer + page number on each part
+      parts = chunkMixedMedia(
+        bestHtml,
+        hasMedia,
+        settings.footerText,
+        CAPTION_MAX_VISIBLE - replyRoom,
+        CHUNK_MAX_VISIBLE - replyRoom,
+      );
       const totalPages = parts.length;
       const footerEscaped = escapeFooter(settings.footerText);
       parts = parts.map((p, i) => {
@@ -609,7 +691,7 @@ export async function runPipeline(
       // the cron ever reconstructs HTML from `html` + appends footer.
       // P2-SS8 fix: also store AI metadata so the cron can report which
       // model processed the post.
-      const partsNoFooter = chunkHtml(html, chunkMax, "");
+      const partsNoFooter = chunkMixedMedia(html, hasMedia, "", CAPTION_MAX_VISIBLE, CHUNK_MAX_VISIBLE);
       const payload = JSON.stringify({
         html,
         parts: partsNoFooter,

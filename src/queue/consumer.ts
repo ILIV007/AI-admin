@@ -281,7 +281,7 @@ async function handleProcessUpdate(
           const { getMe } = await import("../telegram/client");
           const me = await getMe(env.BOT_TOKEN);
           botId = me.id;
-          await env.AI_ADMIN_KV.put("bot:id", String(botId), { expirationTtl: 86400 });
+          await env.AI_ADMIN_KV.put("bot:id", String(botId), { expirationTtl: 7 * 24 * 60 * 60 }); // 7 days
         }
       } catch (e) {
         log("warn", "queue.consumer", "failed to get bot ID", { error: String(e) });
