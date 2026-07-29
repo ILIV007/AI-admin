@@ -120,12 +120,13 @@ export const FORMATTER_SAMPLES: FormatterSample[] = [
     expectedNotContains: ["<i>"],
   },
   {
-    // Regression test for P1-4: colon→blockquote only fires for URLs/code,
-    // NOT for normal prose after a colon.
-    name: "colon-no-autoquote-prose",
+    // Regression test: colon→blockquote NOW fires for ALL content after colon,
+    // including regular prose. This is the desired behavior — the user wants
+    // content after ":" to be quoted.
+    name: "colon-autoquote-prose",
     input: "Here are the steps:\n\nFirst, clone the repository.",
-    expectedContains: ["First, clone the repository."],
-    expectedNotContains: ["<blockquote>First, clone"],
+    expectedContains: ["<blockquote>First, clone"],
+    expectedNotContains: [],
   },
   {
     // Regression test for P1-4: colon→blockquote DOES fire for bare URLs.

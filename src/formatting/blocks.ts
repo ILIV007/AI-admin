@@ -187,8 +187,10 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         spans: parseInlineSpans(paraText),
       });
 
-      // If ends with colon, peek ahead: only auto-quote if the next non-blank
-      // line starts with http(s):// or is a code fence.
+      // If ends with colon, peek ahead: auto-quote the next paragraph.
+      // This applies to: bare URLs, markdown links, code fences, AND regular
+      // text paragraphs that follow a colon. The colon signals "here is what
+      // I'm introducing" — the content after it should be quoted.
       if (endsWithColon && i < lines.length) {
         // Skip blank lines between colon and content
         let peek = i;
@@ -198,7 +200,8 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
         const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
         const isCodeFence = /^(```|~~~)/.test(nextTrimmed);
-        if (isUrlStart || isMarkdownLink || isCodeFence) {
+        const isRegularText = nextTrimmed.length > 0 && !nextTrimmed.startsWith("#") && !nextTrimmed.startsWith(">") && !nextTrimmed.startsWith("-") && !nextTrimmed.startsWith("*") && !/^\d+\.\s/.test(nextTrimmed);
+        if (isUrlStart || isMarkdownLink || isCodeFence || isRegularText) {
           // Collect the quote paragraph
           i = peek;
           const quoteLines: string[] = [];

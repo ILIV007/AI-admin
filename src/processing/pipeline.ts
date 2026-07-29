@@ -204,10 +204,20 @@ export async function runPipeline(
   // Priority: none → non-admin (no AI) → recommended-or-explicit → format-only
   // P0-1 fix: AI rewriting is available to owner + editor (not reviewer/viewer).
   // Non-admins always get format-only output.
+  // FIX: for "normal" rewriteMode with editIntensity > 0, always use AI.
+  // Previously, if the classifier said "no rewrite needed" AND mode was "normal",
+  // AI was skipped — even if the user wanted formatting improvements.
   let useAi = false;
   const canUseAi = isAdmin && (role === "owner" || role === "editor");
   if (settings.rewriteMode !== "none" && canUseAi) {
-    if (classification.recommendedNeedsRewrite || settings.rewriteMode !== "normal") {
+    if (settings.rewriteMode !== "normal") {
+      // light/aggressive/summarize → always use AI
+      useAi = true;
+    } else if (classification.recommendedNeedsRewrite) {
+      // normal mode + classifier says rewrite needed
+      useAi = true;
+    } else if (settings.editIntensity > 0) {
+      // normal mode + user wants edits → use AI for formatting
       useAi = true;
     }
   }
@@ -379,14 +389,37 @@ export async function runPipeline(
       };
       const summaryResult = await rewriteWithFallback(env, summarizeReq);
       if (summaryResult?.ok && summaryResult?.text) {
-        const summaryBlocks = markdownToBlocks(summaryResult.text);
+        // CRITICAL: if the AI stripped the prompt placeholder during
+        // summarization, the prompt content would be LOST. Check if any
+        // placeholder survived. If not, re-insert the prompt block at
+        // the end of the summarized text.
+        let summaryText = summaryResult.text;
+        if (hasPrompts) {
+          const hasPlaceholder = /⟨⟨\s*PROMPT_BLOCK_\d+\s*⟩⟩/i.test(summaryText) ||
+                                /\bPROMPT_BLOCK_\d+\b/i.test(summaryText);
+          if (!hasPlaceholder) {
+            // AI removed the placeholder — re-insert the prompt block.
+            const allPrompts = prompts
+              .map((p) => p.trim())
+              .filter((p) => p.length > 0)
+              .map((p, i) => (prompts.length > 1 ? `--- Prompt ${i + 1} ---\n` : "") + p)
+              .join("\n\n");
+            if (allPrompts) {
+              summaryText = summaryText.trim() + "\n\n```prompt\n" + allPrompts + "\n```";
+              log("info", scope, "prompt placeholder lost in summarize; re-inserted", { prompts: prompts.length });
+            }
+          }
+        }
+        // Restore prompts (handles both cases: placeholder survived or re-inserted above)
+        summaryText = restorePrompts(summaryText, prompts);
+        const summaryBlocks = markdownToBlocks(summaryText);
         const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
         const newParts = chunkMixedMedia(summaryHtml, hasMedia, settings.footerText, CAPTION_MAX_VISIBLE, CHUNK_MAX_VISIBLE);
         if (newParts.length < parts.length) {
           log("info", scope, "summarize reduced parts", { before: parts.length, after: newParts.length });
           parts = newParts;
           bestHtml = summaryHtml;
-          finalText = summaryResult.text;
+          finalText = summaryText;
           aiUsed = true;
           aiProvider = summaryResult.provider;
           aiModel = summaryResult.model;
