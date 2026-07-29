@@ -237,90 +237,67 @@ export async function runPipeline(
   // Check if this post contains prompts (from protectPrompts)
   const hasPrompts = prompts.length > 0;
 
-  // If post has >2 parts (>8k chars):
-  // - For prompt posts: summarize ONLY (never split into reply chain)
-  // - For regular posts: try summarize first, if still >2 parts use reply chain
-  if (parts.length > 2) {
-    if (hasPrompts) {
-      // Prompt posts: summarize only, no reply chain
-      log("info", scope, "prompt post too long, attempting summarize (no split)", { parts: parts.length });
-      try {
-        const summarizeAiMod: {
-          rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
-        } = await import("../ai/fallback");
-        const summarizeProfile = getProfile(settings.profile);
-        const summarizeReq: AIRequest = {
-          text: finalText,
-          classification,
-          settings: { ...settings, rewriteMode: "summarize" },
-          profile: summarizeProfile,
-          mode: "summarize",
-        };
-        const summaryResult = await summarizeAiMod.rewriteWithFallback(env, summarizeReq);
-        if (summaryResult?.ok && summaryResult?.text) {
-          const summaryBlocks = markdownToBlocks(summaryResult.text);
-          const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
-          const newParts = chunkHtml(summaryHtml, chunkMax, settings.footerText);
-          if (newParts.length <= parts.length) {
-            parts = newParts;
-            finalText = summaryResult.text;
-            aiUsed = true;
-            aiProvider = summaryResult.provider;
-            aiModel = summaryResult.model;
-          }
-        }
-      } catch (e) {
-        log("warn", scope, "summarize failed for prompt post; using original", { error: String(e) });
-      }
-    } else {
-      // Regular posts: try summarize first, if still >2 → reply chain with page numbers
-      log("info", scope, "regular post too long, attempting summarize", { parts: parts.length });
-      let summarizeSuccess = false;
-      try {
-        const summarizeAiMod: {
-          rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
-        } = await import("../ai/fallback");
-        const summarizeProfile = getProfile(settings.profile);
-        const summarizeReq: AIRequest = {
-          text: finalText,
-          classification,
-          settings: { ...settings, rewriteMode: "summarize" },
-          profile: summarizeProfile,
-          mode: "summarize",
-        };
-        const summaryResult = await summarizeAiMod.rewriteWithFallback(env, summarizeReq);
-        if (summaryResult?.ok && summaryResult?.text) {
-          const summaryBlocks = markdownToBlocks(summaryResult.text);
-          const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
-          const newParts = chunkHtml(summaryHtml, chunkMax, settings.footerText);
-          if (newParts.length <= 2) {
-            parts = newParts;
-            finalText = summaryResult.text;
-            aiUsed = true;
-            aiProvider = summaryResult.provider;
-            aiModel = summaryResult.model;
+  // For ALL posts (prompt and regular):
+  // If >1 part: try summarize first to fit in 1 part.
+  // If summarize fails or still >1 part: use reply chain with:
+  //   - Footer on EVERY part
+  //   - Page numbers (1/N, 2/N, etc.)
+  //   - Reply chain (each part replies to previous)
+  if (parts.length > 1) {
+    // Try summarize first
+    log("info", scope, "post too long, attempting summarize", { parts: parts.length, hasPrompts });
+    let summarizeSuccess = false;
+    try {
+      const summarizeAiMod: {
+        rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
+      } = await import("../ai/fallback");
+      const summarizeProfile = getProfile(settings.profile);
+      const summarizeReq: AIRequest = {
+        text: finalText,
+        classification,
+        settings: { ...settings, rewriteMode: "summarize" },
+        profile: summarizeProfile,
+        mode: "summarize",
+      };
+      const summaryResult = await summarizeAiMod.rewriteWithFallback(env, summarizeReq);
+      if (summaryResult?.ok && summaryResult?.text) {
+        const summaryBlocks = markdownToBlocks(summaryResult.text);
+        const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
+        const newParts = chunkHtml(summaryHtml, chunkMax, settings.footerText);
+        if (newParts.length < parts.length) {
+          log("info", scope, "summarize reduced parts", { before: parts.length, after: newParts.length });
+          parts = newParts;
+          finalText = summaryResult.text;
+          aiUsed = true;
+          aiProvider = summaryResult.provider;
+          aiModel = summaryResult.model;
+          if (newParts.length <= 1) {
             summarizeSuccess = true;
           }
         }
-      } catch (e) {
-        log("warn", scope, "summarize failed; will use reply chain", { error: String(e) });
       }
+    } catch (e) {
+      log("warn", scope, "summarize failed; will use reply chain", { error: String(e) });
+    }
 
-      // If summarize didn't help (still >2 parts): reply chain with footer on all + page numbers
-      if (!summarizeSuccess && parts.length > 2) {
-        log("info", scope, "using reply chain split", { parts: parts.length });
-        parts = chunkHtml(html, CHUNK_MAX_VISIBLE - 200, settings.footerText);
-        const totalPages = parts.length;
-        const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
-        parts = parts.map((p, i) => {
-          const pageNum = `${i + 1}/${totalPages}`;
-          const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
-          if (p.endsWith(footerBlock)) {
-            return p + `\n<b>${pageNum}</b>`;
-          }
-          return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
-        });
-      }
+    // If still >1 part: reply chain with footer on ALL parts + page numbers
+    if (!summarizeSuccess && parts.length > 1) {
+      log("info", scope, "using reply chain split", { parts: parts.length });
+      // Re-chunk with smaller max to leave room for footer + page number
+      const splitMax = (hasMedia ? 1000 : CHUNK_MAX_VISIBLE) - 150;
+      parts = chunkHtml(html, splitMax, settings.footerText);
+      const totalPages = parts.length;
+      const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+      parts = parts.map((p, i) => {
+        const pageNum = `${i + 1}/${totalPages}`;
+        const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
+        if (p.endsWith(footerBlock)) {
+          // Footer already there (last chunk from chunker) → just add page number
+          return p + `\n<b>${pageNum}</b>`;
+        }
+        // Add footer + page number to ALL parts
+        return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
+      });
     }
   }
 

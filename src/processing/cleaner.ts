@@ -41,8 +41,9 @@ const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
 // t.me/username/123 = specific post link — KEEP
 // const TG_POST_LINK_RE = /(?:https?:\/\/)?t\.me\/[A-Za-z0-9_]+\/\d+/i;
 
-// "source: ..." attribution (with URL or @username) — removes the whole line
-const SOURCE_ATTR_FULL_RE = /\s*(?:source|src|منبع|credit)\s*[:：]\s*[^\n]+/gi;
+// "source: @user" / "src: @user" / "منبع: @user" — only removes @username attribution
+// Does NOT remove "source: https://..." links (those are valuable content)
+const SOURCE_ATTR_RE = /\s*(?:source|src|منبع|credit)\s*[:：]\s*@[A-Za-z0-9_]+/gi;
 
 // GitHub URLs (used by contentStats + classifier). Non-global, safe for .test().
 const GITHUB_RE = /(?:github\.com|gist\.github\.com|raw\.githubusercontent\.com)/i;
@@ -166,8 +167,8 @@ export function cleanContent(
   // "via @user" attribution
   text = text.replace(VIA_ATTR_RE, " ");
 
-  // "source: ..." attribution (full line removal — @username, URL, or anything)
-  text = text.replace(SOURCE_ATTR_FULL_RE, " ");
+  // "source: @user" attribution — only removes @username, NOT URLs
+  text = text.replace(SOURCE_ATTR_RE, " ");
 
   // "@user | desc" signature lines
   text = text.replace(SIGNATURE_LINE_RE, "");

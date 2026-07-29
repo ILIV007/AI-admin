@@ -15,7 +15,7 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.4.4";
+const VERSION = "2.4.5";
 
 // ============================================================
 // AUTH
