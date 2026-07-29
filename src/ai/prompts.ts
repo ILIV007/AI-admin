@@ -40,15 +40,17 @@ export function buildSystemPrompt(
       `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source. NEVER invent URLs or turn plain text into links.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit", or attribution lines. But DO keep all existing links.\n` +
       `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
-      `- CRITICAL: NEVER translate English technical terms to Persian. Keep AI, API, GPU, CPU, LLM, bot, cloud, framework as-is.\n` +
+      `- CRITICAL: NEVER translate ANY content. The bot is in AUTO language mode — preserve the original language of the source text exactly. Do NOT translate English to Persian or Persian to English. If the source is English, output English. If the source is Persian, output Persian. If mixed, preserve each part in its original language.\n` +
+      `- CRITICAL: NEVER translate English technical terms. Keep AI, API, GPU, CPU, LLM, bot, cloud, framework as-is.\n` +
       `- CRITICAL: Do NOT add @channelName mentions or footers. The system adds them.\n` +
       `- CRITICAL: If source contains @channelName mentions, REMOVE them.\n` +
+      `- CRITICAL: Do NOT add descriptions like "مخزن گیت‌هاب:" or "منبع:" before links. Just include the link as-is.\n` +
       `- Preserve content emojis (📦 in "📦 Installation"). Remove decorative spam (🔥🔥😍🎉).\n` +
       `- No greetings, closings, or meta-text. Output ONLY the processed text.\n` +
       `- BOLDING: Only key terms, tool names, warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
       `- STRUCTURE: Use bullets (•), numbered lists, and visual symbols (→ × | + ▸ ◆) for structure.\n` +
       `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable, attractive, and well-structured.\n` +
-      `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, bullet lists, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Quote bullet lists and numbered steps. Be creative with quotes for long posts — use them to highlight important sections.\n` +
+      `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, bullet lists, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Quote bullet lists and numbered steps. Be creative with quotes for long posts — use them to highlight important sections. ALWAYS quote paragraphs that are just a link.\n` +
       `- CRITICAL RTL: If a paragraph is Persian, you MUST start it with a Persian word. NEVER start a Persian paragraph with an English word. Example: write "هوش مصنوعی (AI)" NOT "AI یک فناوری".\n` +
       `- Use Persian punctuation in Persian: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
       `- CRITICAL: Write Persian correctly. Use half-spaces (نیم‌فاصله) in compound words like "می‌رود", "می‌تواند", "نیم‌فاصله". Do NOT double letters. Proofread your output.\n` +
@@ -78,11 +80,13 @@ export function buildSystemPrompt(
   const editHint = describeEditIntensity(settings.editIntensity);
   const emojiHint = describeEmojiLevel(settings.emojiLevel);
   parts.push(
-    `# GUIDANCE\n- Edit intensity: ${settings.editIntensity}/100 — ${editHint}\n- Emoji: ${emojiHint}\n- Language: ${settings.languageMode}`,
+    `# GUIDANCE\n- Edit intensity: ${settings.editIntensity}/100 — ${editHint}\n- Emoji: ${emojiHint}\n- Language mode: ${settings.languageMode} (auto = preserve source language, do NOT translate)`,
   );
 
   if (settings.languageMode !== "auto") {
     parts.push(`# LANGUAGE\nOutput in ${settings.languageMode}. Translate non-technical content only. Keep technical terms in English.`);
+  } else {
+    parts.push(`# LANGUAGE\nAUTO mode: Preserve the original language. Do NOT translate. English stays English, Persian stays Persian.`);
   }
 
   return parts.join("\n\n");

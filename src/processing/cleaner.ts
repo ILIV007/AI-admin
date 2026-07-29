@@ -299,38 +299,23 @@ const PROMPT_PREFIX_RE =
 function isPromptParagraph(text: string): boolean {
   // Explicit prefix → always a prompt (skip very short false positives).
   if (PROMPT_PREFIX_RE.test(text)) {
-    return text.length >= 20;
+    return text.length >= 15;
   }
 
-  // Must be at least 80 chars to be considered a prompt (short text = regular content)
-  if (text.length < 80) return false;
+  // Must be at least 60 chars to be considered a prompt (shortened from 80)
+  if (text.length < 60) return false;
 
   // English-dominant: more Latin chars than Persian/Arabic.
   const latin = (text.match(/[A-Za-z]/g) || []).length;
   const persian = (text.match(/[\u0600-\u06FF]/g) || []).length;
   if (persian > latin) return false;
 
-  // Must contain at least 2 prompt keywords (not just 1) to reduce false positives.
-  // Single keyword like "8k" or "render" in regular text is NOT a prompt.
+  // Must contain at least 2 prompt keywords.
   const lower = text.toLowerCase();
   const matchCount = PROMPT_KEYWORDS.filter((kw) => lower.includes(kw)).length;
   if (matchCount < 2) return false;
 
-  // Additional check: must NOT contain common sentence patterns that indicate
-  // it's regular text (not a prompt).
-  const sentenceIndicators = [
-    /\.\s+[A-Z]/,  // "Sentence. Another" (normal sentence structure)
-    /\b(the|this|that|with|for|from|your|you can|check|visit|read)\b/gi,  // common English words
-  ];
-  const sentenceMatches = sentenceIndicators.reduce(
-    (count, re) => count + (text.match(re) || []).length,
-    0,
-  );
-  // If there are many sentence-like patterns, it's probably regular text, not a prompt.
-  if (sentenceMatches > 3) return false;
-
-  // Must contain comma-separated descriptors (typical prompt structure):
-  // "photorealistic, octane render, 8k" or "--ar 16:9, --v 6.0"
+  // Must contain comma-separated descriptors OR --params OR multiple keywords
   if (!/,/.test(text) && !/--\w+/.test(text)) return false;
 
   return true;

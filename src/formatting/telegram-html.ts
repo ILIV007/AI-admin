@@ -205,18 +205,22 @@ export function blocksToTelegramHtml(
         }
 
         // RULE: Only quote SOME paragraphs, not all
+        // - Paragraphs that are JUST a link → always quote
         // - Very long (>400 chars) → collapsible blockquote
         // - Long (>200 chars) → regular blockquote
         // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
         // - Short → no quote (just text)
-        if (textLen > 400) {
+        const isJustLink = block.spans.length === 1 && block.spans[0].kind === "link";
+        if (isJustLink) {
+          parts.push(`<blockquote>${rendered}</blockquote>`);
+          hasBlockquote = true;
+        } else if (textLen > 400) {
           parts.push(`<blockquote expandable>${rendered}</blockquote>`);
           hasBlockquote = true;
         } else if (textLen > 200) {
           parts.push(`<blockquote>${rendered}</blockquote>`);
           hasBlockquote = true;
         } else if (textLen > 80 && !hasBlockquote) {
-          // Only quote if we don't have any blockquote yet (ensure at least 1)
           parts.push(`<blockquote>${rendered}</blockquote>`);
           hasBlockquote = true;
         } else {
