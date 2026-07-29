@@ -100,7 +100,15 @@ function markFailure(
   error: string,
 ): ModelHealth {
   const prevFailures = h?.consecutiveFailures ?? 0;
-  const consecutiveFailures = prevFailures + 1;
+  // M1 fix: do NOT increment the failure counter for TRANSIENT errors (429
+  // rate-limit, 5xx server errors). These are temporary — the model is fine,
+  // it's just busy. Only permanent failures (4xx except 429) should count
+  // toward the unhealthy threshold. This prevents a brief rate-limit burst
+  // from marking a healthy model as unhealthy and causing the bot to randomly
+  // fall back to a different model.
+  const status = parseStatusFromError(error);
+  const isTransient = status === 429 || (status >= 500 && status < 600) || status === 0;
+  const consecutiveFailures = isTransient ? prevFailures : prevFailures + 1;
   const healthy = consecutiveFailures < UNHEALTHY_THRESHOLD;
   return {
     model,

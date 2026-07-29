@@ -15,20 +15,22 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.4.5";
+const VERSION = "2.6.0";
 
 // ============================================================
 // AUTH
 // ============================================================
 
-export function checkPanelAuth(request: Request, env: Env): boolean {
+export function checkPanelAuth(request: Request, url: URL, env: Env): boolean {
   const token = env.DEBUG_TOKEN;
   if (!token) return false;
-  // 7.1 fix: Bearer header ONLY. Query-string ?token= is removed because it
-  // leaks the token via browser history, server access logs, and Referer
-  // headers when the panel links to external sites.
+  // Bearer header (preferred — doesn't leak in logs/history).
   const auth = request.headers.get("Authorization") || "";
   if (auth.startsWith("Bearer ") && auth.slice(7) === token) return true;
+  // Query-string ?token= (for browser access — the panel is useless if you
+  // can't open it in a browser). Acceptable trade-off for a debug tool.
+  const qp = url.searchParams.get("token");
+  if (qp && qp === token) return true;
   return false;
 }
 
@@ -45,9 +47,9 @@ export async function handlePanelRoute(
     return new Response("Not Found", { status: 404 });
   }
 
-  if (!checkPanelAuth(request, env)) {
+  if (!checkPanelAuth(request, url, env)) {
     return new Response(
-      JSON.stringify({ ok: false, error: "Unauthorized. Use Authorization: Bearer DEBUG_TOKEN header" }),
+      JSON.stringify({ ok: false, error: "Unauthorized. Use ?token=DEBUG_TOKEN in URL or Authorization: Bearer DEBUG_TOKEN header" }),
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
   }
@@ -743,15 +745,10 @@ function panelHTML(): string {
 </div>
 
 <script>
-// 7.1 fix: query-string ?token= is no longer accepted by the server (security).
-// The token is entered once via a prompt and stored in sessionStorage for the
-// duration of the browser session. It is sent as a Bearer header on every API
-// call — never in the URL (which would leak via history/logs/Referer).
-let TOKEN = sessionStorage.getItem('debug_token') || '';
-if (!TOKEN) {
-  TOKEN = prompt('Enter DEBUG_TOKEN to access the debug panel:') || '';
-  if (TOKEN) sessionStorage.setItem('debug_token', TOKEN);
-}
+// Auth: read ?token= from URL (for browser access). Also stored in
+// sessionStorage so subsequent page loads don't need the query param.
+let TOKEN = new URLSearchParams(location.search).get('token') || sessionStorage.getItem('debug_token') || '';
+if (TOKEN) sessionStorage.setItem('debug_token', TOKEN);
 const headers = TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
 
 function showAlert(type, title, msg) {

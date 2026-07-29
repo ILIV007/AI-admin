@@ -615,7 +615,14 @@ async function runChannelEditPipeline(
         inputText = inputText.replace(channelRegex, "").trim();
       }
     }
-    const cleaned = cleanContent(inputText);
+    // P0-3 fix: pass ownHandle so cleanContent does NOT strip the channel's
+    // own @handle as spam. Consistent with pipeline.ts.
+    let ownHandle: string | undefined;
+    if (settings.footerText) {
+      const ownMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
+      ownHandle = ownMatch ? ownMatch[1] : undefined;
+    }
+    const cleaned = cleanContent(inputText, { ownHandle });
     const { text: protectedText, prompts } = protectPrompts(cleaned);
     let workingText = protectedText;
 

@@ -117,13 +117,22 @@ export function renderSpan(span: Span): string {
       return `<code>${escapeHtml(span.code)}</code>`;
     case "link": {
       // If the link has custom text (like [text](url)), preserve the text EXACTLY.
-      // Only shorten BARE URLs (where text === url or text is the full URL).
+      // Only shorten BARE URLs (where text === url or text is the URL without
+      // protocol, e.g. text="github.com/owner/repo" url="https://github.com/owner/repo").
       // Wrap decodeURIComponent in try-catch: a URL containing a literal `%`
-      // followed by non-hex chars (e.g. `50%off`, `%ZZ`) throws URIError, which
-      // would crash the entire pipeline and lose the post.
+      // followed by non-hex chars (e.g. `50%off`, `%ZZ`) throws URIError.
       let decoded = span.url;
       try { decoded = decodeURIComponent(span.url); } catch { /* malformed %, keep raw */ }
-      const isBareUrl = !span.text || span.text === span.url || span.text === decoded;
+      const urlNoProto = span.url.replace(/^https?:\/\//, "");
+      const decodedNoProto = decoded.replace(/^https?:\/\//, "");
+      const isBareUrl =
+        !span.text ||
+        span.text === span.url ||
+        span.text === decoded ||
+        span.text === urlNoProto ||           // "github.com/owner/repo"
+        span.text === decodedNoProto ||
+        span.url.endsWith(span.text) ||       // text is the tail of the URL
+        (span.text.includes("/") && span.url.includes(span.text)); // text is a path segment of the URL
       const linkText = isBareUrl
         ? shortenUrl(span.url)  // Bare URL — shorten for display
         : span.text;            // Custom text — preserve EXACTLY
