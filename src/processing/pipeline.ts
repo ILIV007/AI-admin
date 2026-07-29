@@ -234,11 +234,11 @@ export async function runPipeline(
   const chunkMax = hasMedia ? 1000 : CHUNK_MAX_VISIBLE;
   let parts = chunkHtml(html, chunkMax, settings.footerText);
 
-  // If text-only post has >3 parts (>12k chars): try summarize first.
-  // If summarize fails or still >3 parts: split into reply chain with
-  // footer on EVERY part + page numbers (1/3, 2/3, 3/3).
-  if (!hasMedia && parts.length > 3) {
-    log("warn", scope, "post too long, attempting auto-summarize", {
+  // If post has >2 parts (>8k chars): try to summarize to fit in ≤2 parts.
+  // Do NOT split into reply chain — user said summarize, don't split.
+  // If summarize fails: use original parts (publisher handles multi-part).
+  if (parts.length > 2) {
+    log("info", scope, "post too long, attempting auto-summarize", {
       parts: parts.length,
     });
     try {
@@ -257,31 +257,13 @@ export async function runPipeline(
       if (summaryResult?.ok && summaryResult?.text) {
         const summaryBlocks = markdownToBlocks(summaryResult.text);
         const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
-        const newParts = chunkHtml(summaryHtml, CHUNK_MAX_VISIBLE, settings.footerText);
-        if (newParts.length <= 3) {
-          log("info", scope, "auto-summarize fit in 3 parts", { before: parts.length, after: newParts.length });
-          parts = newParts;
-          finalText = summaryResult.text;
-          aiUsed = true;
-          aiProvider = summaryResult.provider;
-          aiModel = summaryResult.model;
-        } else {
-          // Summarize didn't help enough → split into reply chain
-          // Footer on EVERY part + page numbers
-          log("info", scope, "summarize still too long, using reply chain", { parts: newParts.length });
-          parts = chunkHtml(summaryHtml, CHUNK_MAX_VISIBLE - 200, settings.footerText);
-          // Add footer + page number to EVERY part
-          const totalPages = parts.length;
-          const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
-          parts = parts.map((p, i) => {
-            const pageNum = `${i + 1}/${totalPages}`;
-            // Check if footer already at end
-            const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
-            if (p.endsWith(footerBlock)) {
-              return p + `\n<b>${pageNum}</b>`;
-            }
-            return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
+        const newParts = chunkHtml(summaryHtml, chunkMax, settings.footerText);
+        if (newParts.length <= parts.length) {
+          log("info", scope, "auto-summarize reduced parts", {
+            before: parts.length,
+            after: newParts.length,
           });
+          parts = newParts;
           finalText = summaryResult.text;
           aiUsed = true;
           aiProvider = summaryResult.provider;
@@ -289,19 +271,7 @@ export async function runPipeline(
         }
       }
     } catch (e) {
-      log("warn", scope, "auto-summarize failed; using reply chain split", { error: String(e) });
-      // Split with footer on every part + page numbers
-      parts = chunkHtml(html, CHUNK_MAX_VISIBLE - 200, settings.footerText);
-      const totalPages = parts.length;
-      const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
-      parts = parts.map((p, i) => {
-        const pageNum = `${i + 1}/${totalPages}`;
-        const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
-        if (p.endsWith(footerBlock)) {
-          return p + `\n<b>${pageNum}</b>`;
-        }
-        return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
-      });
+      log("warn", scope, "auto-summarize failed; using original parts", { error: String(e) });
     }
   }
 

@@ -140,21 +140,29 @@ export async function runCron(
     })(),
   );
 
-  // ── 3. Refresh AI model health cache ────────────────────────────
-  ctx.waitUntil(
-    (async () => {
-      try {
-        log("info", "cron.runCron", "step 3 start: refresh AI model health");
-        const mod: {
-          refreshModelHealth: (env: Env) => Promise<void>;
-        } = await import("../ai/fallback");
-        await mod.refreshModelHealth(env);
-        log("info", "cron.runCron", "step 3 done");
-      } catch (e) {
-        log("error", "cron.runCron", `step 3 failed: ${String(e)}`);
-      }
-    })(),
-  );
+  // ── 3. Refresh AI model health cache (only every 4th cron tick = once per hour) ──
+  // 12 models × 2 KV ops each = 24 KV ops per refresh. Running every 15 min
+  // would be 96 cron ticks/day × 24 = 2304 KV ops/day just for health.
+  // Running once per hour = 24 ticks × 24 = 576 KV ops/day (75% reduction).
+  const healthTick = Math.floor(Date.now() / (15 * 60 * 1000));
+  if (healthTick % 4 === 0) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          log("info", "cron.runCron", "step 3 start: refresh AI model health (hourly)");
+          const mod: {
+            refreshModelHealth: (env: Env) => Promise<void>;
+          } = await import("../ai/fallback");
+          await mod.refreshModelHealth(env);
+          log("info", "cron.runCron", "step 3 done");
+        } catch (e) {
+          log("error", "cron.runCron", `step 3 failed: ${String(e)}`);
+        }
+      })(),
+    );
+  } else {
+    log("info", "cron.runCron", "step 3 skipped (not hourly tick)");
+  }
 
   // ── 4. Prune old debug_events + seen_updates ────────────────────
   ctx.waitUntil(

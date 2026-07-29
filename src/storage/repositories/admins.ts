@@ -31,7 +31,7 @@ import { log } from "../../observability/logger";
 // ============================================================
 
 const AUTH_KV_PREFIX = "auth:user";
-const AUTH_CACHE_TTL_SEC = 60; // 60s, per spec
+const AUTH_CACHE_TTL_SEC = 120; // 2 min cache (was 60s — reduces KV reads)
 
 function authKvKey(userId: number): string {
   return `${AUTH_KV_PREFIX}:${userId}`;

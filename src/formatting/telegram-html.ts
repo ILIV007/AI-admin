@@ -234,13 +234,12 @@ export function blocksToTelegramHtml(
 
       case "code": {
         if (block.language === "prompt") {
-          // Prompt block: collapsible blockquote + monospace (copyable)
-          // User specifically requested: quote collapse + mono (copyable)
-          // Format: <blockquote expandable><pre><code>...</code></pre></blockquote>
-          // Telegram renders <pre><code> inside <blockquote expandable> as
-          // collapsible AND monospace with tap-to-copy.
+          // Prompt block: collapsible blockquote + <code> (monospace, copyable)
+          // NO <pre> wrapper — user said don't use code block format.
+          // Just <code> inside <blockquote expandable> for collapsibility + mono.
+          // <code> in Telegram is inline monospace (tap to copy on mobile).
           parts.push(
-            `<blockquote expandable><pre><code>${escapeHtml(block.code)}</code></pre></blockquote>`,
+            `<blockquote expandable><code>${escapeHtml(block.code)}</code></blockquote>`,
           );
           hasBlockquote = true;
         } else {
