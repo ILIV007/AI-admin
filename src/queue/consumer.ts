@@ -658,7 +658,7 @@ async function runChannelEditPipeline(
     let aiModel: string | undefined;
     const isAdmin = true; // channel posts are always processed
     if (settings.rewriteMode !== "none" && isAdmin) {
-      if (classification.recommendedNeedsRewrite || settings.rewriteMode !== "normal") {
+      if (settings.rewriteMode !== "normal" || classification.recommendedNeedsRewrite || settings.editIntensity > 0) {
         try {
           const { rewriteWithFallback } = await import("../ai/fallback");
           const { getProfile } = await import("../config/defaults");

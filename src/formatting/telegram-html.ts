@@ -320,7 +320,7 @@ export function blocksToTelegramHtml(
     result.push(parts[i]);
     if (i < parts.length - 1) {
       const currentEndsColon = /[:：]\s*$/.test(parts[i].replace(/<[^>]+>$/g, "").trim());
-      const nextIsQuote = parts[i + 1].startsWith("<blockquote>");
+      const nextIsQuote = parts[i + 1].startsWith("<blockquote");
       const isFooter = i === parts.length - 2; // last content before footer
       if (currentEndsColon && nextIsQuote) {
         result.push("\n"); // colon → adjacent quote (connected, no gap)

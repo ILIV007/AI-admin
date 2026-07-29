@@ -348,7 +348,14 @@ export function protectPrompts(text: string): {
       if (!part.trim()) return part;
       if (isPromptParagraph(part)) {
         const idx = prompts.length;
-        prompts.push(part);
+        // Strip ```prompt fence markers if present — the content is stored
+        // raw and restorePrompts will wrap it in a fresh fence.
+        let promptContent = part.trim();
+        const fenceMatch = /^```prompt\b[\s\S]*?\n([\s\S]*)\n```$/.exec(promptContent);
+        if (fenceMatch) {
+          promptContent = fenceMatch[1];
+        }
+        prompts.push(promptContent);
         // Use a TEXT-BASED placeholder (not NUL) so it survives AI API
         // round-trips. NUL bytes are stripped by JSON serialization in the
         // Gemini/OpenRouter APIs, leaving "PROMPT_0" as visible text.

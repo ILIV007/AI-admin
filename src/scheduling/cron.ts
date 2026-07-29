@@ -140,12 +140,12 @@ export async function runCron(
     })(),
   );
 
-  // ── 3. Refresh AI model health cache (only every 2nd cron tick = once per hour) ──
+  // ── 3. Refresh AI model health cache (only every 12th cron tick = once per 6 hours) ──
   // 12 models × 2 KV ops each = 24 KV ops per refresh. Running every 30 min
-  // would be 48 cron ticks/day × 24 = 1152 KV ops/day just for health.
-  // Running once per hour (every 2nd tick) = 24 ticks × 24 = 576 KV ops/day (50% reduction).
+  // would be 8 cron ticks/day × 24 = 192 KV ops/day just for health.
+  // Running once per hour (every 2nd tick) = 4 ticks × 24 = 96 KV ops/day (50% reduction).
   const healthTick = Math.floor(Date.now() / (30 * 60 * 1000));
-  if (healthTick % 2 === 0) {
+  if (healthTick % 12 === 0) {
     ctx.waitUntil(
       (async () => {
         try {

@@ -54,13 +54,10 @@ function mergeSettings(env: Env, partial: Partial<Settings> | null | undefined):
   // the real models (gemini-3.6-flash etc.) with older ones (gemini-2.5-flash etc.).
   // These stale values were persisted to D1 and still override the new defaults.
   const STALE_GEMINI = new Set([
-    "gemini-2.5-flash", "gemini-2.5-flash-lite",
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
     "gemini-1.5-flash", "gemini-1.5-flash-8b",
   ]);
   const STALE_OR = new Set([
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "openai/gpt-oss-20b:free",
     "google/gemma-2-9b-it:free",
     "qwen/qwen-2.5-7b-instruct:free",
     "microsoft/phi-3-medium-128k-instruct:free",

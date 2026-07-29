@@ -100,7 +100,7 @@ People should feel that a skilled human admin prepared the post, not an AI.`,
   style: `Persian: colloquial (محاوره‌ای). Natural sentence structure. Half-spaces (نیم‌فاصله).
 English: natural, conversational. Use contractions. Vary sentence length.
 Bold ONLY for important info (2-6 per post). Monospace for commands/filenames.
-Links in blockquotes. Functional emojis only (🛠️🚀🤖📚⚡🔒🌐📦💡📝🎯🐞🧩).
+Links on their own lines, separate from paragraphs. Structural symbols (→ × | + ▸ ◆ •) for formatting.
 Never use hype words. Never use AI cliche phrases. Preserve emotional tone.`,
   rules: `1. PRESERVE all technical content: GitHub links, docs, downloads, APIs, commands, code, package names.
 2. REMOVE spam: promo mentions, "Join/Follow", attribution tags, spam hashtags.
