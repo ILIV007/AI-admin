@@ -107,9 +107,17 @@ export async function publishPost(
       return { ok: true, messageIds };
     }
 
-    // --- Text-only path: send each part. ---
-    for (const p of safeParts) {
-      const ids = await sendTextSafe(token, chatId, p);
+    // --- Text-only path: send each part as reply chain ---
+    // First part: normal message
+    // Subsequent parts: reply to previous message (reply chain)
+    for (let i = 0; i < safeParts.length; i++) {
+      const ids = await sendTextSafe(
+        token,
+        chatId,
+        safeParts[i],
+        undefined,
+        i > 0 ? messageIds[messageIds.length - 1] : undefined,
+      );
       messageIds.push(...ids);
     }
     return { ok: true, messageIds };
@@ -303,34 +311,35 @@ async function sendTextSafe(
   chatId: number | string,
   text: string,
   replyMarkup?: string,
+  replyToMessageId?: number,
 ): Promise<number[]> {
   try {
     const r = await sendMessage(token, {
       chat_id: chatId,
       text,
       reply_markup: replyMarkup,
+      reply_to_message_id: replyToMessageId,
     });
     return [r.message_id];
   } catch (err) {
     const msg = (err as Error).message;
-    // Telegram error description contains "message is too long" on 400.
     if (msg.includes("too long")) {
       log("warn", "publisher.sendTextSafe", "Re-splitting too-long message", {
         visibleLen: visibleLength(text),
-        replyMarkup: !!replyMarkup,
       });
       const chunks = resplit(text, TELEGRAM_LIMITS.MESSAGE_MAX_LEN);
       const ids: number[] = [];
       const last = chunks.length - 1;
+      let prevId = replyToMessageId;
       for (let i = 0; i < chunks.length; i++) {
-        // Attach the keyboard (if any) only to the LAST chunk so it appears
-        // below the full text.
         const r = await sendMessage(token, {
           chat_id: chatId,
           text: chunks[i],
           reply_markup: i === last ? replyMarkup : undefined,
+          reply_to_message_id: prevId,
         });
         ids.push(r.message_id);
+        prevId = r.message_id;
       }
       return ids;
     }

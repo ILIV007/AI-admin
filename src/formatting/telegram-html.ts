@@ -229,13 +229,13 @@ export function blocksToTelegramHtml(
 
       case "code": {
         if (block.language === "prompt") {
-          // Prompt block: collapsible quote + monospace (copyable)
-          // <blockquote expandable> = collapsible
-          // <pre><code> inside = monospace + copyable (tap to copy)
+          // Prompt block: render as plain <pre><code> (NOT inside blockquote).
+          // Telegram renders <pre><code> as copyable monospace.
+          // The <blockquote expandable> wrapper was interfering with copy
+          // in some Telegram clients. V1 used plain <pre><code> which worked.
           parts.push(
-            `<blockquote expandable><pre><code>${escapeHtml(block.code)}</code></pre></blockquote>`,
+            `<pre><code>${escapeHtml(block.code)}</code></pre>`,
           );
-          hasBlockquote = true;
         } else {
           const lang = block.language ? escapeHtml(block.language) : "";
           parts.push(

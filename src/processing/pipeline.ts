@@ -41,6 +41,7 @@ import { sanitizeAiOutput } from "../formatting/sanitizer";
 import { markdownToBlocks } from "../formatting/blocks";
 import { blocksToTelegramHtml } from "../formatting/telegram-html";
 import { chunkHtml } from "../formatting/chunker";
+import { fixRtlParagraphs } from "../ai/prompts";
 import { getProfile } from "../config/defaults";
 import { ownerUserId } from "../config/env";
 import { log } from "../observability/logger";
@@ -217,35 +218,32 @@ export async function runPipeline(
   // ── 8. Restore prompt placeholders ──────────────────────────────
   finalText = restorePrompts(finalText, prompts);
 
+  // ── 8b. Fix RTL: post-process to fix English-starting Persian paragraphs ──
+  finalText = fixRtlParagraphs(finalText);
+
   // ── 9. Markdown → blocks ────────────────────────────────────────
   const blocks = markdownToBlocks(finalText);
 
   // ── 10. Blocks → Telegram HTML (footer escaped inside renderer) ─
   const html = blocksToTelegramHtml(blocks, settings.footerText);
 
-  // ── 11. Chunk by visible length, footer only on last chunk ──────
-  // For media posts: caption limit is 1024 chars. Use smaller chunk size.
-  // For text-only: message limit is 4096 chars. Use 4000 (leave headroom).
-  // If total visible length exceeds the limit even after chunking, and the
-  // post has media, we need to split: first 1024 as caption, rest as text messages.
+  // ── 11. Chunk by visible length ──────
+  // For media posts: caption limit is 1024 chars. Use 1000 for caption.
+  // For text-only: message limit is 4096 chars. Use 4000.
   const hasMedia = !!content.media;
-  const chunkMax = hasMedia ? 1000 : CHUNK_MAX_VISIBLE; // 1000 for caption (1024 limit - headroom)
+  const chunkMax = hasMedia ? 1000 : CHUNK_MAX_VISIBLE;
   let parts = chunkHtml(html, chunkMax, settings.footerText);
 
-  // If text-only post has too many parts (>5), consider it too long.
-  // In that case, try to summarize the text to fit in fewer parts.
-  if (!hasMedia && parts.length > 5) {
+  // If text-only post has >3 parts (>12k chars): try summarize first.
+  // If summarize fails or still >3 parts: split into reply chain with
+  // footer on EVERY part + page numbers (1/3, 2/3, 3/3).
+  if (!hasMedia && parts.length > 3) {
     log("warn", scope, "post too long, attempting auto-summarize", {
       parts: parts.length,
-      totalLength: parts.reduce((s, p) => s + p.length, 0),
     });
-    // Re-run AI in summarize mode to shorten
     try {
       const summarizeAiMod: {
-        rewriteWithFallback: (
-          env: Env,
-          req: AIRequest,
-        ) => Promise<AIResult>;
+        rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
       } = await import("../ai/fallback");
       const summarizeProfile = getProfile(settings.profile);
       const summarizeReq: AIRequest = {
@@ -257,16 +255,33 @@ export async function runPipeline(
       };
       const summaryResult = await summarizeAiMod.rewriteWithFallback(env, summarizeReq);
       if (summaryResult?.ok && summaryResult?.text) {
-        // Re-format the summarized text
         const summaryBlocks = markdownToBlocks(summaryResult.text);
         const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
         const newParts = chunkHtml(summaryHtml, CHUNK_MAX_VISIBLE, settings.footerText);
-        if (newParts.length < parts.length) {
-          log("info", scope, "auto-summarize reduced parts", {
-            before: parts.length,
-            after: newParts.length,
-          });
+        if (newParts.length <= 3) {
+          log("info", scope, "auto-summarize fit in 3 parts", { before: parts.length, after: newParts.length });
           parts = newParts;
+          finalText = summaryResult.text;
+          aiUsed = true;
+          aiProvider = summaryResult.provider;
+          aiModel = summaryResult.model;
+        } else {
+          // Summarize didn't help enough → split into reply chain
+          // Footer on EVERY part + page numbers
+          log("info", scope, "summarize still too long, using reply chain", { parts: newParts.length });
+          parts = chunkHtml(summaryHtml, CHUNK_MAX_VISIBLE - 200, settings.footerText);
+          // Add footer + page number to EVERY part
+          const totalPages = parts.length;
+          const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+          parts = parts.map((p, i) => {
+            const pageNum = `${i + 1}/${totalPages}`;
+            // Check if footer already at end
+            const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
+            if (p.endsWith(footerBlock)) {
+              return p + `\n<b>${pageNum}</b>`;
+            }
+            return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
+          });
           finalText = summaryResult.text;
           aiUsed = true;
           aiProvider = summaryResult.provider;
@@ -274,7 +289,19 @@ export async function runPipeline(
         }
       }
     } catch (e) {
-      log("warn", scope, "auto-summarize failed; using original", { error: String(e) });
+      log("warn", scope, "auto-summarize failed; using reply chain split", { error: String(e) });
+      // Split with footer on every part + page numbers
+      parts = chunkHtml(html, CHUNK_MAX_VISIBLE - 200, settings.footerText);
+      const totalPages = parts.length;
+      const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+      parts = parts.map((p, i) => {
+        const pageNum = `${i + 1}/${totalPages}`;
+        const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
+        if (p.endsWith(footerBlock)) {
+          return p + `\n<b>${pageNum}</b>`;
+        }
+        return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
+      });
     }
   }
 

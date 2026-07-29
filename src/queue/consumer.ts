@@ -1086,6 +1086,45 @@ async function handlePublishScheduled(
       await updateJobStatus(env, jobId, "published");
     }
     ctx.waitUntil(safe(recordPublished(env, job.userId)));
+
+    // Send copy to admin + notification
+    try {
+      const adminId = Number(env.ADMIN_ID);
+      if (adminId && job.userId !== adminId) {
+        // Send post copy to admin
+        if (payload.media) {
+          const mediaParams: Record<string, unknown> = {
+            chat_id: adminId,
+            caption: payload.parts[0] || "",
+            parse_mode: "HTML",
+          };
+          if (payload.media.type === "photo") {
+            mediaParams.photo = payload.media.fileId;
+            await sendPhoto(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (payload.media.type === "video") {
+            mediaParams.video = payload.media.fileId;
+            await sendVideo(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (payload.media.type === "document") {
+            mediaParams.document = payload.media.fileId;
+            await sendDocument(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          }
+        } else {
+          for (const part of payload.parts) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: adminId,
+              text: part,
+              parse_mode: "HTML",
+            }).catch(() => undefined);
+          }
+        }
+        // Send notification
+        await sendMessage(env.BOT_TOKEN, {
+          chat_id: adminId,
+          text: `<blockquote><b>📅 Scheduled Post Published</b></blockquote>\nJob ID: <code>${jobId}</code>`,
+          parse_mode: "HTML",
+        }).catch(() => undefined);
+      }
+    } catch { /* ignore */ }
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
     const attempts = await incrementAttempts(env, jobId);

@@ -2,13 +2,12 @@
  * src/ai/prompts.ts
  * System + user prompt builders.
  *
- * V2.3.1 changes:
- *   • NO translation of English technical terms (AI, API, GPU stay as-is)
- *   • Preserve content emojis (don't remove emojis that are part of the content)
- *   • First paragraph NEVER quoted; selective quoting only
- *   • At least 1 blockquote per post
- *   • Token optimization via shorter system prompt (not lower maxOutputTokens)
- *   • Organization: break long text into separate paragraphs, don't stuff
+ * V2.4.0 changes:
+ *   • Stronger link preservation (NEVER strip URLs)
+ *   • Professional emoji usage (functional, not decorative at paragraph ends)
+ *   • Visual symbols (→, ×, |, +, ▸, ◆) for structure
+ *   • Post-process RTL fix in pipeline (not just AI instruction)
+ *   • Mono copyability fix (separate <pre> and <code> nesting)
  */
 
 import type {
@@ -28,40 +27,44 @@ export function buildSystemPrompt(
 ): string {
   const parts: string[] = [];
 
-  // --- Profile identity (shortened for token efficiency) ---
+  // --- Profile identity ---
   parts.push(`# IDENTITY\n${profile.soul}`);
   parts.push(`# STYLE\n${profile.style}`);
   parts.push(`# RULES\n${profile.rules}`);
 
-  // --- Hard output contract (always present) ---
+  // --- Hard output contract ---
   parts.push(
     `# OUTPUT CONTRACT (mandatory)\n` +
       `- Output MARKDOWN only, never raw HTML.\n` +
-      `- CRITICAL: Preserve ALL links EXACTLY as they appear. If source has [text](url), output [text](url). If source has bare URLs like https://github.com/owner/repo, output them as-is. NEVER remove, shorten, or reformat any URL. NEVER replace a link with just its text. The link MUST appear in your output.\n` +
-      `- CRITICAL: Do NOT add "source:", "via", "credit", or any attribution lines. But DO keep all existing links in the output.\n` +
+      `- CRITICAL: Preserve ALL links EXACTLY. [text](url) → output [text](url). Bare URLs → output as-is. NEVER remove, shorten, or reformat any URL. NEVER replace a link with just its text. The link MUST appear in your output.\n` +
+      `- CRITICAL: Do NOT add "source:", "via", "credit", or attribution lines. But DO keep all existing links.\n` +
       `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
-      `- CRITICAL: NEVER translate English technical terms to Persian. Keep "AI", "API", "GPU", "CPU", "LLM", "bot", "cloud", "framework" etc. as-is in English. Do NOT replace them with Persian equivalents.\n` +
+      `- CRITICAL: NEVER translate English technical terms to Persian. Keep AI, API, GPU, CPU, LLM, bot, cloud, framework as-is.\n` +
       `- CRITICAL: Do NOT add @channelName mentions or footers. The system adds them.\n` +
-      `- CRITICAL: If source contains @channelName mentions, REMOVE them from your output.\n` +
-      `- Preserve content emojis: If the source has emojis that are part of the content (e.g. 📦 in "📦 Installation"), KEEP them. Only remove decorative/spam emojis (🔥🔥🔥😍🎉).\n` +
-      `- Do not add greetings, closings, or meta-text. Output ONLY the processed text.\n` +
-      `- BOLDING: Only bold key terms, tool names, or important warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
-      `- STRUCTURE: Use bullet points (•) and numbered lists for lists. Use Unicode symbols (▸ ◆ ─) for visual structure.\n` +
-      `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable and attractive.\n` +
-      `- BLOCKQUOTE: Use > (markdown blockquote) for explanatory text after ":", step-by-step instructions, guide text, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Don't quote everything — only selective important parts.\n` +
-      `- CRITICAL RTL: If a paragraph is Persian, NEVER start it with an English word or acronym. Put English terms AFTER a Persian word or in parentheses. Example: "هوش مصنوعی (AI)" not "AI یک فناوری".\n` +
-      `- Use Persian punctuation in Persian paragraphs: comma (،), question mark (؟), semicolon (؛). Use half-spaces (نیم‌فاصله) in compound words.\n` +
-      `- English words WITHIN Persian text are FINE and should be KEPT. Do NOT remove them. Mixed-language paragraphs are normal. Just ensure the paragraph STARTS with a Persian word.\n` +
+      `- CRITICAL: If source contains @channelName mentions, REMOVE them.\n` +
+      `- Preserve content emojis (📦 in "📦 Installation"). Remove decorative spam (🔥🔥😍🎉).\n` +
+      `- No greetings, closings, or meta-text. Output ONLY the processed text.\n` +
+      `- BOLDING: Only key terms, tool names, warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
+      `- STRUCTURE: Use bullets (•), numbered lists, and visual symbols for structure:\n` +
+      `  • Use → for "leads to" or "step result"\n` +
+      `  • Use × for "not" or "removed"\n` +
+      `  • Use | as separator between items\n` +
+      `  • Use + for "additional" or "bonus"\n` +
+      `  • Use ▸ for sub-items\n` +
+      `  • Use ◆ for highlights\n` +
+      `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable, attractive, and well-structured.\n` +
+      `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Only selective important parts.\n` +
+      `- CRITICAL RTL: If a paragraph is Persian, NEVER start it with an English word. Put English terms AFTER a Persian word or in parentheses. Example: "هوش مصنوعی (AI)" not "AI یک فناوری".\n` +
+      `- Use Persian punctuation in Persian: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
+      `- English words WITHIN Persian text are FINE and should be KEPT. Do NOT remove them. Just ensure paragraph STARTS with a Persian word.\n` +
+      `- EMOJI USAGE: Use emojis professionally. Place them at the START of a line/paragraph as section markers (📦, ⚡, 💡, 🔒), NOT at the end of sentences. Use 1️⃣ 2️⃣ 3️⃣ for step numbering. Never randomly sprinkle emojis at the end of paragraphs or sentences. Max 1-3 per post.\n` +
       `- Keep the original meaning and tone. Improve readability and structure, but do NOT change the substance of the content.`,
   );
 
   // --- Mode-specific instructions ---
   if (mode === "summarize") {
     parts.push(
-      `# TASK: SUMMARIZE\n` +
-        `Compress to ~40% of original length.\n` +
-        `Keep ALL technical references. Drop filler and redundancy.\n` +
-        `Preserve original language.`,
+      `# TASK: SUMMARIZE\nCompress to ~40% of original length. Keep ALL technical references. Drop filler and redundancy. Preserve original language.`,
     );
   } else {
     const modeMap: Partial<Record<Settings["rewriteMode"], string>> = {
@@ -71,25 +74,18 @@ export function buildSystemPrompt(
       aggressive: `AGGRESSIVE rewrite: full rewrite preserving meaning. Restructure for clarity.`,
     };
     const modeDesc = modeMap[settings.rewriteMode] ?? modeMap.normal!;
-    parts.push(
-      `# TASK: REWRITE\n${modeDesc}\nRewrite mode: ${settings.rewriteMode}.`,
-    );
+    parts.push(`# TASK: REWRITE\n${modeDesc}\nRewrite mode: ${settings.rewriteMode}.`);
   }
 
-  // --- Soft guidance (shortened) ---
+  // --- Soft guidance ---
   const editHint = describeEditIntensity(settings.editIntensity);
   const emojiHint = describeEmojiLevel(settings.emojiLevel);
   parts.push(
-    `# GUIDANCE\n` +
-      `- Edit intensity: ${settings.editIntensity}/100 — ${editHint}\n` +
-      `- Emoji: ${emojiHint}\n` +
-      `- Language: ${settings.languageMode}`,
+    `# GUIDANCE\n- Edit intensity: ${settings.editIntensity}/100 — ${editHint}\n- Emoji: ${emojiHint}\n- Language: ${settings.languageMode}`,
   );
 
   if (settings.languageMode !== "auto") {
-    parts.push(
-      `# LANGUAGE\nOutput in ${settings.languageMode}. Translate non-technical content only. Keep technical terms in English.`,
-    );
+    parts.push(`# LANGUAGE\nOutput in ${settings.languageMode}. Translate non-technical content only. Keep technical terms in English.`);
   }
 
   return parts.join("\n\n");
@@ -105,10 +101,7 @@ function describeEditIntensity(level: number): string {
 function describeEmojiLevel(level: number): string {
   if (level <= 10) return "no emojis";
   if (level <= 30) {
-    return (
-      "Level LOW (1-3 per post). Functional only (📦⚡💡🔒, 1️⃣2️⃣3️⃣). " +
-      "No decorative (😍😂🔥🎉). Preserve content emojis. Max 1 per paragraph."
-    );
+    return "LOW (1-3 per post). Functional only. Place at START of lines as markers, NOT at end of sentences.";
   }
   if (level <= 60) return "occasional functional emojis";
   return "generous functional emojis";
@@ -124,7 +117,6 @@ export function buildUserPrompt(
   mode: "rewrite" | "summarize",
 ): string {
   const lines: string[] = [];
-
   lines.push(`# CONTEXT`);
   lines.push(`- Category: ${classification.category}`);
   lines.push(`- Language: ${classification.language}`);
@@ -132,7 +124,6 @@ export function buildUserPrompt(
   if (classification.hasGithubLink) {
     lines.push(`- Has GitHub link: yes (preserve verbatim)`);
   }
-
   lines.push("");
   lines.push(`# INSTRUCTION`);
   if (mode === "summarize") {
@@ -141,10 +132,61 @@ export function buildUserPrompt(
     lines.push(`Rewrite the SOURCE per the system contract.`);
   }
   lines.push(`Return ONLY the processed markdown.`);
-
   lines.push("");
   lines.push(`# SOURCE`);
   lines.push(text);
-
   return lines.join("\n");
+}
+
+/**
+ * Post-process AI output to fix RTL issues.
+ * If a Persian paragraph starts with an English word, prepend a
+ * Persian connector word (این، اینکه، با) or wrap the English term
+ * in parentheses to fix the alignment.
+ */
+export function fixRtlParagraphs(text: string): string {
+  if (!text) return text;
+  const lines = text.split("\n");
+  const result: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      result.push(line);
+      continue;
+    }
+
+    // Check if this line starts with an English word/acronym
+    // and the rest of the line is predominantly Persian
+    const englishStart = /^[A-Z][A-Za-z0-9]*(?:\s|$)/.test(trimmed);
+    if (!englishStart) {
+      result.push(line);
+      continue;
+    }
+
+    // Count Persian vs Latin chars
+    const persianChars = (trimmed.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+    const latinChars = (trimmed.match(/[A-Za-z]/g) || []).length;
+
+    if (persianChars > latinChars) {
+      // This is a Persian paragraph starting with English → fix it
+      // Extract the first English word(s)
+      const match = trimmed.match(/^([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\s+/);
+      if (match) {
+        const englishPart = match[1];
+        const restOfLine = trimmed.slice(match[0].length);
+        // Wrap English part in parentheses and prepend a Persian connector
+        result.push(`این ${englishPart} (${restOfLine}`);
+        // Actually, simpler: just move English to after first Persian word
+        // Or: wrap in parentheses
+        result[result.length - 1] = `با ${englishPart}، ${restOfLine}`;
+      } else {
+        result.push(line);
+      }
+    } else {
+      result.push(line);
+    }
+  }
+
+  return result.join("\n");
 }
