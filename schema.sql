@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id                   TEXT PRIMARY KEY,           -- ulid-ish
   type                 TEXT NOT NULL CHECK (type IN ('scheduled_post','approval')),
   status               TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending','publishing','published','rejected','expired','failed')),
+                       CHECK (status IN ('pending','published','rejected','expired','failed')),
   user_id              INTEGER NOT NULL,
   chat_id              INTEGER NOT NULL,
   message_id           INTEGER NOT NULL,

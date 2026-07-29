@@ -293,9 +293,10 @@ const PROMPT_KEYWORDS = [
 ];
 
 // Paragraphs that start with one of these prefixes are ALWAYS treated as
-// prompts, regardless of length or language. Matches Latin OR Persian colon.
+// prompts. The prefix must be at the START of the paragraph (optionally
+// preceded by whitespace), NOT preceded by other text like "Here is a prompt:".
 const PROMPT_PREFIX_RE =
-  /^\s*(?:.*\s)?(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i;
+  /^\s*(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i;
 
 function isPromptParagraph(text: string): boolean {
   // Explicit prefix → always a prompt (skip very short false positives).

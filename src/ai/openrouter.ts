@@ -23,7 +23,7 @@ import {
 } from "./provider";
 import { buildSystemPrompt, buildUserPrompt } from "./prompts";
 
-const DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+const DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const REFERER = "https://ilivir3.bot";
 const X_TITLE = "AI Admin V2";

@@ -40,14 +40,18 @@ import { isRetryableError, sleep } from "./provider";
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
+const HEALTH_CACHE_VERSION = "v2"; // bump this when model catalog changes to invalidate old cache
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
-const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records (was 1h — 50% fewer KV writes)
-const REFRESH_MIN_INTERVAL_MS = 30 * 60 * 1000; // refresh no more than every 30 min (was 10 min)
+const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records
+const REFRESH_MIN_INTERVAL_MS = 30 * 60 * 1000; // refresh no more than every 30 min
 const PING_DELAY_MS = 500; // space pings to be gentle on free quota
 
 function healthKey(provider: string, model: string): string {
-  return `${KV_KEY_PREFIX}:${provider}:${model}`;
+  // Include version in the key so changing the model catalog invalidates ALL
+  // old health records automatically (old keys expire via TTL, new keys start
+  // fresh with no stale "unhealthy" marks from previous model configurations).
+  return `${KV_KEY_PREFIX}:${HEALTH_CACHE_VERSION}:${provider}:${model}`;
 }
 
 // ============================================================

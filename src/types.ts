@@ -300,7 +300,6 @@ export type Span =
 export type JobType = "scheduled_post" | "approval";
 export type JobStatus =
   | "pending"
-  | "publishing"
   | "published"
   | "rejected"
   | "expired"
