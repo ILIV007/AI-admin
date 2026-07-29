@@ -289,21 +289,24 @@ export function blocksToTelegramHtml(
     }
   }
 
-  // Footer — ALWAYS escaped
+  // Footer — ALWAYS escaped, always with \n spacing before it
   parts.push(`<blockquote>${escapeHtml(footer)}</blockquote>`);
 
-  // Join parts: use \n (single newline) between a paragraph and the quote that
-  // follows it (colon logic), so they appear adjacent with no gap.
-  // Use \n\n between all other blocks for normal paragraph spacing.
+  // Join parts:
+  // - Colon text → next quote: single \n (adjacent, no gap)
+  // - Everything else → \n\n (normal spacing)
+  // - Footer always gets \n before it (not \n\n — it's a small blockquote)
   const result: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     result.push(parts[i]);
     if (i < parts.length - 1) {
-      // Check if current part ends with ":" (colon) and next is a blockquote
       const currentEndsColon = /[:：]\s*$/.test(parts[i].replace(/<[^>]+>$/g, "").trim());
       const nextIsQuote = parts[i + 1].startsWith("<blockquote>");
+      const isFooter = i === parts.length - 2; // last content before footer
       if (currentEndsColon && nextIsQuote) {
-        result.push("\n"); // single newline — adjacent, no gap
+        result.push("\n"); // colon → adjacent quote
+      } else if (isFooter) {
+        result.push("\n"); // footer: single newline before it
       } else {
         result.push("\n\n"); // normal spacing
       }

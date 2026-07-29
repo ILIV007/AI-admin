@@ -37,6 +37,7 @@ export function buildSystemPrompt(
     `# OUTPUT CONTRACT (mandatory)\n` +
       `- Output MARKDOWN only, never raw HTML.\n` +
       `- CRITICAL: Preserve ALL links EXACTLY. [text](url) → output [text](url). Bare URLs → output as-is. NEVER remove, shorten, or reformat any URL. NEVER replace a link with just its text. The link MUST appear in your output.\n` +
+      `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source. NEVER invent URLs or turn plain text into links.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit", or attribution lines. But DO keep all existing links.\n` +
       `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
       `- CRITICAL: NEVER translate English technical terms to Persian. Keep AI, API, GPU, CPU, LLM, bot, cloud, framework as-is.\n` +
@@ -45,19 +46,15 @@ export function buildSystemPrompt(
       `- Preserve content emojis (📦 in "📦 Installation"). Remove decorative spam (🔥🔥😍🎉).\n` +
       `- No greetings, closings, or meta-text. Output ONLY the processed text.\n` +
       `- BOLDING: Only key terms, tool names, warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
-      `- STRUCTURE: Use bullets (•), numbered lists, and visual symbols for structure:\n` +
-      `  • Use → for "leads to" or "step result"\n` +
-      `  • Use × for "not" or "removed"\n` +
-      `  • Use | as separator between items\n` +
-      `  • Use + for "additional" or "bonus"\n` +
-      `  • Use ▸ for sub-items\n` +
-      `  • Use ◆ for highlights\n` +
+      `- STRUCTURE: Use bullets (•), numbered lists, and visual symbols (→ × | + ▸ ◆) for structure.\n` +
       `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable, attractive, and well-structured.\n` +
-      `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Only selective important parts.\n` +
-      `- CRITICAL RTL: If a paragraph is Persian, you MUST start it with a Persian word. NEVER start a Persian paragraph with an English word or acronym — this breaks RTL alignment. If you need to mention an English term, put it AFTER a Persian word or in parentheses. Example: write "هوش مصنوعی (AI) یک فناوری است" NOT "AI یک فناوری است". Write "این ابزار با React ساخته شده" NOT "React برای این ابزار استفاده شده".\n` +
+      `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, bullet lists, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Quote bullet lists and numbered steps. Be creative with quotes for long posts — use them to highlight important sections.\n` +
+      `- CRITICAL RTL: If a paragraph is Persian, you MUST start it with a Persian word. NEVER start a Persian paragraph with an English word. Example: write "هوش مصنوعی (AI)" NOT "AI یک فناوری".\n` +
       `- Use Persian punctuation in Persian: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
-      `- English words WITHIN Persian text are FINE and should be KEPT. Do NOT remove them. Just ensure the FIRST word of each Persian paragraph is Persian.\n` +
-      `- EMOJI USAGE: Use emojis creatively and sparingly. Do NOT force emojis into every paragraph. Only use them when they genuinely enhance the content (e.g. a 📦 for a release, a ⚡ for a performance tip). Never put random emojis at the end of sentences. Max 1-3 per post when emoji level is low.\n` +
+      `- CRITICAL: Write Persian correctly. Use half-spaces (نیم‌فاصله) in compound words like "می‌رود", "می‌تواند", "نیم‌فاصله". Do NOT double letters. Proofread your output.\n` +
+      `- English words WITHIN Persian text are FINE and should be KEPT. Just ensure the FIRST word is Persian.\n` +
+      `- EMOJI: NEVER put emojis at the END of sentences or paragraphs. NEVER use 🤖, ⚡, 🔥, 🚀 randomly. Only use emojis when they genuinely enhance content (📦 for releases, 🔒 for security). Max 1-2 per post.\n` +
+      `- TONE: Write naturally, like a skilled human admin — NOT robotic. Vary sentence structure. Be conversational but professional.\n` +
       `- Keep the original meaning and tone. Improve readability and structure, but do NOT change the substance of the content.`,
   );
 
@@ -101,10 +98,10 @@ function describeEditIntensity(level: number): string {
 function describeEmojiLevel(level: number): string {
   if (level <= 10) return "no emojis";
   if (level <= 30) {
-    return "LOW (1-3 per post). Creative only — use when genuinely enhances content. NOT on every paragraph.";
+    return "LOW (max 1-2 per post). Only when genuinely enhances. NEVER at end of sentences. NEVER 🤖⚡🔥🚀.";
   }
-  if (level <= 60) return "moderate — use creatively where appropriate";
-  return "generous — use freely but professionally";
+  if (level <= 60) return "moderate — use creatively, never at end of sentences";
+  return "generous — use freely but professionally, never at end of sentences";
 }
 
 // ============================================================
