@@ -16,6 +16,8 @@ import {
   fetchWithTimeout,
   isRetryableError,
   okResult,
+  parseRetryAfter,
+  sleep,
   type AIProvider,
 } from "./provider";
 import { buildSystemPrompt, buildUserPrompt } from "./prompts";
@@ -43,7 +45,7 @@ export const geminiProvider: AIProvider = {
     const model = (modelOverride ?? req.settings.geminiModel ?? DEFAULT_MODEL).trim();
 
     const systemPrompt = buildSystemPrompt(req.profile, req.settings, req.mode);
-    const userPrompt = buildUserPrompt(req.text, req.classification, req.mode);
+    const userPrompt = buildUserPrompt(req.text, req.classification, req.mode, req.instructionOverride);
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       model,
@@ -60,12 +62,13 @@ export const geminiProvider: AIProvider = {
         parts: [{ text: systemPrompt }],
       },
       generationConfig: {
-        temperature: 0.7,
+        // E: lower temperature for more deterministic formatting output.
+        temperature: 0.3,
         maxOutputTokens: 4096,
       },
     };
 
-    const res = await fetchWithTimeout(
+    const res0 = await fetchWithTimeout(
       url,
       {
         method: "POST",
@@ -74,6 +77,29 @@ export const geminiProvider: AIProvider = {
       },
       AI_BUDGET.TIMEOUT_MS,
     );
+
+    // Handle 429 once: respect Retry-After (parseRetryAfter returns SECONDS),
+    // convert to ms, cap at TIMEOUT_MS, then retry once. Mirrors openrouter.ts.
+    let res = res0;
+    if (res !== null && res.status === 429) {
+      const waitSec = parseRetryAfter(res.headers);
+      const waitMs = waitSec > 0 ? waitSec * 1000 : AI_BUDGET.BACKOFF_MS;
+      try {
+        await res.text();
+      } catch {
+        // ignore
+      }
+      await sleep(Math.min(waitMs, AI_BUDGET.TIMEOUT_MS));
+      res = await fetchWithTimeout(
+        url,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        AI_BUDGET.TIMEOUT_MS,
+      );
+    }
 
     if (res === null) {
       return errResult(

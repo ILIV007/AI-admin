@@ -53,7 +53,7 @@ export const openrouterProvider: AIProvider = {
     const model = (modelOverride ?? req.settings.openrouterModel ?? DEFAULT_MODEL).trim();
 
     const systemPrompt = buildSystemPrompt(req.profile, req.settings, req.mode);
-    const userPrompt = buildUserPrompt(req.text, req.classification, req.mode);
+    const userPrompt = buildUserPrompt(req.text, req.classification, req.mode, req.instructionOverride);
 
     const body = {
       model,
@@ -61,7 +61,8 @@ export const openrouterProvider: AIProvider = {
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.7,
+      // E: lower temperature for more deterministic formatting output.
+      temperature: 0.3,
       max_tokens: 4096,
     };
 
@@ -79,16 +80,18 @@ export const openrouterProvider: AIProvider = {
     // First attempt.
     let res = await fetchWithTimeout(ENDPOINT, init, AI_BUDGET.TIMEOUT_MS);
 
-    // Handle 429 once: respect Retry-After (cap 30s), then retry once.
+    // Handle 429 once: respect Retry-After (parseRetryAfter returns SECONDS),
+    // convert to ms, cap at TIMEOUT_MS, then retry once.
     if (res !== null && res.status === 429) {
-      const wait = parseRetryAfter(res.headers) || AI_BUDGET.BACKOFF_MS;
+      const waitSec = parseRetryAfter(res.headers);
+      const waitMs = waitSec > 0 ? waitSec * 1000 : AI_BUDGET.BACKOFF_MS;
       // Drain the body so the connection can be reused / closed cleanly.
       try {
         await res.text();
       } catch {
         // ignore
       }
-      await sleep(Math.min(wait, AI_BUDGET.TIMEOUT_MS));
+      await sleep(Math.min(waitMs, AI_BUDGET.TIMEOUT_MS));
       res = await fetchWithTimeout(ENDPOINT, init, AI_BUDGET.TIMEOUT_MS);
     }
 

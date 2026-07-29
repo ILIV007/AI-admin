@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id                   TEXT PRIMARY KEY,           -- ulid-ish
   type                 TEXT NOT NULL CHECK (type IN ('scheduled_post','approval')),
   status               TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending','published','rejected','expired','failed')),
+                       CHECK (status IN ('pending','publishing','published','rejected','expired','failed')),
   user_id              INTEGER NOT NULL,
   chat_id              INTEGER NOT NULL,
   message_id           INTEGER NOT NULL,
@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status_sched ON jobs(status, scheduled_for);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, created_at);
+
+-- Published posts mapping (P1-CE2: enables channel editing).
+-- Maps an admin's source message to the channel message it produced, so
+-- that when the admin edits their source message, the bot can edit the
+-- corresponding channel post in place (within Telegram's 48h edit window).
+CREATE TABLE IF NOT EXISTS published_posts (
+  source_chat_id      INTEGER NOT NULL,
+  source_message_id   INTEGER NOT NULL,
+  published_chat_id   INTEGER NOT NULL,
+  published_message_id INTEGER NOT NULL,
+  published_at        INTEGER NOT NULL,
+  PRIMARY KEY (source_chat_id, source_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_published_posts_chat_msg ON published_posts(published_chat_id, published_message_id);
 
 -- Media group items (aggregation; finalized=0 means pending)
 CREATE TABLE IF NOT EXISTS media_group_items (

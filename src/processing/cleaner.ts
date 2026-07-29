@@ -352,17 +352,12 @@ export function protectPrompts(text: string): {
 export function restorePrompts(text: string, prompts: string[]): string {
   if (!text || prompts.length === 0) return text;
   // Combine ALL prompts into a SINGLE code block (not separate blocks).
-  // Remove "prompt:" / "system:" / "instruction:" prefixes from the content
-  // (they are labels, not part of the actual prompt text).
-  // Use ```prompt fence → rendered as <blockquote expandable><pre><code>
+  // PRESERVE "prompt:" / "system:" / "instruction:" labels — they are part of
+  // the content the user wants to keep. Do NOT strip them.
+  // Use ```prompt fence → rendered as <blockquote expandable><code>
   // (collapsible AND copyable monospace).
   const allPrompts = prompts
-    .map((p) => {
-      let cleaned = p.trim();
-      // Remove prompt prefix labels: "prompt:", "system:", "user:", "instruction:", "negative prompt:"
-      cleaned = cleaned.replace(/^(?:.*\s)?(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i, "");
-      return cleaned;
-    })
+    .map((p) => p.trim())
     .filter((p) => p.length > 0)
     .map((p, i) => (prompts.length > 1 ? `--- Prompt ${i + 1} ---\n` : "") + p)
     .join("\n\n");

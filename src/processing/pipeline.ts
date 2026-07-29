@@ -41,9 +41,10 @@ import { sanitizeAiOutput } from "../formatting/sanitizer";
 import { markdownToBlocks } from "../formatting/blocks";
 import { blocksToTelegramHtml } from "../formatting/telegram-html";
 import { chunkHtml } from "../formatting/chunker";
-import { fixRtlParagraphs } from "../ai/prompts";
 import { getProfile } from "../config/defaults";
-import { ownerUserId } from "../config/env";
+import { isAuthorized, getRole } from "../storage/repositories/admins";
+import { fixRtlParagraphs } from "../ai/prompts";
+import { can } from "../domain/roles";
 import { log } from "../observability/logger";
 
 // ============================================================
@@ -64,7 +65,15 @@ export async function runPipeline(
   settings: Settings,
 ): Promise<PipelineResult> {
   const scope = "pipeline.runPipeline";
-  const isAdmin = content.fromId != null && content.fromId === ownerUserId(env);
+  // P0-1 fix: use isAuthorized() (checks admins table + owner) instead of
+  // owner-only check. Editors/reviewers/viewers are now recognized as admins.
+  // role is fetched for finer-grained decisions (e.g. who can use AI).
+  const isAdmin =
+    content.fromId != null && (await isAuthorized(env, content.fromId));
+  const role =
+    isAdmin && content.fromId != null
+      ? await getRole(env, content.fromId)
+      : null;
 
   // ── 1. Clean content + protect prompts ──────────────────────────
   // First, strip ANY occurrence of the footer channel from the input text
@@ -91,7 +100,14 @@ export async function runPipeline(
     // Clean up multiple blank lines
     inputText = inputText.replace(/\n{3,}/g, "\n\n").trim();
   }
-  const cleaned = cleanContent(inputText);
+  // P0-3 fix: pass the channel's own handle so cleanContent does NOT strip
+  // it as spam. Without this, @ILIVIR3 inside forwarded posts is removed.
+  let ownHandle: string | undefined;
+  if (settings.footerText) {
+    const ownMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
+    ownHandle = ownMatch ? ownMatch[1] : undefined;
+  }
+  const cleaned = cleanContent(inputText, { ownHandle });
   const { text: protectedText, prompts } = protectPrompts(cleaned);
   let workingText = protectedText;
 
@@ -100,8 +116,11 @@ export async function runPipeline(
 
   // ── 3. Decide rewrite mode ──────────────────────────────────────
   // Priority: none → non-admin (no AI) → recommended-or-explicit → format-only
+  // P0-1 fix: AI rewriting is available to owner + editor (not reviewer/viewer).
+  // Non-admins always get format-only output.
   let useAi = false;
-  if (settings.rewriteMode !== "none" && isAdmin) {
+  const canUseAi = isAdmin && (role === "owner" || role === "editor");
+  if (settings.rewriteMode !== "none" && canUseAi) {
     if (classification.recommendedNeedsRewrite || settings.rewriteMode !== "normal") {
       useAi = true;
     }
@@ -218,7 +237,8 @@ export async function runPipeline(
   // ── 8. Restore prompt placeholders ──────────────────────────────
   finalText = restorePrompts(finalText, prompts);
 
-  // ── 8b. Fix RTL: post-process to fix English-starting Persian paragraphs ──
+  // ── 8b. Fix RTL: prepend RLM mark to Persian paragraphs that start with
+  //      an English word (P2-5). Defense-in-depth behind the AI instruction.
   finalText = fixRtlParagraphs(finalText);
 
   // ── 9. Markdown → blocks ────────────────────────────────────────
@@ -237,23 +257,41 @@ export async function runPipeline(
   // Check if this post contains prompts (from protectPrompts)
   const hasPrompts = prompts.length > 0;
 
+  // Escape helper for footer (used in multiple places below).
+  // Includes a null guard — settings.footerText may be null/undefined if a D1
+  // row was corrupted or a future code path clears the default.
+  const escapeFooter = (s: string | null | undefined): string =>
+    s ? s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!)) : "";
+
   // For ALL posts (prompt and regular):
   // If >1 part: try summarize first to fit in 1 part.
-  // If summarize fails or still >1 part: use reply chain with:
+  //
+  // For PROMPT posts: NEVER split into multiple posts. Use standard summarize,
+  // then an ultra-aggressive summarize that compresses the prompt content
+  // itself. If both fail, force to a single (possibly truncated) part.
+  //
+  // For REGULAR posts: if summarize fails or still >1 part, use reply chain
+  // with:
   //   - Footer on EVERY part
-  //   - Page numbers (1/N, 2/N, etc.)
+  //   - Page numbers (1/N, 2/N) ABOVE the footer, in ITALIC
   //   - Reply chain (each part replies to previous)
   if (parts.length > 1) {
     // Try summarize first
     log("info", scope, "post too long, attempting summarize", { parts: parts.length, hasPrompts });
     let summarizeSuccess = false;
+    // Track the best (shortest) HTML + text so the reply-chain fallback
+    // re-chunks the SUMMARIZED version, not the original.
+    let bestHtml = html;
     try {
       const summarizeAiMod: {
         rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
       } = await import("../ai/fallback");
       const summarizeProfile = getProfile(settings.profile);
+      // P1-7 fix: summarize the ORIGINAL cleaned text (workingText), NOT
+      // finalText (which has prompts restored, footer stripped, RTL marks
+      // applied, etc.). Summarize mode is designed for raw content.
       const summarizeReq: AIRequest = {
-        text: finalText,
+        text: workingText,
         classification,
         settings: { ...settings, rewriteMode: "summarize" },
         profile: summarizeProfile,
@@ -267,6 +305,7 @@ export async function runPipeline(
         if (newParts.length < parts.length) {
           log("info", scope, "summarize reduced parts", { before: parts.length, after: newParts.length });
           parts = newParts;
+          bestHtml = summaryHtml;
           finalText = summaryResult.text;
           aiUsed = true;
           aiProvider = summaryResult.provider;
@@ -280,23 +319,107 @@ export async function runPipeline(
       log("warn", scope, "summarize failed; will use reply chain", { error: String(e) });
     }
 
-    // If still >1 part: reply chain with footer on ALL parts + page numbers
-    if (!summarizeSuccess && parts.length > 1) {
+    // ── PROMPT POSTS: ultra-summarize if standard summarize didn't fit ──
+    // Prompts must NEVER be split into multiple posts. The ultra pass tells
+    // the AI to aggressively compress the ```prompt block content itself
+    // (drop redundant adjectives, keep --parameters + subject + key style).
+    if (hasPrompts && !summarizeSuccess && parts.length > 1) {
+      log("info", scope, "prompt post still too long; ultra-summarize", { parts: parts.length });
+      try {
+        const ultraMod: {
+          rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
+        } = await import("../ai/fallback");
+        const ultraProfile = getProfile(settings.profile);
+        const ultraReq: AIRequest = {
+          text: finalText,
+          classification,
+          settings: { ...settings, rewriteMode: "summarize" },
+          profile: ultraProfile,
+          mode: "summarize",
+          // Inject as a top-level # OVERRIDE INSTRUCTION (NOT appended to text),
+          // so the model treats it as a directive rather than source content.
+          instructionOverride:
+            "The source contains AI/image-generation prompts inside ```prompt fences. " +
+            "AGGRESSIVELY compress the prompt content: remove redundant adjectives, duplicate " +
+            "style descriptors, and filler words. KEEP the subject, ALL --parameters (e.g. " +
+            "--ar, --v, --seed), negative prompts, and key technical terms. Target: fit the " +
+            "ENTIRE output under 3000 visible characters so it fits in ONE Telegram message. " +
+            "Preserve every ```prompt fence. Preserve ALL links. Preserve original language.",
+        };
+        const ultraResult = await ultraMod.rewriteWithFallback(env, ultraReq);
+        if (ultraResult?.ok && ultraResult?.text) {
+          const ultraBlocks = markdownToBlocks(ultraResult.text);
+          const ultraHtml = blocksToTelegramHtml(ultraBlocks, settings.footerText);
+          const ultraParts = chunkHtml(ultraHtml, chunkMax, settings.footerText);
+          if (ultraParts.length < parts.length) {
+            log("info", scope, "ultra-summarize reduced parts", { before: parts.length, after: ultraParts.length });
+            parts = ultraParts;
+            bestHtml = ultraHtml;
+            finalText = ultraResult.text;
+            aiProvider = ultraResult.provider;
+            aiModel = ultraResult.model;
+            if (ultraParts.length <= 1) {
+              summarizeSuccess = true;
+            }
+          }
+        }
+      } catch (e) {
+        log("warn", scope, "ultra-summarize failed", { error: String(e) });
+      }
+    }
+
+    // ── PROMPT POSTS: NEVER split. Force to a single part (last resort). ──
+    // If both summarize passes failed to get under 1 part, keep ONLY the
+    // first chunk and ensure the footer is present. Some prompt content may
+    // be truncated, but the post stays single — the user's hard requirement.
+    if (hasPrompts && parts.length > 1) {
+      log("warn", scope, "prompt post forced to single part (truncated)", { parts: parts.length });
+      const footerBlock = settings.footerText
+        ? `<blockquote>${escapeFooter(settings.footerText)}</blockquote>`
+        : "";
+      // Hard cap to chunkMax (minus footer room) so we never exceed Telegram's
+      // caption limit (1024 for media) or message limit (4096 for text).
+      // truncateVisible keeps HTML tags balanced.
+      const footerRoom = footerBlock ? footerBlock.length + 2 : 0; // +2 for "\n"
+      const cap = chunkMax - footerRoom;
+      let single = parts[0];
+      // Only truncate if it exceeds the cap.
+      const { truncateVisible } = await import("../telegram/entities");
+      if (single.length > cap) {
+        single = truncateVisible(single, Math.max(100, cap));
+      }
+      // Ensure the single part ends with the footer.
+      if (footerBlock && !single.endsWith(footerBlock)) {
+        single = single.replace(/\s+$/, "") + "\n" + footerBlock;
+      }
+      parts = [single];
+    }
+
+    // ── REGULAR POSTS: reply chain with footer on ALL + page numbers ──
+    // Page numbers go ABOVE the footer (not after it) and use ITALIC (<i>).
+    if (!hasPrompts && !summarizeSuccess && parts.length > 1) {
       log("info", scope, "using reply chain split", { parts: parts.length });
-      // Re-chunk with smaller max to leave room for footer + page number
+      // Re-chunk the BEST html (summarized if available) with a smaller max
+      // to leave room for the footer + page number on every part.
       const splitMax = (hasMedia ? 1000 : CHUNK_MAX_VISIBLE) - 150;
-      parts = chunkHtml(html, splitMax, settings.footerText);
+      parts = chunkHtml(bestHtml, splitMax, settings.footerText);
       const totalPages = parts.length;
-      const footerEscaped = settings.footerText.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+      const footerEscaped = escapeFooter(settings.footerText);
       parts = parts.map((p, i) => {
         const pageNum = `${i + 1}/${totalPages}`;
+        const pageMark = `<i>${pageNum}</i>`; // ITALIC page number
         const footerBlock = `<blockquote>${footerEscaped}</blockquote>`;
         if (p.endsWith(footerBlock)) {
-          // Footer already there (last chunk from chunker) → just add page number
-          return p + `\n<b>${pageNum}</b>`;
+          // Footer already there (last chunk from chunker) → insert page
+          // number ABOVE the footer (between body and footer).
+          return (
+            p.slice(0, -footerBlock.length).replace(/\s+$/, "") +
+            `\n${pageMark}\n` +
+            footerBlock
+          );
         }
-        // Add footer + page number to ALL parts
-        return p + `\n${footerBlock}\n<b>${pageNum}</b>`;
+        // No footer yet → append page number (above) then footer (below).
+        return p.replace(/\s+$/, "") + `\n${pageMark}\n` + footerBlock;
       });
     }
   }
@@ -412,7 +535,14 @@ export async function runPipeline(
   // scheduled_for = the computed next slot. The cron picks it up later and
   // publishes it via the queue. The admin sees a "📅 Scheduled for {time}"
   // reply instead of the published post copy.
-  if (settings.scheduleEnabled && content.fromId != null) {
+  //
+  // P1-SS5 fix: if BOTH approvalMode and scheduleEnabled are ON, approval
+  // takes precedence (the post gets a preview instead of being scheduled).
+  // Log a warning so the admin understands why scheduling didn't fire.
+  if (settings.scheduleEnabled && settings.approvalMode) {
+    log("warn", scope, "both approval and schedule enabled; approval takes precedence — post will be previewed, not scheduled");
+  }
+  if (settings.scheduleEnabled && !settings.approvalMode && content.fromId != null) {
     try {
       const jobsMod: {
         listPendingScheduledForUser?: (
@@ -460,6 +590,28 @@ export async function runPipeline(
         .map((p) => p.scheduledFor)
         .filter((t): t is number => typeof t === "number" && Number.isFinite(t));
 
+      // P1-SS6 fix: queue depth limit — max 50 pending scheduled posts per user.
+      // Prevents unbounded D1 growth + accidental spam-scheduling.
+      const MAX_PENDING_PER_USER = 50;
+      if (pendingFors.length >= MAX_PENDING_PER_USER) {
+        log("warn", scope, "schedule queue depth limit reached", {
+          pending: pendingFors.length,
+          limit: MAX_PENDING_PER_USER,
+        });
+        return {
+          ok: false,
+          action: "failed",
+          html,
+          parts,
+          media: content.media,
+          classification,
+          aiUsed,
+          aiProvider,
+          aiModel,
+          errorMessage: `Too many pending scheduled posts (max ${MAX_PENDING_PER_USER}). Wait for some to publish or cancel existing ones.`,
+        };
+      }
+
       // Defensive: fall back to defaults if the settings row is malformed.
       const perDay =
         Number.isFinite(settings.scheduleMessagesPerDay) &&
@@ -479,11 +631,22 @@ export async function runPipeline(
         intervalHours,
       );
 
+      // P1-SS3 fix: store parts WITHOUT footer in the payload. The cron
+      // appends the footer at publish time. This prevents double-footer if
+      // the cron ever reconstructs HTML from `html` + appends footer.
+      // P2-SS8 fix: also store AI metadata so the cron can report which
+      // model processed the post.
+      const { chunkHtml: chunkHtmlNoFooter } = await import("../formatting/chunker");
+      const partsNoFooter = chunkHtmlNoFooter(html, chunkMax, "");
       const payload = JSON.stringify({
         html,
-        parts,
+        parts: partsNoFooter,
         media: content.media,
         footer: settings.footerText,
+        aiUsed,
+        aiProvider,
+        aiModel,
+        classification,
       });
       const jobId = await jobsMod.createJob(env, {
         type: "scheduled_post",
@@ -505,7 +668,14 @@ export async function runPipeline(
         pendingCount: pendingFors.length,
       });
 
-      // Send preview to admin with Reject button (like approval mode)
+      // P1-SS2 fix: record the "scheduled" stat so the admin dashboard
+      // counter reflects scheduled posts.
+      try {
+        const { recordScheduled } = await import("../storage/repositories/stats");
+        await recordScheduled(env, content.fromId);
+      } catch { /* best effort */ }
+
+      // P1-SS4 fix: show the scheduled time in the admin preview message.
       try {
         const publisherMod: {
           sendPreview?: (
@@ -518,15 +688,24 @@ export async function runPipeline(
           ) => Promise<{ ok: boolean; messageId?: number; error?: string }>;
         } = await import("../telegram/publisher");
         if (publisherMod.sendPreview && content.fromId != null) {
-          // Build a reject keyboard for the scheduled post
           const { buildInlineKeyboard } = await import("../telegram/entities");
           const rejectKb = buildInlineKeyboard([
             [{ text: "🚫 Cancel Scheduled Post", callback_data: `cancelsched:${jobId}` }],
           ]);
+          // Format the scheduled time in Persian locale + Tehran timezone.
+          const schedTime = new Date(scheduledFor).toLocaleString("fa-IR", {
+            timeZone: "Asia/Tehran",
+            dateStyle: "medium",
+            timeStyle: "short",
+          });
+          const previewHtml =
+            `📅 <b>Scheduled Post</b>\n\n` +
+            `⏰ Will publish: <code>${schedTime}</code>\n\n` +
+            html;
           await publisherMod.sendPreview(
             env,
             content.fromId,
-            html,
+            previewHtml,
             parts,
             content.media,
             rejectKb,
@@ -557,7 +736,99 @@ export async function runPipeline(
     }
   }
 
-  // ── 12d. Publish directly to target channel ─────────────────────
+  // ── 12d. Channel Edit mode (P0-CE1 + P1-CE2 + P1-X2) ────────────
+  // If channelEditing is ON, the sender is an admin with edit_channel
+  // permission, this is an EDIT of a previously-published source message,
+  // AND we have a mapping to the channel message_id → edit in place.
+  //
+  // Telegram limits edits to 48h after the original post. We check
+  // editDate (or fall back to "now") and skip the edit branch if the
+  // mapping is older than 48h, falling through to a new publish.
+  if (
+    settings.channelEditing &&
+    isAdmin &&
+    content.isEdit &&
+    can(role, "edit_channel")
+  ) {
+    try {
+      const jobsMod: {
+        getPublishedPost?: (
+          env: Env,
+          sourceChatId: number,
+          sourceMessageId: number,
+        ) => Promise<{
+          publishedChatId: number;
+          publishedMessageId: number;
+          publishedAt: number;
+        } | null>;
+      } = await import("../storage/repositories/jobs");
+      if (jobsMod.getPublishedPost && content.fromId != null) {
+        const mapping = await jobsMod.getPublishedPost(
+          env,
+          content.chatId,
+          content.messageId,
+        );
+        if (mapping) {
+          // 48h edit window check.
+          const editWindowMs = 48 * 60 * 60 * 1000;
+          const ageMs = Date.now() - mapping.publishedAt;
+          if (ageMs > editWindowMs) {
+            log("info", scope, "channel edit skipped: original post >48h old", {
+              ageHours: Math.round(ageMs / (60 * 60 * 1000)),
+            });
+            // Fall through to new publish.
+          } else {
+            const publisherMod: {
+              editChannelPost?: (
+                env: Env,
+                chatId: number,
+                messageId: number,
+                html: string,
+                hasMedia: boolean,
+              ) => Promise<{ ok: boolean; error?: string }>;
+            } = await import("../telegram/publisher");
+            if (publisherMod.editChannelPost) {
+              const editHtml = parts[0] || html;
+              log("info", scope, "editing channel post in place", {
+                channelMsgId: mapping.publishedMessageId,
+                hasMedia: !!content.media,
+              });
+              const editResult = await publisherMod.editChannelPost(
+                env,
+                mapping.publishedChatId,
+                mapping.publishedMessageId,
+                editHtml,
+                !!content.media,
+              );
+              if (editResult?.ok) {
+                return {
+                  ok: true,
+                  action: "edited",
+                  html,
+                  parts,
+                  media: content.media,
+                  classification,
+                  aiUsed,
+                  aiProvider,
+                  aiModel,
+                };
+              }
+              log("warn", scope, "channel edit failed; falling back to new publish", {
+                error: editResult?.error,
+              });
+              // Fall through to new publish so the edited content isn't lost.
+            }
+          }
+        }
+      }
+    } catch (e) {
+      log("warn", scope, "channel edit branch threw; falling back to publish", {
+        error: String(e),
+      });
+    }
+  }
+
+  // ── 12e. Publish directly to target channel ─────────────────────
   try {
     const publisherMod: {
       publishPost?: (
@@ -580,6 +851,31 @@ export async function runPipeline(
       aiUsed,
       parts: parts.length,
     });
+
+    // P1-CE2 fix: record the source→channel message mapping so that a later
+    // edit of the source message can edit the channel post in place.
+    if (result.messageIds.length > 0 && content.fromId != null) {
+      try {
+        const { recordPublishedPost } = await import("../storage/repositories/jobs");
+        // Resolve the target channel to a numeric chat id for storage.
+        // For @username channels, parseChannelIdNum returns 0; store the
+        // first published message_id with the resolved channel id (0 is
+        // acceptable — the lookup is by source message, not channel).
+        const targetChatId = await resolveChannelIdNum(env);
+        await recordPublishedPost(
+          env,
+          content.chatId,
+          content.messageId,
+          targetChatId,
+          result.messageIds[0],
+        );
+      } catch (e) {
+        log("warn", scope, "recordPublishedPost failed (non-fatal)", {
+          error: String(e),
+        });
+      }
+    }
+
     return {
       ok: true,
       action: "published",
@@ -606,4 +902,16 @@ export async function runPipeline(
       errorMessage: String(e),
     };
   }
+}
+
+/**
+ * Resolve env.TARGET_CHANNEL to a numeric chat id for storage in
+ * published_posts. For @username channels, returns 0 (the mapping lookup
+ * is by source message, not channel, so 0 is acceptable as a sentinel).
+ * For numeric channel ids (e.g. "-1001234567890"), returns the number.
+ */
+async function resolveChannelIdNum(env: Env): Promise<number> {
+  const t = env.TARGET_CHANNEL?.trim() ?? "";
+  if (/^-?\d+$/.test(t)) return Number(t);
+  return 0;
 }

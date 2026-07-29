@@ -81,15 +81,15 @@ function isSkippable(h: ModelHealth | null): boolean {
   return Date.now() - h.lastCheck < UNHEALTHY_SKIP_MS;
 }
 
-function markSuccess(h: ModelHealth | null, provider: string, model: string): ModelHealth {
+function markSuccess(_h: ModelHealth | null, provider: string, model: string): ModelHealth {
   return {
     model,
     provider: provider as ModelHealth["provider"],
     healthy: true,
     lastCheck: Date.now(),
     consecutiveFailures: 0,
-    // preserve lastError for context if any
-    lastError: h?.lastError,
+    // Clear lastError on success — a recovered model should not show stale errors.
+    lastError: undefined,
   };
 }
 
@@ -180,9 +180,17 @@ export async function rewriteWithFallback(
       markFailure(primaryHealth, primaryProviderName, primaryModel, r1.error ?? "unknown"),
     );
     if (!isRetryableError(parseStatusFromError(r1.error))) {
-      // Non-retryable error on primary (e.g. 401, 400): do not waste a fallback
-      // attempt on the same provider chain — go straight to the OTHER provider.
-      return crossProviderFallback(env, req, primaryProviderName, r1);
+      // Auth/permission errors (401/402/403) are provider-wide (same API key),
+      // so skip the entire same-provider chain and go to the OTHER provider.
+      // Model-level errors (400/404/405/422) are per-model and the next entry
+      // in the same-provider fallback chain is the correct retry.
+      const status = parseStatusFromError(r1.error);
+      const isAuth = status === 401 || status === 402 || status === 403;
+      if (isAuth) {
+        return crossProviderFallback(env, req, primaryProviderName, r1);
+      }
+      // Non-retryable but model-specific (e.g. 404 model-not-found): fall
+      // through to the same-provider fallback chain below.
     }
   }
 
@@ -288,7 +296,12 @@ export async function refreshModelHealth(env: Env): Promise<void> {
       continue;
     }
 
-    // Build a minimal ping request. We bypass per-user settings entirely.
+    // P1-6 fix: build a MINIMAL ping request that bypasses all formatting
+    // rules. The previous version used buildSystemPrompt with dozens of
+    // constraints (markdown-only, no translation, Persian punctuation, etc.)
+    // which could confuse the model into returning a non-"pong" response and
+    // falsely marking itself unhealthy. Now the profile soul is the ONLY
+    // instruction, and settings disable all emoji/edit intensity.
     const pingReq: AIRequest = {
       text: "ping",
       classification: {
@@ -309,12 +322,14 @@ export async function refreshModelHealth(env: Env): Promise<void> {
           provider === "openrouter" ? model : DEFAULT_SETTINGS.openrouterModel,
         rewriteMode: "none",
         approvalMode: false,
+        emojiLevel: 0,
+        editIntensity: 0,
       },
       profile: {
-        key: "ilivir3",
-        name: "ILIVIR3",
+        key: "ping",
+        name: "Ping",
         description: "",
-        soul: "Reply with the single word: pong",
+        soul: "You are a health-check responder. Reply with exactly one word: pong",
         style: "",
         rules: "",
         formatting: "",

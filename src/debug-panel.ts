@@ -24,11 +24,11 @@ const VERSION = "2.4.5";
 export function checkPanelAuth(request: Request, env: Env): boolean {
   const token = env.DEBUG_TOKEN;
   if (!token) return false;
+  // 7.1 fix: Bearer header ONLY. Query-string ?token= is removed because it
+  // leaks the token via browser history, server access logs, and Referer
+  // headers when the panel links to external sites.
   const auth = request.headers.get("Authorization") || "";
   if (auth.startsWith("Bearer ") && auth.slice(7) === token) return true;
-  const url = new URL(request.url);
-  const qp = url.searchParams.get("token");
-  if (qp && qp === token) return true;
   return false;
 }
 
@@ -47,7 +47,7 @@ export async function handlePanelRoute(
 
   if (!checkPanelAuth(request, env)) {
     return new Response(
-      JSON.stringify({ ok: false, error: "Unauthorized. Use ?token=DEBUG_TOKEN or Authorization: Bearer DEBUG_TOKEN" }),
+      JSON.stringify({ ok: false, error: "Unauthorized. Use Authorization: Bearer DEBUG_TOKEN header" }),
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
   }
@@ -743,7 +743,15 @@ function panelHTML(): string {
 </div>
 
 <script>
-const TOKEN = new URLSearchParams(location.search).get('token') || '';
+// 7.1 fix: query-string ?token= is no longer accepted by the server (security).
+// The token is entered once via a prompt and stored in sessionStorage for the
+// duration of the browser session. It is sent as a Bearer header on every API
+// call — never in the URL (which would leak via history/logs/Referer).
+let TOKEN = sessionStorage.getItem('debug_token') || '';
+if (!TOKEN) {
+  TOKEN = prompt('Enter DEBUG_TOKEN to access the debug panel:') || '';
+  if (TOKEN) sessionStorage.setItem('debug_token', TOKEN);
+}
 const headers = TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
 
 function showAlert(type, title, msg) {
@@ -751,15 +759,6 @@ function showAlert(type, title, msg) {
   const icons = { error: '🚨', success: '✅', warning: '⚠️' };
   c.innerHTML = '<div class="alert alert-' + type + '"><span class="alert-icon">' + icons[type] + '</span><div class="alert-content"><div class="alert-title">' + title + '</div>' + (msg || '') + '</div></div>';
   setTimeout(() => c.innerHTML = '', 10000);
-}
-
-function showCriticalBanner(title, text, steps) {
-  const c = document.getElementById('critical-banner-container');
-  let stepsHtml = '';
-  if (steps && steps.length) {
-    stepsHtml = '<ol class="critical-banner-steps">' + steps.map(s => '<li>' + s + '</li>').join('') + '</ol>';
-  }
-  c.innerHTML = '<div class="critical-banner"><span class="critical-banner-icon">🚨</span><div class="critical-banner-content"><div class="critical-banner-title">' + title + '</div><div class="critical-banner-text">' + text + stepsHtml + '</div></div></div>';
 }
 
 async function api(path, method) {

@@ -120,7 +120,9 @@ export async function handleCallbackQuery(
   }
 
   try {
-    // Cancel scheduled post — admin can cancel a scheduled post before it's published
+    // Cancel scheduled post — admin can cancel a scheduled post before it's published.
+    // P2-SS7 fix: two-step confirmation. First tap asks "are you sure?";
+    // second tap within 30s actually cancels. Prevents accidental taps.
     if (data.startsWith("cancelsched:")) {
       const jobId = data.slice("cancelsched:".length);
       try {
@@ -134,7 +136,43 @@ export async function handleCallbackQuery(
           await safeAnswer(env, cq.id, "⚠️ Already processed", true);
           return;
         }
-        // Mark as rejected (reuse 'rejected' status)
+
+        // Two-step confirmation via KV.
+        const confirmKey = `cancelsched_confirm:${jobId}`;
+        const confirmed = await env.AI_ADMIN_KV.get(confirmKey);
+        if (!confirmed) {
+          // First tap: set confirmation flag + show "confirm" keyboard.
+          await env.AI_ADMIN_KV.put(confirmKey, "1", { expirationTtl: 30 });
+          await safeAnswer(
+            env,
+            cq.id,
+            "⚠️ Tap Cancel AGAIN within 30s to confirm",
+            true,
+          );
+          // Update keyboard to show a "Confirm Cancel" button.
+          try {
+            const { tgApi } = await import("../telegram/client");
+            const { buildInlineKeyboard } = await import("../telegram/entities");
+            const confirmKb = buildInlineKeyboard([
+              [
+                {
+                  text: "🚫 Confirm Cancel",
+                  callback_data: `cancelsched:${jobId}`,
+                },
+              ],
+            ]);
+            if (cq.message) {
+              await tgApi(env.BOT_TOKEN, "editMessageReplyMarkup", {
+                chat_id: cq.message.chat.id,
+                message_id: cq.message.message_id,
+                reply_markup: JSON.parse(confirmKb),
+              });
+            }
+          } catch { /* ignore */ }
+          return;
+        }
+        // Second tap: actually cancel.
+        await env.AI_ADMIN_KV.delete(confirmKey);
         await updateJobStatus(env, jobId, "rejected");
         await safeAnswer(env, cq.id, "🚫 Scheduled post cancelled");
         // Update keyboard to show cancelled
@@ -435,7 +473,14 @@ Channel: <code>${escapeHtml(
     void auditLog(env, fromId, auditAction, `u:${fromId}`, auditDetail);
   }
 
-  await safeAnswer(env, cq.id, "✅ Saved");
+  // P2-CE5 fix: give visual feedback explaining what Channel Edit does.
+  let answerText = "✅ Saved";
+  if (parts[1] === "channeledit") {
+    answerText = settings.channelEditing
+      ? "✅ Channel Edit ON — edits to your published posts update the channel within 48h"
+      : "⚪ Channel Edit OFF — edits publish as new posts";
+  }
+  await safeAnswer(env, cq.id, answerText);
 
   // If approval or channelEdit changed, update ONLY the keyboard (preserve menu text)
   if (parts[1] === "approval" || parts[1] === "channeledit") {
@@ -649,27 +694,27 @@ async function handlePick(
   switch (which) {
     case "rewrite":
       keyboard = rewriteModeKeyboard(settings.rewriteMode);
-      text = "✍️ <b>Rewrite Mode</b>\\nSelect an option:";
+      text = "✍️ <b>Rewrite Mode</b>\nSelect an option:";
       break;
     case "personality":
       keyboard = personalityKeyboard(settings.personalityMode);
-      text = "🎭 <b>Personality</b>\\nSelect an option:";
+      text = "🎭 <b>Personality</b>\nSelect an option:";
       break;
     case "editint":
       keyboard = editIntensityKeyboard(settings.editIntensity);
-      text = "📊 <b>Edit Intensity</b>\\nSelect a value:";
+      text = "📊 <b>Edit Intensity</b>\nSelect a value:";
       break;
     case "emoji":
       keyboard = emojiLevelKeyboard(settings.emojiLevel);
-      text = "😀 <b>Emoji Level</b>\\nSelect a value:";
+      text = "😀 <b>Emoji Level</b>\nSelect a value:";
       break;
     case "lang":
       keyboard = languageKeyboard(settings.languageMode);
-      text = "🌐 <b>Language</b>\\nSelect an option:";
+      text = "🌐 <b>Language</b>\nSelect an option:";
       break;
     case "provider":
       keyboard = providerKeyboard(settings.aiProvider);
-      text = "🤖 <b>AI Provider</b>\\nSelect an option:";
+      text = "🤖 <b>AI Provider</b>\nSelect an option:";
       break;
     case "gemodel":
       keyboard = geminiModelKeyboard(settings.geminiModel);
@@ -677,7 +722,7 @@ async function handlePick(
       break;
     case "ormodel":
       keyboard = openrouterModelKeyboard(settings.openrouterModel);
-      text = "🦙 <b>OpenRouter Model</b>\\nSelect a model:";
+      text = "🦙 <b>OpenRouter Model</b>\nSelect a model:";
       break;
     default:
       await safeAnswer(env, cq.id, "⚠️ Unknown action", true);

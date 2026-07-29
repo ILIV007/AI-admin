@@ -115,18 +115,26 @@ export async function getItems(
 }
 
 /**
- * Mark every item in a group as finalized. Subsequent finalize messages for
- * this group will see `finalized = 1` and skip re-processing.
+ * Atomically claim a media group for finalization.
+ *
+ * Sets finalized=1 on all rows for the group ONLY IF none are already finalized.
+ * Returns true if this call claimed the group (caller may proceed to publish),
+ * false if another handler already finalized it (caller must back off).
+ *
+ * This is the fix for the double-publish race: two concurrent finalize
+ * handlers both call isFinalized() → both see false → both call markFinalized.
+ * With this conditional UPDATE, only the first caller gets rows-affected > 0.
  */
 export async function markFinalized(
   env: Env,
   mediaGroupId: string,
-): Promise<void> {
-  await exec(
+): Promise<boolean> {
+  const r = await exec(
     env.DB,
-    "UPDATE media_group_items SET finalized = 1 WHERE media_group_id = ?",
+    "UPDATE media_group_items SET finalized = 1 WHERE media_group_id = ? AND finalized = 0",
     mediaGroupId,
   );
+  return (r.meta?.changes ?? 0) > 0;
 }
 
 /**

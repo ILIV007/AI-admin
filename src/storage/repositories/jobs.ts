@@ -113,6 +113,32 @@ export async function getJob(env: Env, id: string): Promise<JobRecord | null> {
   return rows.length > 0 ? rowToJob(rows[0]) : null;
 }
 
+/**
+ * Atomically claim a scheduled-post job for publishing.
+ *
+ * Flips status `pending` → `publishing` ONLY IF the row is still pending.
+ * Returns true if THIS call claimed it (caller may publish), false if
+ * another handler already claimed/published it (caller must back off).
+ *
+ * This is the fix for the double-publish race: the cron runs every 15 min
+ * and may enqueue the same due job twice if the queue is slow. Without an
+ * atomic claim, two `handlePublishScheduled` handlers both see status=pending
+ * and both call publishPost → two posts in the channel.
+ *
+ * The caller must later call updateJobStatus(id, "published"|"failed") to
+ * finalize. A `publishing` status that crashes mid-way will be picked up by
+ * a future cron tick's pruning logic (or can be manually reset).
+ */
+export async function claimForPublish(env: Env, id: string): Promise<boolean> {
+  const r = await exec(
+    env.DB,
+    "UPDATE jobs SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'pending'",
+    nowMs(),
+    id,
+  );
+  return (r.meta?.changes ?? 0) > 0;
+}
+
 // ============================================================
 // Status transitions
 // ============================================================
@@ -280,4 +306,82 @@ export async function listPendingScheduledForUser(
     limit,
   );
   return rows.map(rowToJob);
+}
+
+// ============================================================
+// Published posts mapping (P1-CE2 — enables channel editing)
+// ============================================================
+
+interface PublishedPostRow {
+  source_chat_id: number;
+  source_message_id: number;
+  published_chat_id: number;
+  published_message_id: number;
+  published_at: number;
+}
+
+export interface PublishedPost {
+  sourceChatId: number;
+  sourceMessageId: number;
+  publishedChatId: number;
+  publishedMessageId: number;
+  publishedAt: number;
+}
+
+function rowToPublishedPost(r: PublishedPostRow): PublishedPost {
+  return {
+    sourceChatId: r.source_chat_id,
+    sourceMessageId: r.source_message_id,
+    publishedChatId: r.published_chat_id,
+    publishedMessageId: r.published_message_id,
+    publishedAt: r.published_at,
+  };
+}
+
+/**
+ * Record (or update) the mapping from an admin's source message to the
+ * channel message it produced. Called after every successful direct publish
+ * so that a later edit of the source message can edit the channel post
+ * in place (P1-CE2).
+ *
+ * Uses INSERT OR REPLACE so re-publishing the same source message updates
+ * the mapping (e.g. after a delete + re-publish).
+ */
+export async function recordPublishedPost(
+  env: Env,
+  sourceChatId: number,
+  sourceMessageId: number,
+  publishedChatId: number,
+  publishedMessageId: number,
+): Promise<void> {
+  await exec(
+    env.DB,
+    `INSERT OR REPLACE INTO published_posts
+       (source_chat_id, source_message_id, published_chat_id, published_message_id, published_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    sourceChatId,
+    sourceMessageId,
+    publishedChatId,
+    publishedMessageId,
+    nowMs(),
+  );
+}
+
+/**
+ * Look up the channel message_id that a given source message produced.
+ * Returns null if no mapping exists (new post, mapping expired, or the
+ * source was never published directly).
+ */
+export async function getPublishedPost(
+  env: Env,
+  sourceChatId: number,
+  sourceMessageId: number,
+): Promise<PublishedPost | null> {
+  const rows = await execAll<PublishedPostRow>(
+    env.DB,
+    "SELECT * FROM published_posts WHERE source_chat_id = ? AND source_message_id = ?",
+    sourceChatId,
+    sourceMessageId,
+  );
+  return rows.length > 0 ? rowToPublishedPost(rows[0]) : null;
 }

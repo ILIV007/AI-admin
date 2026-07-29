@@ -69,12 +69,6 @@ export const FORMATTER_SAMPLES: FormatterSample[] = [
     expectedNotContains: ["__under__"],
   },
   {
-    name: "mention",
-    input: "Ping @ILIVIR3 please",
-    expectedContains: ['<a href="t.me/ILIVIR3">@ILIVIR3</a>'],
-    expectedNotContains: [],
-  },
-  {
     name: "persian-with-emoji",
     input: "📦 نصب",
     expectedContains: ["📦 نصب"],
@@ -92,6 +86,53 @@ export const FORMATTER_SAMPLES: FormatterSample[] = [
       "📦",
     ],
     expectedNotContains: ["**", "||", "[مستندات]"],
+  },
+  {
+    // Regression test for DEBUG-A Bug 1: a markdown link whose URL contains a
+    // literal `%` followed by non-hex chars (e.g. `50%off`) must NOT crash
+    // decodeURIComponent. The link should render as a normal <a> tag.
+    name: "link-with-percent-in-url",
+    input: "[50% off](https://shop.example.com/50%off)",
+    expectedContains: ['<a href="https://shop.example.com/50%off">50% off</a>'],
+    expectedNotContains: [],
+  },
+  {
+    // Regression test for DEBUG-A Bug 7: mention href must include the
+    // https:// protocol so Telegram renders it as a clickable link.
+    name: "mention-with-protocol",
+    input: "Ping @ILIVIR3 please",
+    expectedContains: ['<a href="https://t.me/ILIVIR3">@ILIVIR3</a>'],
+    expectedNotContains: ['href="t.me/'],
+  },
+  {
+    // Regression test for P1-8: prompt blocks must use <pre><code> (NOT bare
+    // <code>) so newlines are preserved in multi-line prompts.
+    name: "prompt-block-pre-code",
+    input: "```prompt\nline one\nline two\n```",
+    expectedContains: ["<blockquote expandable><pre><code>"],
+    expectedNotContains: [],
+  },
+  {
+    // Regression test for P2-6: backslash escape renders literal chars.
+    name: "backslash-escape",
+    input: "\\*not italic\\*",
+    expectedContains: ["*not italic*"],
+    expectedNotContains: ["<i>"],
+  },
+  {
+    // Regression test for P1-4: colon→blockquote only fires for URLs/code,
+    // NOT for normal prose after a colon.
+    name: "colon-no-autoquote-prose",
+    input: "Here are the steps:\n\nFirst, clone the repository.",
+    expectedContains: ["First, clone the repository."],
+    expectedNotContains: ["<blockquote>First, clone"],
+  },
+  {
+    // Regression test for P1-4: colon→blockquote DOES fire for bare URLs.
+    name: "colon-autoquote-url",
+    input: "See the docs:\n\nhttps://example.com/docs",
+    expectedContains: ["<blockquote>"],
+    expectedNotContains: [],
   },
 ];
 
@@ -147,6 +188,49 @@ export const CLEANER_SAMPLES: CleanerSample[] = [
     name: "code-block-preserved",
     input: "Intro\n```\ncode line\n```\nOutro",
     expectedContains: ["```\ncode line\n```", "Intro", "Outro"],
+    expectedNotContains: [],
+  },
+];
+
+// ============================================================
+// Prompt protection samples — run protectPrompts → restorePrompts
+// (imported lazily by self-test to avoid a circular dep in this file)
+// ============================================================
+
+export interface PromptSample {
+  name: string;
+  input: string;
+  expectedContains: string[];
+  expectedNotContains: string[];
+}
+
+export const PROMPT_SAMPLES: PromptSample[] = [
+  {
+    name: "prompt-label-preserved",
+    // A paragraph starting with "prompt:" must be detected as a prompt,
+    // wrapped in a ```prompt fence, and the "prompt:" label MUST be kept
+    // (not stripped) in the restored output.
+    input:
+      "Here is a nice image prompt:\n\n" +
+      "prompt: a beautiful mountain landscape, cinematic lighting, highly detailed, 8k, --ar 16:9 --v 6",
+    expectedContains: [
+      "```prompt",
+      "prompt: a beautiful mountain landscape",
+      "--ar 16:9",
+      "--v 6",
+    ],
+    expectedNotContains: [],
+  },
+  {
+    name: "negative-prompt-label-preserved",
+    input:
+      "Negative prompt: blurry, low quality, distorted face, extra fingers\n\n" +
+      "prompt: portrait of a woman, photorealistic, soft lighting",
+    expectedContains: [
+      "```prompt",
+      "Negative prompt: blurry, low quality, distorted face",
+      "prompt: portrait of a woman",
+    ],
     expectedNotContains: [],
   },
 ];

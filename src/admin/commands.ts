@@ -1134,49 +1134,49 @@ export async function handleResetAll(
   const results: string[] = [];
   try {
     // 1. Delete all settings
-    await env.DB.prepare("DELETE FROM settings");
+    await env.DB.prepare("DELETE FROM settings").run();
     results.push("✅ Settings: wiped");
   } catch (e) {
     results.push("❌ Settings: " + String(e));
   }
   try {
     // 2. Delete all jobs
-    await env.DB.prepare("DELETE FROM jobs");
+    await env.DB.prepare("DELETE FROM jobs").run();
     results.push("✅ Jobs: wiped");
   } catch (e) {
     results.push("❌ Jobs: " + String(e));
   }
   try {
     // 3. Reset stats
-    await env.DB.prepare("DELETE FROM stats");
+    await env.DB.prepare("DELETE FROM stats").run();
     results.push("✅ Stats: wiped");
   } catch (e) {
     results.push("❌ Stats: " + String(e));
   }
   try {
     // 4. Delete debug events
-    await env.DB.prepare("DELETE FROM debug_events");
+    await env.DB.prepare("DELETE FROM debug_events").run();
     results.push("✅ Debug events: wiped");
   } catch (e) {
     results.push("❌ Debug events: " + String(e));
   }
   try {
     // 5. Delete audit log
-    await env.DB.prepare("DELETE FROM audit_log");
+    await env.DB.prepare("DELETE FROM audit_log").run();
     results.push("✅ Audit log: wiped");
   } catch (e) {
     results.push("❌ Audit log: " + String(e));
   }
   try {
     // 6. Delete seen updates
-    await env.DB.prepare("DELETE FROM seen_updates");
+    await env.DB.prepare("DELETE FROM seen_updates").run();
     results.push("✅ Seen updates: wiped");
   } catch (e) {
     results.push("❌ Seen updates: " + String(e));
   }
   try {
     // 7. Delete media group items
-    await env.DB.prepare("DELETE FROM media_group_items");
+    await env.DB.prepare("DELETE FROM media_group_items").run();
     results.push("✅ Media groups: wiped");
   } catch (e) {
     results.push("❌ Media groups: " + String(e));

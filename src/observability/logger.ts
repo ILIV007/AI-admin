@@ -73,8 +73,15 @@ export async function debugEvent(
   if (env.DEBUG_MODE !== "true") return;
 
   try {
-    const detailStr =
-      typeof detail === "string" ? detail : JSON.stringify(detail);
+    // P2-10 fix: JSON.stringify throws on circular references, which would
+    // crash the request. Wrap it defensively.
+    let detailStr: string;
+    try {
+      detailStr =
+        typeof detail === "string" ? detail : JSON.stringify(detail);
+    } catch {
+      detailStr = "[Circular or non-serializable detail]";
+    }
     await env.DB.prepare(
       "INSERT INTO debug_events (kind, summary, detail, created_at) VALUES (?, ?, ?, ?)",
     )

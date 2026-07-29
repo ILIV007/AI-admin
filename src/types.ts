@@ -119,6 +119,15 @@ export interface ExtractedContent {
   isChannelPost: boolean;
   isEdit: boolean;
   replyToText?: string;
+  /**
+   * For edited admin messages: the channel message_id that this source
+   * message previously produced (looked up from published_posts). Used by
+   * the channel-edit branch to edit the existing channel post in place.
+   * Null/undefined if no mapping exists (new post or mapping expired).
+   */
+  publishedMessageId?: number | null;
+  /** The edit_date from Telegram for edited messages. */
+  editDate?: number;
 }
 
 // ============================================================
@@ -222,6 +231,12 @@ export interface AIRequest {
   settings: Settings;
   profile: ChannelProfile;
   mode: "rewrite" | "summarize";
+  /**
+   * Optional override instruction injected as a top-level # OVERRIDE INSTRUCTION
+   * section in the user prompt (BEFORE # SOURCE). Used by the ultra-summarize
+   * pass to compress prompt blocks without polluting the source text.
+   */
+  instructionOverride?: string;
 }
 
 export interface AIResult {
@@ -285,6 +300,7 @@ export type Span =
 export type JobType = "scheduled_post" | "approval";
 export type JobStatus =
   | "pending"
+  | "publishing"
   | "published"
   | "rejected"
   | "expired"
@@ -330,7 +346,7 @@ export interface Stats {
 
 export interface PipelineResult {
   ok: boolean;
-  action: "published" | "preview" | "format_only" | "skipped" | "failed" | "scheduled";
+  action: "published" | "edited" | "preview" | "format_only" | "skipped" | "failed" | "scheduled";
   html: string;
   parts: string[]; // for multi-part posts
   media?: ExtractedContent["media"];

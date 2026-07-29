@@ -20,12 +20,13 @@
  * -----------------------------------------------------------------------------
  */
 
-import { cleanContent } from "../processing/cleaner";
+import { cleanContent, protectPrompts, restorePrompts } from "../processing/cleaner";
 import { markdownToBlocks } from "./blocks";
 import { blocksToTelegramHtml } from "./telegram-html";
 import {
   CLEANER_SAMPLES,
   FORMATTER_SAMPLES,
+  PROMPT_SAMPLES,
 } from "./__fixtures__/samples";
 
 // ============================================================
@@ -132,6 +133,45 @@ export function runFormatterSelfTests(): SelfTestSummary {
       failed++;
       failures.push({
         name: `cleaner:${sample.name}`,
+        reason: `threw: ${(e as Error).message ?? String(e)}`,
+      });
+    }
+  }
+
+  // --- Prompt protection samples (protectPrompts → restorePrompts) ---
+  for (const sample of PROMPT_SAMPLES) {
+    try {
+      const { text: protectedText, prompts } = protectPrompts(sample.input);
+      const restored = restorePrompts(protectedText, prompts);
+
+      let reason: string | null = null;
+      for (const needle of sample.expectedContains) {
+        if (!restored.includes(needle)) {
+          reason =
+            `expected to contain ${JSON.stringify(needle)}; got: ${truncate(restored)}`;
+          break;
+        }
+      }
+      if (!reason) {
+        for (const banned of sample.expectedNotContains) {
+          if (restored.includes(banned)) {
+            reason =
+              `expected NOT to contain ${JSON.stringify(banned)}; got: ${truncate(restored)}`;
+            break;
+          }
+        }
+      }
+
+      if (reason) {
+        failed++;
+        failures.push({ name: `prompt:${sample.name}`, reason });
+      } else {
+        passed++;
+      }
+    } catch (e) {
+      failed++;
+      failures.push({
+        name: `prompt:${sample.name}`,
         reason: `threw: ${(e as Error).message ?? String(e)}`,
       });
     }

@@ -2,12 +2,19 @@
  * src/ai/prompts.ts
  * System + user prompt builders.
  *
- * V2.4.0 changes:
- *   • Stronger link preservation (NEVER strip URLs)
- *   • Professional emoji usage (functional, not decorative at paragraph ends)
- *   • Visual symbols (→, ×, |, +, ▸, ◆) for structure
- *   • Post-process RTL fix in pipeline (not just AI instruction)
- *   • Mono copyability fix (separate <pre> and <code> nesting)
+ * V2.5.1 changes (from code-review report):
+ *   • P1-1: personalityMode is now WIRED UP (friendly/professional/neutral)
+ *   • P1-2: RTL rule softened — English technical terms (Python, React) may
+ *     start a paragraph naturally; no artificial Persian prefixes.
+ *   • P1-3: "No pagination" instruction added (system handles splitting).
+ *   • P2-2: "No HTML tags / entities" instruction added.
+ *   • P2-3: "No markdown tables" instruction added.
+ *   • P2-4: "Only ## and ### headings" restriction added.
+ *   • P2-5: fixRtlParagraphs reimplemented as a real RLM-mark post-processor.
+ *   • F: "Preserve original paragraph structure" for light/normal modes.
+ *   • G: Blockquote instructions simplified — AI only uses > for genuine
+ *     quotes/side-notes; the deterministic parser handles auto-quoting.
+ *   • Prompt compressed to reduce attention dilution (~40% shorter).
  */
 
 import type {
@@ -15,6 +22,19 @@ import type {
   Classification,
   Settings,
 } from "../types";
+
+// ============================================================
+// Personality hints (P1-1 fix)
+// ============================================================
+
+const PERSONALITY_HINTS: Record<Settings["personalityMode"], string> = {
+  friendly:
+    "Tone: warm, conversational, approachable. Use casual transitions. Like a knowledgeable friend explaining to a peer.",
+  professional:
+    "Tone: formal, authoritative, concise. Like a senior engineer documenting for peers. Avoid filler.",
+  neutral:
+    "Tone: balanced, factual, straightforward. Prioritize clarity over style.",
+};
 
 // ============================================================
 // System prompt
@@ -32,44 +52,47 @@ export function buildSystemPrompt(
   parts.push(`# STYLE\n${profile.style}`);
   parts.push(`# RULES\n${profile.rules}`);
 
-  // --- Hard output contract ---
+  // --- Personality override (P1-1 fix: was dead code, now wired up) ---
+  const personality = PERSONALITY_HINTS[settings.personalityMode];
+  if (personality) {
+    parts.push(`# TONE\n${personality}`);
+  }
+
+  // --- Hard output contract (compressed P2-1) ---
   parts.push(
     `# OUTPUT CONTRACT (mandatory)\n` +
-      `- Output MARKDOWN only, never raw HTML.\n` +
-      `- CRITICAL: Preserve ALL links EXACTLY. [text](url) → output [text](url). Bare URLs → output as-is. NEVER remove, shorten, or reformat any URL. NEVER replace a link with just its text. The link MUST appear in your output.\n` +
-      `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source. NEVER invent URLs or turn plain text into links.\n` +
-      `- CRITICAL: Do NOT add "source:", "via", "credit", or attribution lines. But DO keep all existing links.\n` +
-      `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
-      `- CRITICAL: NEVER translate ANY content. The bot is in AUTO language mode — preserve the original language of the source text exactly. Do NOT translate English to Persian or Persian to English. If the source is English, output English. If the source is Persian, output Persian. If mixed, preserve each part in its original language.\n` +
-      `- CRITICAL: NEVER translate English technical terms. Keep AI, API, GPU, CPU, LLM, bot, cloud, framework as-is.\n` +
-      `- CRITICAL: Do NOT add @channelName mentions or footers. The system adds them.\n` +
-      `- CRITICAL: If source contains @channelName mentions, REMOVE them.\n` +
-      `- CRITICAL: Do NOT add descriptions like "مخزن گیت‌هاب:" or "منبع:" before links. Just include the link as-is.\n` +
+      `- Output MARKDOWN only. NEVER use HTML tags (<br>, <b>, <i>, <a>) or HTML entities (&nbsp;). (P2-2)\n` +
+      `- NEVER use markdown tables (| col | col |). Use bullet/numbered lists instead. (P2-3)\n` +
+      `- Use ONLY ## (H2) and ### (H3) for headings. NEVER use # (H1) or ####+. (P2-4)\n` +
+      `- CRITICAL: NEVER add pagination ("Part 1/2", "Page 1", "1/N"). The system handles splitting. (P1-3)\n` +
+      `- CRITICAL: Preserve ALL links EXACTLY. [text](url) stays [text](url). Bare URLs stay as-is. NEVER remove/shorten/reformat any URL.\n` +
+      `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source.\n` +
+      `- CRITICAL: Do NOT add "source:", "via", "credit" lines. Do NOT add "مخزن گیت‌هاب:" before links.\n` +
+      `- CRITICAL: NEVER translate. Preserve the original language exactly. English stays English, Persian stays Persian. Keep technical terms (AI, API, GPU, LLM) as-is.\n` +
+      `- Do NOT add @channelName mentions or footers — the system adds them. If source contains them, REMOVE.\n` +
+      `- Preserve code blocks, commands, package names, GitHub links verbatim.\n` +
       `- Preserve content emojis (📦 in "📦 Installation"). Remove decorative spam (🔥🔥😍🎉).\n` +
       `- No greetings, closings, or meta-text. Output ONLY the processed text.\n` +
-      `- BOLDING: Only key terms, tool names, warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
-      `- STRUCTURE: Use bullets (•), numbered lists, and visual symbols (→ × | + ▸ ◆) for structure.\n` +
-      `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable, attractive, and well-structured.\n` +
-      `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, bullet lists, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Quote bullet lists and numbered steps. Be creative with quotes for long posts — use them to highlight important sections. ALWAYS quote paragraphs that are just a link.\n` +
-      `- CRITICAL RTL: If a paragraph is Persian, you MUST start it with a Persian word. NEVER start a Persian paragraph with an English word. Example: write "هوش مصنوعی (AI)" NOT "AI یک فناوری".\n` +
-      `- Use Persian punctuation in Persian: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
-      `- CRITICAL: Write Persian correctly. Use half-spaces (نیم‌فاصله) in compound words like "می‌رود", "می‌تواند", "نیم‌فاصله". Do NOT double letters. Proofread your output.\n` +
-      `- English words WITHIN Persian text are FINE and should be KEPT. Just ensure the FIRST word is Persian.\n` +
-      `- EMOJI: NEVER put emojis at the END of sentences or paragraphs. NEVER use 🤖, ⚡, 🔥, 🚀 randomly. Only use emojis when they genuinely enhance content (📦 for releases, 🔒 for security). Max 1-2 per post.\n` +
-      `- TONE: Write naturally, like a skilled human admin — NOT robotic. Vary sentence structure. Be conversational but professional.\n` +
-      `- Keep the original meaning and tone. Improve readability and structure, but do NOT change the substance of the content.`,
+      `- BOLDING: Only key terms/tool names/warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
+      `- HEADINGS: Use 📦/⚡/💡/🔒/🌐/🐞/🧩 as functional emoji prefixes for section headers.\n` +
+      `- STRUCTURE: Use bullets (•/-), numbered lists, and visual symbols (→ × | + ▸ ◆).\n` +
+      `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically. (G)\n` +
+      `- RTL: Persian paragraphs should begin with Persian text when natural. If the subject is an English technical term (e.g. Python, React, API), starting with the English term is ACCEPTABLE and natural. Do NOT force artificial Persian prefixes like "زبان Python" or "فریم‌ورک React". (P1-2)\n` +
+      `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words (می‌رود, می‌تواند).\n` +
+      `- EMOJI: NEVER at the END of sentences/paragraphs. NEVER 🤖⚡🔥🚀 randomly. Max 1-2 per post, only when genuinely enhances content.\n` +
+      `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance.`,
   );
 
   // --- Mode-specific instructions ---
   if (mode === "summarize") {
     parts.push(
-      `# TASK: SUMMARIZE\nCompress to ~40% of original length. Keep ALL technical references. Drop filler and redundancy. Preserve original language.`,
+      `# TASK: SUMMARIZE\nCompress to ~40% of original length. Keep ALL technical references, links, code, --parameters. Drop filler and redundancy. Preserve original language and structure.`,
     );
   } else {
     const modeMap: Partial<Record<Settings["rewriteMode"], string>> = {
       none: `Do not rewrite meaning. Only apply formatting fixes.`,
       light: `LIGHT rewrite: minimal edits. Fix formatting only. Keep 95% of original text. Do not rephrase sentences.`,
-      normal: `NORMAL rewrite: gentle polish. Fix formatting, remove obvious spam/hype, tighten slightly. Keep original structure and most wording. NOT a full rewrite.`,
+      normal: `NORMAL rewrite: gentle polish. Fix formatting, remove obvious spam/hype, tighten slightly. Keep original structure and most wording. NOT a full rewrite. Preserve the original paragraph breaks — do not merge or split paragraphs unless necessary for clarity. (F)`,
       aggressive: `AGGRESSIVE rewrite: full rewrite preserving meaning. Restructure for clarity.`,
     };
     const modeDesc = modeMap[settings.rewriteMode] ?? modeMap.normal!;
@@ -116,6 +139,7 @@ export function buildUserPrompt(
   text: string,
   classification: Classification,
   mode: "rewrite" | "summarize",
+  instructionOverride?: string,
 ): string {
   const lines: string[] = [];
   lines.push(`# CONTEXT`);
@@ -126,6 +150,13 @@ export function buildUserPrompt(
     lines.push(`- Has GitHub link: yes (preserve verbatim)`);
   }
   lines.push("");
+  // An override instruction (e.g. ultra-compress) goes BEFORE # SOURCE so the
+  // model treats it as a directive, not as part of the source to summarize.
+  if (instructionOverride) {
+    lines.push(`# OVERRIDE INSTRUCTION`);
+    lines.push(instructionOverride);
+    lines.push("");
+  }
   lines.push(`# INSTRUCTION`);
   if (mode === "summarize") {
     lines.push(`Summarize the SOURCE per the system contract.`);
@@ -139,12 +170,43 @@ export function buildUserPrompt(
   return lines.join("\n");
 }
 
+// ============================================================
+// fixRtlParagraphs — real RLM post-processor (P2-5 fix)
+// ============================================================
+
 /**
- * RTL fix is NO LONGER done via post-processing.
- * The AI is instructed in the system prompt to NEVER start Persian paragraphs
- * with English words. This function is kept as a no-op for backward compat
- * with pipeline.ts which imports it.
+ * Fix Persian paragraphs that start with an English/ASCII word.
+ *
+ * Telegram's RTL rendering can misplace a leading ASCII token in a Persian
+ * paragraph (e.g. "Python یک زبان است" may render with "Python" on the wrong
+ * side). Prepending a Right-to-Left Mark (RLM, U+200F) nudges the bidi
+ * algorithm to keep the line right-aligned.
+ *
+ * The AI is also instructed (P1-2) that starting with English technical
+ * terms is acceptable — this is a defense-in-depth fallback for when the
+ * AI's output still leads with ASCII.
+ *
+ * This function is idempotent: a line already starting with U+200F is left
+ * alone (no double-prefix).
  */
 export function fixRtlParagraphs(text: string): string {
-  return text; // no-op — AI handles RTL via prompt instructions
+  if (!text) return text;
+  const persianChar = /[\u0600-\u06FF]/;
+  const RLM = "\u200F";
+  const lines = text.split("\n");
+  return lines
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (!trimmed) return line;
+      // Skip lines that are already RLM-prefixed (idempotent).
+      if (line.startsWith(RLM)) return line;
+      // Skip code fence lines and list items — don't touch their structure.
+      if (/^(```|~~~|>\s|[-*]\s|\d+\.\s|#{2,3}\s)/.test(trimmed)) return line;
+      // Only act on lines that contain Persian AND start with an ASCII word.
+      if (persianChar.test(trimmed) && /^[A-Za-z][A-Za-z0-9]*\s/.test(trimmed)) {
+        return RLM + line;
+      }
+      return line;
+    })
+    .join("\n");
 }

@@ -118,7 +118,12 @@ export function renderSpan(span: Span): string {
     case "link": {
       // If the link has custom text (like [text](url)), preserve the text EXACTLY.
       // Only shorten BARE URLs (where text === url or text is the full URL).
-      const isBareUrl = !span.text || span.text === span.url || span.text === decodeURIComponent(span.url);
+      // Wrap decodeURIComponent in try-catch: a URL containing a literal `%`
+      // followed by non-hex chars (e.g. `50%off`, `%ZZ`) throws URIError, which
+      // would crash the entire pipeline and lose the post.
+      let decoded = span.url;
+      try { decoded = decodeURIComponent(span.url); } catch { /* malformed %, keep raw */ }
+      const isBareUrl = !span.text || span.text === span.url || span.text === decoded;
       const linkText = isBareUrl
         ? shortenUrl(span.url)  // Bare URL — shorten for display
         : span.text;            // Custom text — preserve EXACTLY
@@ -129,7 +134,7 @@ export function renderSpan(span: Span): string {
         return `<a href="tg://user?id=${span.userId}">${escapeHtml(span.text)}</a>`;
       }
       const username = span.text.replace(/^@/, "");
-      return `<a href="t.me/${username}">${escapeHtml(span.text)}</a>`;
+      return `<a href="https://t.me/${username}">${escapeHtml(span.text)}</a>`;
     }
   }
 }
@@ -205,12 +210,17 @@ export function blocksToTelegramHtml(
         }
 
         // RULE: Only quote SOME paragraphs, not all
-        // - Paragraphs that are JUST a link → always quote
+        // - Paragraphs that are JUST a link → always quote (also handle
+        //   surrounding whitespace-only text spans)
         // - Very long (>400 chars) → collapsible blockquote
         // - Long (>200 chars) → regular blockquote
         // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
         // - Short → no quote (just text)
-        const isJustLink = block.spans.length === 1 && block.spans[0].kind === "link";
+        const isJustLink =
+          block.spans.some((s) => s.kind === "link") &&
+          block.spans.every(
+            (s) => s.kind === "link" || (s.kind === "text" && s.text.trim() === ""),
+          );
         if (isJustLink) {
           parts.push(`<blockquote>${rendered}</blockquote>`);
           hasBlockquote = true;
@@ -238,12 +248,12 @@ export function blocksToTelegramHtml(
 
       case "code": {
         if (block.language === "prompt") {
-          // Prompt block: collapsible blockquote + <code> (monospace, copyable)
-          // NO <pre> wrapper — user said don't use code block format.
-          // Just <code> inside <blockquote expandable> for collapsibility + mono.
-          // <code> in Telegram is inline monospace (tap to copy on mobile).
+          // P1-8 fix: prompt blocks often span MULTIPLE lines. Without <pre>,
+          // Telegram collapses newlines and the prompt becomes one wrapped
+          // line — unreadable. <pre><code> preserves newlines + monospace +
+          // tap-to-copy. Wrapped in <blockquote expandable> for collapsibility.
           parts.push(
-            `<blockquote expandable><code>${escapeHtml(block.code)}</code></blockquote>`,
+            `<blockquote expandable><pre><code>${escapeHtml(block.code)}</code></pre></blockquote>`,
           );
           hasBlockquote = true;
         } else {

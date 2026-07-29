@@ -46,6 +46,7 @@ import {
 } from "../storage/repositories/stats";
 import * as mediaGroupsRepo from "../storage/repositories/media-groups";
 import {
+  claimForPublish,
   createJob,
   getJob,
   incrementAttempts,
@@ -55,7 +56,8 @@ import { recordScheduled } from "../storage/repositories/stats";
 import { sendMessage, sendChatAction, editMessageText, sendPhoto, sendVideo, sendDocument, sendAnimation } from "../telegram/client";
 import { isAuthorized } from "../storage/repositories/admins";
 import { enqueueMediaGroupFinalize } from "./producer";
-import { MEDIA_GROUP_WINDOW_MS } from "../config/defaults";
+import { MEDIA_GROUP_WINDOW_MS, TELEGRAM_LIMITS } from "../config/defaults";
+import { truncateVisible } from "../telegram/entities";
 
 // Hard cap on publish attempts. Matches the `max_retries` we'll set on the
 // queue in wrangler.toml.
@@ -367,6 +369,10 @@ async function handleProcessUpdate(
     ctx.waitUntil(safe(recordPublished(env, userId)));
     // Create a history record so /Admi-bug history tab can show it
     ctx.waitUntil(safe(createHistoryRecord(env, userId, content, result, elapsedMs)));
+  } else if (result.action === "edited") {
+    // P0-CE1: channel edit succeeded — count as a published stat (the post
+    // was updated in place, no new message in the channel).
+    ctx.waitUntil(safe(recordPublished(env, userId)));
   } else if (result.action === "preview") {
     ctx.waitUntil(safe(recordApproval(env, userId)));
   } else if (result.action === "scheduled") {
@@ -445,15 +451,14 @@ async function sendAdminReport(
     } catch { /* use default */ }
 
     // 1. Send the published post copy to admin (same content as channel).
-    //    Skipped for "scheduled" action — the post hasn't been published yet
-    //    and we don't want to leak the formatted preview before the channel
-    //    sees it. The schedule confirmation is shown in step 2 instead.
+    //    Skipped for "scheduled" (not published yet) and "edited" (the
+    //    channel post was updated in place — admin sees the edit directly).
     if (result.parts.length > 0 && result.action === "published") {
       try {
         if (content.media) {
           const mediaParams: Record<string, unknown> = {
             chat_id: userId,
-            caption: result.parts[0],
+            caption: truncateVisible(result.parts[0] ?? "", TELEGRAM_LIMITS.CAPTION_MAX_LEN),
             parse_mode: "HTML",
           };
           if (content.media.type === "photo") {
@@ -696,7 +701,7 @@ async function runChannelEditPipeline(
         await editMessageCaption(env.BOT_TOKEN, {
           chat_id: content.chatId,
           message_id: content.messageId,
-          caption: editHtml,
+          caption: truncateVisible(editHtml, TELEGRAM_LIMITS.CAPTION_MAX_LEN),
           parse_mode: "HTML",
         });
         editResult = { ok: true };
@@ -809,9 +814,16 @@ async function handleFinalizeMediaGroup(
     return;
   }
 
-  // Claim the group atomically — concurrent finalize messages will see
-  // finalized=1 next time and skip.
-  await mediaGroupsRepo.markFinalized(env, mediaGroupId);
+  // Atomically claim the group. markFinalized now returns true only if THIS
+  // call flipped finalized 0→1. If another concurrent handler already claimed
+  // it, we get false and must back off — otherwise we'd double-publish.
+  const claimed = await mediaGroupsRepo.markFinalized(env, mediaGroupId);
+  if (!claimed) {
+    log("info", "queue.finalizeMediaGroup", "group already finalized by another handler; skipping", {
+      mediaGroupId,
+    });
+    return;
+  }
 
   // Combine: concatenate captions in order for the text
   const combinedText = items
@@ -884,13 +896,14 @@ async function handleFinalizeMediaGroup(
   // If published, send ALL media as album + text as separate message
   if (result.action === "published" && result.parts.length > 0) {
     try {
-      // Send album with first part as caption
+      // Send album with first part as caption (truncated to 1024-char caption limit)
       if (allMedia.length > 1) {
         const { sendMediaGroup } = await import("../telegram/client");
+        const safeCaption = truncateVisible(result.parts[0] ?? "", TELEGRAM_LIMITS.CAPTION_MAX_LEN);
         const mediaItems = allMedia.map((m, i) => ({
           type: m.type,
           media: m.fileId,
-          caption: i === 0 ? result.parts[0] : undefined,
+          caption: i === 0 ? safeCaption : undefined,
           parse_mode: i === 0 ? "HTML" as const : undefined,
         }));
         await sendMediaGroup(env.BOT_TOKEN, {
@@ -910,10 +923,11 @@ async function handleFinalizeMediaGroup(
       if (firstItem.fromId) {
         if (allMedia.length > 1) {
           const { sendMediaGroup } = await import("../telegram/client");
+          const adminCaption = truncateVisible(result.parts[0] ?? "", TELEGRAM_LIMITS.CAPTION_MAX_LEN);
           const adminMediaItems = allMedia.map((m, i) => ({
             type: m.type,
             media: m.fileId,
-            caption: i === 0 ? result.parts[0] : undefined,
+            caption: i === 0 ? adminCaption : undefined,
             parse_mode: i === 0 ? "HTML" as const : undefined,
           }));
           await sendMediaGroup(env.BOT_TOKEN, {
@@ -924,7 +938,7 @@ async function handleFinalizeMediaGroup(
           // Single media → sendPhoto/sendVideo etc to admin
           const mediaParams: Record<string, unknown> = {
             chat_id: firstItem.fromId,
-            caption: result.parts[0],
+            caption: truncateVisible(result.parts[0] ?? "", TELEGRAM_LIMITS.CAPTION_MAX_LEN),
             parse_mode: "HTML",
           };
           if (primaryMedia.type === "photo") {
@@ -1020,8 +1034,12 @@ async function handlePublishScheduled(
     log("warn", "queue.consumer.handlePublishScheduled", "job not found", { jobId });
     return;
   }
-  if (job.status !== "pending") {
-    log("info", "queue.consumer.handlePublishScheduled", `job status is '${job.status}'; skipping`, { jobId });
+  // Atomically claim the job (pending → publishing). This prevents the
+  // double-publish race where the cron enqueues the same due job twice and
+  // two handlers both see status=pending. Only the first caller gets true.
+  const claimed = await claimForPublish(env, jobId);
+  if (!claimed) {
+    log("info", "queue.consumer.handlePublishScheduled", `job already claimed/published; skipping`, { jobId, status: job.status });
     return;
   }
 
@@ -1095,7 +1113,7 @@ async function handlePublishScheduled(
         if (payload.media) {
           const mediaParams: Record<string, unknown> = {
             chat_id: adminId,
-            caption: payload.parts[0] || "",
+            caption: truncateVisible(payload.parts[0] || "", TELEGRAM_LIMITS.CAPTION_MAX_LEN),
             parse_mode: "HTML",
           };
           if (payload.media.type === "photo") {

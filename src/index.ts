@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.4.5";
+const VERSION = "2.6.0";
 
 // ============================================================
 // MAIN EXPORT
@@ -40,6 +40,21 @@ export default {
   // ── HTTP fetch handler (webhook + health + debug) ──────────────
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Validate required bindings/secrets (fails fast with a clear error if an
+    // operator forgot BOT_TOKEN / GEMINI_API_KEY / etc.). Health/status routes
+    // are exempt so uptime probes still work even when secrets are missing.
+    const isHealthOrStatus =
+      (request.method === "GET" && url.pathname === "/") ||
+      url.pathname === "/api/status";
+    if (!isHealthOrStatus) {
+      try {
+        assertEnv(env);
+      } catch (e) {
+        log("error", "env", "assertEnv failed", { error: String(e) });
+        return json({ ok: false, error: (e as Error).message }, 500);
+      }
+    }
 
     // GET / : health check
     if (request.method === "GET" && url.pathname === "/") {
@@ -118,6 +133,12 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
+    try {
+      assertEnv(env);
+    } catch (e) {
+      log("error", "cron", "assertEnv failed", { error: String(e) });
+      return;
+    }
     log("info", "cron", "scheduled trigger fired");
     try {
       await runCron(env, ctx);
@@ -159,6 +180,9 @@ async function handleWebhook(
   }
 
   // 3. Idempotency: dedupe update_id (fixes V1 #15)
+  //    IMPORTANT: only mark seen AFTER enqueue succeeds. If we mark seen
+  //    before enqueue and enqueue throws, Telegram retries the webhook but
+  //    isSeen() returns true → the user's post is silently lost.
   if (update.update_id != null) {
     const seen = await isSeen(env, update.update_id);
     if (seen) {
@@ -167,7 +191,6 @@ async function handleWebhook(
       });
       return new Response("ok", { status: 200 });
     }
-    ctx.waitUntil(markSeen(env, update.update_id));
   }
 
   // 4. FAST PATH: Handle commands + callbacks DIRECTLY (no queue delay).
@@ -178,6 +201,9 @@ async function handleWebhook(
   const isCommand = !!msg?.text?.startsWith("/");
 
   if (isCallback || isCommand) {
+    // Mark seen first (fast-path commands are idempotent — retrying a command
+    // is safe and not data-loss-critical like a content post).
+    if (update.update_id != null) ctx.waitUntil(markSeen(env, update.update_id));
     // Send "typing" indicator for commands
     if (isCommand && msg?.chat?.id && msg?.from?.id) {
       ctx.waitUntil(
@@ -215,8 +241,12 @@ async function handleWebhook(
     await enqueueUpdate(env, update);
   } catch (e) {
     log("error", "webhook", "enqueue failed", { error: String(e) });
+    // Do NOT markSeen — allow Telegram to retry this update.
     return new Response("Internal Server Error", { status: 500 });
   }
+
+  // Enqueue succeeded — NOW it's safe to mark seen.
+  if (update.update_id != null) ctx.waitUntil(markSeen(env, update.update_id));
 
   // 5. Background: ensure owner exists + debug log
   ctx.waitUntil(
