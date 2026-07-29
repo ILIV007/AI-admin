@@ -194,9 +194,11 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         let peek = i;
         while (peek < lines.length && lines[peek].trim() === "") peek++;
         const nextLine = lines[peek] ?? "";
-        const isUrlStart = /^https?:\/\//i.test(nextLine.trim());
-        const isCodeFence = /^(```|~~~)/.test(nextLine.trim());
-        if (isUrlStart || isCodeFence) {
+        const nextTrimmed = nextLine.trim();
+        const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
+        const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
+        const isCodeFence = /^(```|~~~)/.test(nextTrimmed);
+        if (isUrlStart || isMarkdownLink || isCodeFence) {
           // Collect the quote paragraph
           i = peek;
           const quoteLines: string[] = [];

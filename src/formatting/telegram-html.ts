@@ -193,10 +193,6 @@ function spanTextLength(spans: Span[]): number {
 // blocksToTelegramHtml
 // ============================================================
 
-// Detects whether the rendered heading text already starts with a pictographic
-// emoji, so we don't double-prefix with 🌐.
-const EMOJI_PREFIX_RE = /^\p{Extended_Pictographic}/u;
-
 export function blocksToTelegramHtml(
   blocks: ContentBlock[],
   footer: string,
@@ -250,8 +246,8 @@ export function blocksToTelegramHtml(
 
       case "heading": {
         const rendered = block.spans.map(renderSpan).join("");
-        const prefix = EMOJI_PREFIX_RE.test(rendered) ? "" : "🌐 ";
-        parts.push(`<b>${prefix}${rendered}</b>\n`);
+        // No emoji prefix — user requested plain text headings.
+        parts.push(`<b>${rendered}</b>\n`);
         break;
       }
 

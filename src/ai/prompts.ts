@@ -61,27 +61,28 @@ export function buildSystemPrompt(
   // --- Hard output contract (compressed P2-1) ---
   parts.push(
     `# OUTPUT CONTRACT (mandatory)\n` +
-      `- Output MARKDOWN only. NEVER use HTML tags (<br>, <b>, <i>, <a>) or HTML entities (&nbsp;). (P2-2)\n` +
-      `- NEVER use markdown tables (| col | col |). Use bullet/numbered lists instead. (P2-3)\n` +
-      `- Use ONLY ## (H2) and ### (H3) for headings. NEVER use # (H1) or ####+. (P2-4)\n` +
-      `- CRITICAL: NEVER add pagination ("Part 1/2", "Page 1", "1/N"). The system handles splitting. (P1-3)\n` +
-      `- CRITICAL: Preserve ALL links EXACTLY as they appear in the source. [text](url) MUST stay as [text](url] in your output. NEVER strip the URL part and leave only the text. NEVER convert a markdown link to plain text. If the source has [click here](https://example.com), your output MUST have [click here](https://example.com) — NOT just "click here".\n` +
-      `- CRITICAL: GitHub links [text](https://github.com/owner/repo) MUST be preserved EXACTLY. Do NOT strip them to plain text. Do NOT remove the URL. The entire [text](url) must appear in your output.\n` +
+      `- Output MARKDOWN only. NEVER use HTML tags (<br>, <b>, <i>, <a>) or HTML entities (&nbsp;).\n` +
+      `- NEVER use markdown tables. Use bullet/numbered lists instead.\n` +
+      `- Use ONLY ## (H2) and ### (H3) for headings. NEVER use # (H1) or ####+.\n` +
+      `- NEVER add pagination ("Part 1/2", "Page 1", "1/N"). The system handles splitting.\n` +
+      `- CRITICAL: Preserve ALL links EXACTLY as [text](url). NEVER strip the URL. NEVER convert a markdown link to plain text. If source has [click here](https://example.com), output MUST have [click here](https://example.com).\n` +
+      `- CRITICAL: GitHub links [text](https://github.com/owner/repo) MUST be preserved EXACTLY with the full URL.\n` +
       `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source.\n` +
-      `- CRITICAL: Do NOT add "source:", "via", "credit" lines. Do NOT add "مخزن گیت‌هاب:" before links.\n` +
-      `- CRITICAL: NEVER translate. Preserve the original language exactly. English stays English, Persian stays Persian. Keep technical terms (AI, API, GPU, LLM) as-is.\n` +
-      `- Do NOT add @channelName mentions or footers — the system adds them. If source contains them, REMOVE.\n` +
-      `- Preserve code blocks, commands, package names, GitHub links verbatim.\n` +
-      `- Preserve content emojis (📦 in "📦 Installation"). Remove decorative spam (🔥🔥😍🎉).\n` +
+      `- CRITICAL: Do NOT add "source:", "via", "credit" lines or descriptions before links.\n` +
+      `- CRITICAL: NEVER translate. Preserve the original language. Keep technical terms (AI, API, GPU, LLM) as-is.\n` +
+      `- Do NOT add @channelName mentions or footers. If source contains them, REMOVE.\n` +
+      `- Preserve code blocks, commands, package names verbatim.\n` +
+      `- Remove ALL decorative emojis from source (🔥🔥😍🎉🚀 etc). Do NOT preserve them.\n` +
       `- No greetings, closings, or meta-text. Output ONLY the processed text.\n` +
-      `- BOLDING: Only key terms/tool names/warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
-      `- HEADINGS: Use 📦/⚡/💡/🔒/🌐/🐞/🧩 as functional emoji prefixes for section headers.\n` +
-      `- STRUCTURE: Use bullets (•/-), numbered lists, and visual symbols (→ × | + ▸ ◆ ◇ ▪ ◦). These are ALWAYS available regardless of emoji level — they are structural, not decorative.\n` +
-      `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically. (G)\n` +
-      `- RTL: Persian paragraphs MUST begin with a Persian word. The ONLY exception is when the entire post is English. If a paragraph contains Persian text, its first word MUST be Persian. For English technical terms, use the pattern "هوش مصنوعی (AI)" or "زبان Python" — Persian word first, then the English term in parentheses. NEVER start a Persian paragraph with "Python", "React", "API", "AI", "GPU" or any English word directly. (P1-2)\n` +
-      `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words (می‌رود, می‌تواند).\n` +
-      `- CRITICAL PERSIAN: Do NOT double letters. Pay special attention to the letter ه (heh) — write it ONCE, never "هه". Check every word. If unsure, write the simpler form. Proofread your output for doubled letters before returning.\n` +
-      `- EMOJI: Use ONLY the emojis listed in the GUIDANCE section below. NEVER use 🌍🌐💡📌📦⚡🔒🐞🧩🤖🔥🚀🎉😍✨ or ANY emoji NOT in the approved list. If an emoji is not in the GUIDANCE list, do NOT use it. Emojis are OPTIONAL — do NOT force them into every post. Only use emojis when the post is long enough to benefit from visual structure (5+ paragraphs). Short posts should have NO emojis. Emojis do NOT replace blockquotes or structural symbols — use BOTH when appropriate. NEVER at the END of sentences.\n` +
+      `- BOLDING: Only key terms/tool names/warnings (max 2-6 per post). NEVER bold >10 words in a row.\n` +
+      `- HEADINGS: Do NOT add emoji prefixes to headings. Use plain text headings (## Title).\n` +
+      `- STRUCTURE: Use bullets (•/-), numbered lists, and visual symbols (→ × | + ▸ ◆ ◇ ▪ ◦). These are ALWAYS available — they are structural, not decorative.\n` +
+      `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically.\n` +
+      `- LINKS: Keep links on their OWN line, separate from paragraphs. Do NOT embed links inside blockquotes. Format: paragraph text\\n\\n[text](url) — NOT: paragraph [text](url) text.\n` +
+      `- RTL: Persian paragraphs MUST begin with a Persian word. For English technical terms, use "هوش مصنوعی (AI)" or "زبان Python" — Persian word first, then the English term in parentheses. NEVER start a Persian paragraph with an English word.\n` +
+      `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
+      `- CRITICAL PERSIAN: Do NOT double letters. The letter ه (heh) — write it ONCE, never "هه". Proofread before returning.\n` +
+      `- EMOJI: Use ONLY the emojis listed in the GUIDANCE section. NEVER use 🌍🌐💡📌📦⚡🔒🐞🧩🤖🔥🚀🎉😍✨ or ANY emoji NOT in the approved list. If an emoji is not in the GUIDANCE list, do NOT use it. Emojis are OPTIONAL — most posts should have ZERO emojis. Only use on long posts (5+ paragraphs). Do NOT repeat the same emoji. Do NOT put emojis on every paragraph. NEVER at the END of sentences.\n` +
       `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance.`,
   );
 

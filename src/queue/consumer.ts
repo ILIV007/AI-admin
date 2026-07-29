@@ -358,7 +358,30 @@ async function handleProcessUpdate(
     ) => Promise<import("../types").PipelineResult>;
   } = await import("../processing/pipeline");
 
-  const result = await pipelineMod.runPipeline(env, content, settings);
+  // Keep sending "typing" indicator every 4s while the pipeline runs.
+  // Telegram's typing indicator expires after ~5s, so we need to refresh it
+  // for long AI operations (10-15s).
+  const typingInterval = isAdmin
+    ? setInterval(() => {
+        sendChatAction(env.BOT_TOKEN, {
+          chat_id: content.chatId,
+          action: "typing",
+        }).catch(() => undefined);
+        if (userId !== content.chatId) {
+          sendChatAction(env.BOT_TOKEN, {
+            chat_id: userId,
+            action: "typing",
+          }).catch(() => undefined);
+        }
+      }, 4000)
+    : null;
+
+  let result: import("../types").PipelineResult;
+  try {
+    result = await pipelineMod.runPipeline(env, content, settings);
+  } finally {
+    if (typingInterval) clearInterval(typingInterval);
+  }
   const elapsedMs = Date.now() - t0;
 
   // Record stats based on outcome. Fire-and-forget via ctx.waitUntil.
