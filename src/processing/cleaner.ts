@@ -379,30 +379,34 @@ export function restorePrompts(text: string, prompts: string[]): string {
   if (!allPrompts) return text; // nothing left after cleaning
 
   // Replace all text-based placeholders with a single combined block.
-  // Regex matches: ⟨⟨PROMPT_BLOCK_0⟩⟩ (with optional whitespace from AI).
+  // Do NOT add extra \n\n around the block — the placeholder already
+  // has the surrounding whitespace from the original text. Adding \n\n
+  // creates triple blank lines that break formatting.
+  const promptBlock = "```prompt\n" + allPrompts + "\n```";
   let firstReplaced = false;
   const result = text.replace(/⟨⟨\s*PROMPT_BLOCK_(\d+)\s*⟩⟩/g, () => {
     if (!firstReplaced) {
       firstReplaced = true;
-      return "\n\n```prompt\n" + allPrompts + "\n```\n\n";
+      return promptBlock;
     }
     return "";
   });
 
   // Fallback: if the AI stripped the angle brackets but left "PROMPT_BLOCK_0",
-  // catch that too (case-insensitive, with optional surrounding whitespace).
+  // catch that too (case-insensitive).
   if (!firstReplaced) {
     const fallback = result.replace(/\bPROMPT_BLOCK_\d+\b/gi, () => {
       if (!firstReplaced) {
         firstReplaced = true;
-        return "\n\n```prompt\n" + allPrompts + "\n```\n\n";
+        return promptBlock;
       }
       return "";
     });
     return fallback;
   }
 
-  return result;
+  // Clean up any triple+ blank lines that may have formed.
+  return result.replace(/\n{3,}/g, "\n\n");
 }
 
 // ---------------------------------------------------------------------------
