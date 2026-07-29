@@ -304,6 +304,14 @@ function isPromptParagraph(text: string): boolean {
     return text.length >= 15;
   }
 
+  // Check if text is a code fence with language "prompt"
+  // Format: ```prompt\n...\n``` (already extracted by cleanContent, but
+  // protectPrompts runs AFTER cleanContent restores code blocks, so the
+  // fence is visible again).
+  if (/^```prompt\b/i.test(text.trim())) {
+    return true;
+  }
+
   // Must be at least 60 chars to be considered a prompt (shortened from 80)
   if (text.length < 60) return false;
 

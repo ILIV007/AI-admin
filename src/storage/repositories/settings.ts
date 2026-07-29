@@ -36,16 +36,44 @@ function kvKey(userId: number): string {
 
 /** Merge a partial settings blob over DEFAULT_SETTINGS.
  * Also applies env.FOOTER_TEXT override if set (takes priority over default).
+ *
+ * MIGRATION: if the stored geminiModel/openrouterModel is a known STALE value
+ * (from a previous version that used wrong models), override it with the current
+ * default. This ensures users always get the correct models after an update.
  */
 function mergeSettings(env: Env, partial: Partial<Settings> | null | undefined): Settings {
   const base = { ...DEFAULT_SETTINGS };
-  // env.FOOTER_TEXT (if set as a secret) overrides the default footer
   if (env.FOOTER_TEXT) {
     base.footerText = env.FOOTER_TEXT;
   }
   if (!partial) return base;
-  // User's stored footer (if explicitly set) still wins over env default
-  return { ...base, ...partial };
+
+  const merged = { ...base, ...partial };
+
+  // MIGRATION: fix stale model values from Task 46 which incorrectly replaced
+  // the real models (gemini-3.6-flash etc.) with older ones (gemini-2.5-flash etc.).
+  // These stale values were persisted to D1 and still override the new defaults.
+  const STALE_GEMINI = new Set([
+    "gemini-2.5-flash", "gemini-2.5-flash-lite",
+    "gemini-2.0-flash", "gemini-2.0-flash-lite",
+    "gemini-1.5-flash", "gemini-1.5-flash-8b",
+  ]);
+  const STALE_OR = new Set([
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-oss-20b:free",
+    "google/gemma-2-9b-it:free",
+    "qwen/qwen-2.5-7b-instruct:free",
+    "microsoft/phi-3-medium-128k-instruct:free",
+    "nvidia/llama-3.1-nemotron-70b-instruct:free",
+  ]);
+  if (merged.geminiModel && STALE_GEMINI.has(merged.geminiModel)) {
+    merged.geminiModel = DEFAULT_SETTINGS.geminiModel;
+  }
+  if (merged.openrouterModel && STALE_OR.has(merged.openrouterModel)) {
+    merged.openrouterModel = DEFAULT_SETTINGS.openrouterModel;
+  }
+
+  return merged;
 }
 
 // ============================================================

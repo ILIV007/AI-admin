@@ -141,17 +141,19 @@ function describeEmojiLevel(level: number): string {
   // Geometric emoji set (subtle — used at lower levels as the PRIMARY set)
   const GEO_EMOJIS = "🔺 🔻 🔸 🔹 🔶 🔷 ◽️ ◼️ ◻️ ♦️";
 
-  if (level <= 10) return "no emojis — use only structural symbols (→ × | + ▸ ◆ •) and blockquotes for formatting";
+  if (level <= 10) return "no emojis — use only structural symbols (→ × | + ▸ ◆ ◇ ▪ ◦ •) and blockquotes for formatting";
 
   if (level <= 30) {
-    // Level 20: geometric shapes as primary, + 1-3 character emojis for variety
-    // ONLY on long posts (3+ paragraphs). Short posts: NO emojis.
+    // Level 20: VERY RESTRICTIVE. Emojis only on long structured posts (5+ paragraphs).
+    // Most posts should have ZERO emojis.
     return (
-      "LOW — emojis ONLY on long posts (3+ paragraphs). Short posts: use ONLY structural symbols.\n" +
-      "PRIMARY set (geometric, for bullets/dividers): " + GEO_EMOJIS + "\n" +
-      "VARIETY set (max 1-3, for section markers): " + CHAR_EMOJIS + "\n" +
-      "When using emojis: 1-2 at the START of key paragraphs. " +
-      "ALSO use structural symbols (→ × | + ▸ ◆ •) and blockquotes — emojis do NOT replace them. " +
+      "VERY LOW — most posts should have ZERO emojis. Only use emojis on long structured posts (5+ paragraphs).\n" +
+      "When you DO use emojis (max 1-2 total), use ONLY from these sets:\n" +
+      "Geometric (for bullets/dividers): " + GEO_EMOJIS + "\n" +
+      "Character (max 1, for a key section start): " + CHAR_EMOJIS + "\n" +
+      "RULES: Short posts (1-4 paragraphs) = NO emojis. Do NOT repeat the same emoji. " +
+      "Do NOT put emojis on every paragraph. Structural symbols (→ × | + ▸ ◆ •) and blockquotes " +
+      "are the PRIMARY formatting tools — emojis are secondary, optional, and rare. " +
       "NEVER at end of sentences."
     );
   }

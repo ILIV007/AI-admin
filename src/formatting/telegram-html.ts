@@ -317,6 +317,7 @@ export function blocksToTelegramHtml(
 
   // Join parts:
   // - Colon text → next quote: single \n (adjacent, no gap)
+  // - Paragraph → next quote (block): single \n (connected, no gap)
   // - Everything else → \n\n (normal spacing)
   // - Footer always gets \n before it (not \n\n — it's a small blockquote)
   const result: string[] = [];
@@ -327,11 +328,13 @@ export function blocksToTelegramHtml(
       const nextIsQuote = parts[i + 1].startsWith("<blockquote>");
       const isFooter = i === parts.length - 2; // last content before footer
       if (currentEndsColon && nextIsQuote) {
-        result.push("\n"); // colon → adjacent quote
+        result.push("\n"); // colon → adjacent quote (no gap)
+      } else if (nextIsQuote) {
+        result.push("\n"); // paragraph → quote (connected, no gap)
       } else if (isFooter) {
         result.push("\n"); // footer: single newline before it
       } else {
-        result.push("\n\n"); // normal spacing
+        result.push("\n\n"); // normal spacing between paragraphs
       }
     }
   }
