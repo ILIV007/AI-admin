@@ -353,12 +353,22 @@ export function protectPrompts(text: string): {
 export function restorePrompts(text: string, prompts: string[]): string {
   if (!text || prompts.length === 0) return text;
   // Combine ALL prompts into a SINGLE code block (not separate blocks).
-  // This prevents prompts from being split apart.
-  // Use ```prompt fence → rendered as <pre><code> (copyable monospace).
-  // NOT wrapped in blockquote expandable (that can interfere with copy).
+  // Remove "prompt:" / "system:" / "instruction:" prefixes from the content
+  // (they are labels, not part of the actual prompt text).
+  // Use ```prompt fence → rendered as <blockquote expandable><pre><code>
+  // (collapsible AND copyable monospace).
   const allPrompts = prompts
-    .map((p, i) => (prompts.length > 1 ? `--- Prompt ${i + 1} ---\n` : "") + p.trim())
+    .map((p) => {
+      let cleaned = p.trim();
+      // Remove prompt prefix labels: "prompt:", "system:", "user:", "instruction:", "negative prompt:"
+      cleaned = cleaned.replace(/^(?:.*\s)?(?:prompt|system|user|instruction|negative\s+prompt)\s*[:：]\s*/i, "");
+      return cleaned;
+    })
+    .filter((p) => p.length > 0)
+    .map((p, i) => (prompts.length > 1 ? `--- Prompt ${i + 1} ---\n` : "") + p)
     .join("\n\n");
+
+  if (!allPrompts) return text; // nothing left after cleaning
 
   // Replace all placeholders with a single combined block
   let firstReplaced = false;
@@ -367,7 +377,6 @@ export function restorePrompts(text: string, prompts: string[]): string {
       firstReplaced = true;
       return "\n\n```prompt\n" + allPrompts + "\n```\n\n";
     }
-    // Additional placeholders → remove (already included in the combined block)
     return "";
   });
 }

@@ -56,8 +56,9 @@ export function buildSystemPrompt(
       `  • At least 1 blockquote per post (when applicable)\n` +
       `  But NEVER quote the FIRST paragraph of a post.\n` +
       `  Don't quote everything — only selective important parts.\n` +
-      `- RTL: If a paragraph is Persian, do NOT start it with an English word. Use Persian punctuation (، ؟ ؛). Use half-spaces (نیم‌فاصله).\n` +
-      `- Keep each paragraph in ONE language direction.`,
+      `- CRITICAL RTL: If a paragraph is Persian, NEVER start it with an English word or acronym. This causes left-alignment and breaks formatting. If you must reference an English term, put it AFTER a Persian word or wrap in parentheses. Example: instead of "AI یک فناوری است" write "هوش مصنوعی (AI) یک فناوری است".\n` +
+      `- Use Persian punctuation in Persian paragraphs: comma (،), question mark (؟), semicolon (؛). Use half-spaces (نیم‌فاصله) in compound words.\n` +
+      `- Keep each paragraph in ONE language direction. Don't mix English and Persian in the same paragraph.`,
   );
 
   // --- Mode-specific instructions ---

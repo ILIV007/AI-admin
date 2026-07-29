@@ -185,7 +185,7 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       });
 
       // If ends with colon, collect the following paragraph as a quote block
-      if (endsWithColon && i < lines.length && lines[i].trim() !== "") {
+      if (endsWithColon && i < lines.length) {
         // Skip blank lines between colon and content
         while (i < lines.length && lines[i].trim() === "") i++;
 

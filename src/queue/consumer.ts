@@ -370,7 +370,8 @@ async function handleProcessUpdate(
   }
 
   // ── Send post copy to admin + edit loading → report ─────────────
-  if (isAdmin && content.chatType === "private") {
+  // ALWAYS send to admin if they're authorized (regardless of chatType)
+  if (isAdmin) {
     await sendAdminReport(env, userId, content, result, elapsedMs, loadingMsgId);
   }
 }
