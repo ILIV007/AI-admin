@@ -54,10 +54,10 @@ export function buildSystemPrompt(
       `  • Use ◆ for highlights\n` +
       `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable, attractive, and well-structured.\n` +
       `- BLOCKQUOTE: Use > for explanatory text after ":", step-by-step instructions, guide text, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Only selective important parts.\n` +
-      `- CRITICAL RTL: If a paragraph is Persian, NEVER start it with an English word. Put English terms AFTER a Persian word or in parentheses. Example: "هوش مصنوعی (AI)" not "AI یک فناوری".\n` +
+      `- CRITICAL RTL: If a paragraph is Persian, you MUST start it with a Persian word. NEVER start a Persian paragraph with an English word or acronym — this breaks RTL alignment. If you need to mention an English term, put it AFTER a Persian word or in parentheses. Example: write "هوش مصنوعی (AI) یک فناوری است" NOT "AI یک فناوری است". Write "این ابزار با React ساخته شده" NOT "React برای این ابزار استفاده شده".\n` +
       `- Use Persian punctuation in Persian: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
-      `- English words WITHIN Persian text are FINE and should be KEPT. Do NOT remove them. Just ensure paragraph STARTS with a Persian word.\n` +
-      `- EMOJI USAGE: Use emojis professionally. Place them at the START of a line/paragraph as section markers (📦, ⚡, 💡, 🔒), NOT at the end of sentences. Use 1️⃣ 2️⃣ 3️⃣ for step numbering. Never randomly sprinkle emojis at the end of paragraphs or sentences. Max 1-3 per post.\n` +
+      `- English words WITHIN Persian text are FINE and should be KEPT. Do NOT remove them. Just ensure the FIRST word of each Persian paragraph is Persian.\n` +
+      `- EMOJI USAGE: Use emojis creatively and sparingly. Do NOT force emojis into every paragraph. Only use them when they genuinely enhance the content (e.g. a 📦 for a release, a ⚡ for a performance tip). Never put random emojis at the end of sentences. Max 1-3 per post when emoji level is low.\n` +
       `- Keep the original meaning and tone. Improve readability and structure, but do NOT change the substance of the content.`,
   );
 
@@ -101,10 +101,10 @@ function describeEditIntensity(level: number): string {
 function describeEmojiLevel(level: number): string {
   if (level <= 10) return "no emojis";
   if (level <= 30) {
-    return "LOW (1-3 per post). Functional only. Place at START of lines as markers, NOT at end of sentences.";
+    return "LOW (1-3 per post). Creative only — use when genuinely enhances content. NOT on every paragraph.";
   }
-  if (level <= 60) return "occasional functional emojis";
-  return "generous functional emojis";
+  if (level <= 60) return "moderate — use creatively where appropriate";
+  return "generous — use freely but professionally";
 }
 
 // ============================================================
@@ -139,54 +139,11 @@ export function buildUserPrompt(
 }
 
 /**
- * Post-process AI output to fix RTL issues.
- * If a Persian paragraph starts with an English word, prepend a
- * Persian connector word (این، اینکه، با) or wrap the English term
- * in parentheses to fix the alignment.
+ * RTL fix is NO LONGER done via post-processing.
+ * The AI is instructed in the system prompt to NEVER start Persian paragraphs
+ * with English words. This function is kept as a no-op for backward compat
+ * with pipeline.ts which imports it.
  */
 export function fixRtlParagraphs(text: string): string {
-  if (!text) return text;
-  const lines = text.split("\n");
-  const result: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      result.push(line);
-      continue;
-    }
-
-    // Check if this line starts with an English word/acronym
-    // and the rest of the line is predominantly Persian
-    const englishStart = /^[A-Z][A-Za-z0-9]*(?:\s|$)/.test(trimmed);
-    if (!englishStart) {
-      result.push(line);
-      continue;
-    }
-
-    // Count Persian vs Latin chars
-    const persianChars = (trimmed.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
-    const latinChars = (trimmed.match(/[A-Za-z]/g) || []).length;
-
-    if (persianChars > latinChars) {
-      // This is a Persian paragraph starting with English → fix it
-      // Extract the first English word(s)
-      const match = trimmed.match(/^([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\s+/);
-      if (match) {
-        const englishPart = match[1];
-        const restOfLine = trimmed.slice(match[0].length);
-        // Wrap English part in parentheses and prepend a Persian connector
-        result.push(`این ${englishPart} (${restOfLine}`);
-        // Actually, simpler: just move English to after first Persian word
-        // Or: wrap in parentheses
-        result[result.length - 1] = `با ${englishPart}، ${restOfLine}`;
-      } else {
-        result.push(line);
-      }
-    } else {
-      result.push(line);
-    }
-  }
-
-  return result.join("\n");
+  return text; // no-op — AI handles RTL via prompt instructions
 }

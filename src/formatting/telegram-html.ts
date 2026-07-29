@@ -70,23 +70,27 @@ export function shortenUrl(url: string): string {
     const domain = u.hostname.replace(/^www\./, "");
     const pathParts = u.pathname.split("/").filter(Boolean);
 
+    // Special case: GitHub repo links → "owner/repo" format with 🐙
+    if (domain === "github.com" && pathParts.length >= 2) {
+      const owner = pathParts[0];
+      const repo = pathParts[1];
+      // If it's just owner/repo or owner/repo/tree/... → show owner/repo
+      return `🐙 ${owner}/${repo}`;
+    }
+
     if (pathParts.length === 0) {
-      // Just domain
       return domain;
     }
 
-    // Show domain + first path segment + trailing slash
     const firstSeg = pathParts[0];
     let short = `${domain}/${firstSeg}/`;
 
-    // If there's more to the URL, indicate truncation
     if (pathParts.length > 1 || u.search || u.hash) {
       short += "…";
     }
 
     return short;
   } catch {
-    // Not a valid URL — return as-is (truncated to 40 chars)
     return url.length > 40 ? url.slice(0, 37) + "…" : url;
   }
 }
@@ -112,11 +116,12 @@ export function renderSpan(span: Span): string {
     case "code":
       return `<code>${escapeHtml(span.code)}</code>`;
     case "link": {
-      // If the link has custom text (like [text](url)), preserve the text.
-      // Only shorten bare URLs (where text === url).
-      const linkText = span.text && span.text !== span.url
-        ? span.text  // Custom text — preserve it
-        : shortenUrl(span.url);  // Bare URL — shorten for display
+      // If the link has custom text (like [text](url)), preserve the text EXACTLY.
+      // Only shorten BARE URLs (where text === url or text is the full URL).
+      const isBareUrl = !span.text || span.text === span.url || span.text === decodeURIComponent(span.url);
+      const linkText = isBareUrl
+        ? shortenUrl(span.url)  // Bare URL — shorten for display
+        : span.text;            // Custom text — preserve EXACTLY
       return `<a href="${escapeHtml(span.url)}">${escapeHtml(linkText)}</a>`;
     }
     case "mention": {
@@ -229,13 +234,15 @@ export function blocksToTelegramHtml(
 
       case "code": {
         if (block.language === "prompt") {
-          // Prompt block: render as plain <pre><code> (NOT inside blockquote).
-          // Telegram renders <pre><code> as copyable monospace.
-          // The <blockquote expandable> wrapper was interfering with copy
-          // in some Telegram clients. V1 used plain <pre><code> which worked.
+          // Prompt block: collapsible blockquote + monospace (copyable)
+          // User specifically requested: quote collapse + mono (copyable)
+          // Format: <blockquote expandable><pre><code>...</code></pre></blockquote>
+          // Telegram renders <pre><code> inside <blockquote expandable> as
+          // collapsible AND monospace with tap-to-copy.
           parts.push(
-            `<pre><code>${escapeHtml(block.code)}</code></pre>`,
+            `<blockquote expandable><pre><code>${escapeHtml(block.code)}</code></pre></blockquote>`,
           );
+          hasBlockquote = true;
         } else {
           const lang = block.language ? escapeHtml(block.language) : "";
           parts.push(
