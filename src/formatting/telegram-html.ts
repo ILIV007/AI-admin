@@ -286,5 +286,22 @@ export function blocksToTelegramHtml(
   // Footer — ALWAYS escaped
   parts.push(`<blockquote>${escapeHtml(footer)}</blockquote>`);
 
-  return parts.join("\n\n");
+  // Join parts: use \n (single newline) between a paragraph and the quote that
+  // follows it (colon logic), so they appear adjacent with no gap.
+  // Use \n\n between all other blocks for normal paragraph spacing.
+  const result: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    result.push(parts[i]);
+    if (i < parts.length - 1) {
+      // Check if current part ends with ":" (colon) and next is a blockquote
+      const currentEndsColon = /[:：]\s*$/.test(parts[i].replace(/<[^>]+>$/g, "").trim());
+      const nextIsQuote = parts[i + 1].startsWith("<blockquote>");
+      if (currentEndsColon && nextIsQuote) {
+        result.push("\n"); // single newline — adjacent, no gap
+      } else {
+        result.push("\n\n"); // normal spacing
+      }
+    }
+  }
+  return result.join("");
 }

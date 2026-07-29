@@ -37,9 +37,9 @@ const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
 
 // Telegram promo URLs (t.me/username without post number) — REMOVED
 // Also matches bare t.me/username (without https://)
-const TG_PROMO_LINE_RE = /(?:https?:\/\/)?t\.me\/(?:joinchat|\+|addstickers|addemoji|[A-Za-z0-9_]+)\/?(?!\d)/gi;
+// const TG_PROMO_LINE_RE = /(?:https?:\/\/)?t\.me\/(?:joinchat|\+|addstickers|addemoji|[A-Za-z0-9_]+)\/?(?!\d)/gi;
 // t.me/username/123 = specific post link — KEEP
-const TG_POST_LINK_RE = /(?:https?:\/\/)?t\.me\/[A-Za-z0-9_]+\/\d+/i;
+// const TG_POST_LINK_RE = /(?:https?:\/\/)?t\.me\/[A-Za-z0-9_]+\/\d+/i;
 
 // "source: ..." attribution (with URL or @username) — removes the whole line
 const SOURCE_ATTR_FULL_RE = /\s*(?:source|src|منبع|credit)\s*[:：]\s*[^\n]+/gi;
@@ -117,24 +117,15 @@ function restoreInlineCode(text: string, codes: string[]): string {
 function extractUrls(text: string): { text: string; urls: string[] } {
   const urls: string[] = [];
   text = text.replace(URL_RE, (url) => {
-    // Drop Telegram promo links (t.me/username, joinchat, +xxx, addstickers)
-    // BUT keep t.me/username/123 (specific post links — legitimate content)
-    if (TG_POST_LINK_RE.test(url)) {
-      // Post link — keep it
-      urls.push(url);
-      return `${NUL}URL${urls.length - 1}${NUL}`;
-    }
-    if (/t\.me\//i.test(url)) {
-      // t.me link but not a post link → promo → remove
+    // Only remove Telegram INVITE links (joinchat, +xxx, addstickers, addemoji)
+    // These are ALWAYS promo — never legitimate content.
+    if (/^https?:\/\/t\.me\/(?:joinchat|\+|addstickers|addemoji)/i.test(url)) {
       return " ";
     }
+    // ALL other URLs (including t.me/username and t.me/username/123) are KEPT.
+    // t.me/username removal is handled separately (only at bottom of post as attribution).
     urls.push(url);
     return `${NUL}URL${urls.length - 1}${NUL}`;
-  });
-  // Also remove bare t.me/username (without https://)
-  text = text.replace(TG_PROMO_LINE_RE, (match) => {
-    if (TG_POST_LINK_RE.test(match)) return match; // keep post links
-    return " ";
   });
   return { text, urls };
 }

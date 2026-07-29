@@ -313,17 +313,25 @@ async function handleProcessUpdate(
   // ── Normal single message: pipeline ─────────────────────────────
   const settings = await getSettings(env, userId);
 
-  // Send "typing" indicator to admin's private chat (shows bot is working)
-  if (isAdmin && content.chatType === "private") {
+  // Send "typing" indicator to admin (shows bot is working)
+  // Use content.chatId (the chat where the message came from) for typing
+  if (isAdmin) {
     await sendChatAction(env.BOT_TOKEN, {
-      chat_id: userId,
+      chat_id: content.chatId,
       action: "typing",
     }).catch(() => undefined);
+    // Also send typing to admin's private chat if different
+    if (userId !== content.chatId) {
+      await sendChatAction(env.BOT_TOKEN, {
+        chat_id: userId,
+        action: "typing",
+      }).catch(() => undefined);
+    }
   }
 
   // Send a loading message to admin that will be edited to a report later
   let loadingMsgId: number | undefined;
-  if (isAdmin && content.chatType === "private") {
+  if (isAdmin) {
     try {
       const { t, getUiLanguage } = await import("../i18n");
       const lang = getUiLanguage(settings);

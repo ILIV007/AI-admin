@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.3.5";
+const VERSION = "2.3.6";
 
 // ============================================================
 // MAIN EXPORT
@@ -198,21 +198,17 @@ async function handleWebhook(
   }
 
   // 5. SLOW PATH: Send typing immediately, then enqueue for pipeline
-  // Send typing indicator IMMEDIATELY (before queue delay)
-  // Also handle channel_post (which is in update.channel_post, not update.message)
+  // Send typing indicator IMMEDIATELY (before queue delay) — use AWAIT not waitUntil
+  // so typing is actually sent before the webhook returns 200.
   const slowMsg = msg || update.channel_post || update.edited_channel_post;
   if (slowMsg?.chat?.id) {
-    ctx.waitUntil(
-      (async () => {
-        try {
-          const { sendChatAction } = await import("./telegram/client");
-          await sendChatAction(env.BOT_TOKEN, {
-            chat_id: slowMsg.chat.id,
-            action: "typing",
-          });
-        } catch { /* ignore */ }
-      })(),
-    );
+    try {
+      const { sendChatAction } = await import("./telegram/client");
+      await sendChatAction(env.BOT_TOKEN, {
+        chat_id: slowMsg.chat.id,
+        action: "typing",
+      });
+    } catch { /* ignore — don't block enqueue on typing failure */ }
   }
 
   try {

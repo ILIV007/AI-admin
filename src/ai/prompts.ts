@@ -37,9 +37,9 @@ export function buildSystemPrompt(
   parts.push(
     `# OUTPUT CONTRACT (mandatory)\n` +
       `- Output MARKDOWN only, never raw HTML.\n` +
-      `- CRITICAL: Preserve ALL links. If source has [text](url), keep it EXACTLY as [text](url). If source has bare URLs like https://example.com, keep them as-is. NEVER remove any URL or link from the output.\n` +
+      `- CRITICAL: Preserve ALL links EXACTLY as they appear. If source has [text](url), output [text](url). If source has bare URLs like https://github.com/owner/repo, output them as-is. NEVER remove, shorten, or reformat any URL. NEVER replace a link with just its text. The link MUST appear in your output.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit", or any attribution lines. But DO keep all existing links in the output.\n` +
-      `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
+      `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim. Do NOT change the formatting of the source text unless necessary.\n` +
       `- CRITICAL: NEVER translate English technical terms to Persian. Keep "AI", "API", "GPU", "CPU", "LLM", "bot", "cloud", "framework" etc. as-is in English. Do NOT replace them with Persian equivalents.\n` +
       `- CRITICAL: Do NOT add @channelName mentions or footers. The system adds them.\n` +
       `- CRITICAL: If source contains @channelName mentions, REMOVE them.\n` +
