@@ -39,26 +39,20 @@ export function buildSystemPrompt(
       `- Output MARKDOWN only, never raw HTML.\n` +
       `- CRITICAL: Preserve ALL links EXACTLY as they appear. If source has [text](url), output [text](url). If source has bare URLs like https://github.com/owner/repo, output them as-is. NEVER remove, shorten, or reformat any URL. NEVER replace a link with just its text. The link MUST appear in your output.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit", or any attribution lines. But DO keep all existing links in the output.\n` +
-      `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim. Do NOT change the formatting of the source text unless necessary.\n` +
+      `- Preserve ALL URLs, GitHub links, code blocks, commands, package names verbatim.\n` +
       `- CRITICAL: NEVER translate English technical terms to Persian. Keep "AI", "API", "GPU", "CPU", "LLM", "bot", "cloud", "framework" etc. as-is in English. Do NOT replace them with Persian equivalents.\n` +
       `- CRITICAL: Do NOT add @channelName mentions or footers. The system adds them.\n` +
-      `- CRITICAL: If source contains @channelName mentions, REMOVE them.\n` +
+      `- CRITICAL: If source contains @channelName mentions, REMOVE them from your output.\n` +
       `- Preserve content emojis: If the source has emojis that are part of the content (e.g. 📦 in "📦 Installation"), KEEP them. Only remove decorative/spam emojis (🔥🔥🔥😍🎉).\n` +
       `- Do not add greetings, closings, or meta-text. Output ONLY the processed text.\n` +
       `- BOLDING: Only bold key terms, tool names, or important warnings (max 2-6 per post). NEVER bold >10 words in a row. NEVER bold entire paragraphs.\n` +
-      `- STRUCTURE: Use bullet points (•) and numbered lists. Use Unicode symbols (▸ ◆ ─) for visual structure.\n` +
-      `- ORGANIZATION: Break long text into separate paragraphs. Don't stuff everything together. Make posts readable and attractive. Each paragraph = one idea.\n` +
-      `- BLOCKQUOTE: Use > (markdown blockquote) for:\n` +
-      `  • Explanatory text after a topic header (lines ending with ":")\n` +
-      `  • Step-by-step instructions\n` +
-      `  • Guide/help text\n` +
-      `  • Long URLs (already shortened by system)\n` +
-      `  • At least 1 blockquote per post (when applicable)\n` +
-      `  But NEVER quote the FIRST paragraph of a post.\n` +
-      `  Don't quote everything — only selective important parts.\n` +
-      `- CRITICAL RTL: If a paragraph is Persian, NEVER start it with an English word or acronym. This causes left-alignment and breaks formatting. If you must reference an English term, put it AFTER a Persian word or wrap in parentheses. Example: instead of "AI یک فناوری است" write "هوش مصنوعی (AI) یک فناوری است".\n` +
+      `- STRUCTURE: Use bullet points (•) and numbered lists for lists. Use Unicode symbols (▸ ◆ ─) for visual structure.\n` +
+      `- ORGANIZATION: Break long text into separate paragraphs. Each paragraph = one idea. Make posts readable and attractive.\n` +
+      `- BLOCKQUOTE: Use > (markdown blockquote) for explanatory text after ":", step-by-step instructions, guide text, and long URLs. At least 1 blockquote per post when applicable. NEVER quote the FIRST paragraph. Don't quote everything — only selective important parts.\n` +
+      `- CRITICAL RTL: If a paragraph is Persian, NEVER start it with an English word or acronym. Put English terms AFTER a Persian word or in parentheses. Example: "هوش مصنوعی (AI)" not "AI یک فناوری".\n` +
       `- Use Persian punctuation in Persian paragraphs: comma (،), question mark (؟), semicolon (؛). Use half-spaces (نیم‌فاصله) in compound words.\n` +
-      `- Keep each paragraph in ONE language direction. Don't mix English and Persian in the same paragraph.`,
+      `- English words WITHIN Persian text are FINE and should be KEPT. Do NOT remove them. Mixed-language paragraphs are normal. Just ensure the paragraph STARTS with a Persian word.\n` +
+      `- Keep the original meaning and tone. Improve readability and structure, but do NOT change the substance of the content.`,
   );
 
   // --- Mode-specific instructions ---

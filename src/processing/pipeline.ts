@@ -224,7 +224,59 @@ export async function runPipeline(
   const html = blocksToTelegramHtml(blocks, settings.footerText);
 
   // ── 11. Chunk by visible length, footer only on last chunk ──────
-  const parts = chunkHtml(html, CHUNK_MAX_VISIBLE, settings.footerText);
+  // For media posts: caption limit is 1024 chars. Use smaller chunk size.
+  // For text-only: message limit is 4096 chars. Use 4000 (leave headroom).
+  // If total visible length exceeds the limit even after chunking, and the
+  // post has media, we need to split: first 1024 as caption, rest as text messages.
+  const hasMedia = !!content.media;
+  const chunkMax = hasMedia ? 1000 : CHUNK_MAX_VISIBLE; // 1000 for caption (1024 limit - headroom)
+  let parts = chunkHtml(html, chunkMax, settings.footerText);
+
+  // If text-only post has too many parts (>5), consider it too long.
+  // In that case, try to summarize the text to fit in fewer parts.
+  if (!hasMedia && parts.length > 5) {
+    log("warn", scope, "post too long, attempting auto-summarize", {
+      parts: parts.length,
+      totalLength: parts.reduce((s, p) => s + p.length, 0),
+    });
+    // Re-run AI in summarize mode to shorten
+    try {
+      const summarizeAiMod: {
+        rewriteWithFallback: (
+          env: Env,
+          req: AIRequest,
+        ) => Promise<AIResult>;
+      } = await import("../ai/fallback");
+      const summarizeProfile = getProfile(settings.profile);
+      const summarizeReq: AIRequest = {
+        text: finalText,
+        classification,
+        settings: { ...settings, rewriteMode: "summarize" },
+        profile: summarizeProfile,
+        mode: "summarize",
+      };
+      const summaryResult = await summarizeAiMod.rewriteWithFallback(env, summarizeReq);
+      if (summaryResult?.ok && summaryResult?.text) {
+        // Re-format the summarized text
+        const summaryBlocks = markdownToBlocks(summaryResult.text);
+        const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
+        const newParts = chunkHtml(summaryHtml, CHUNK_MAX_VISIBLE, settings.footerText);
+        if (newParts.length < parts.length) {
+          log("info", scope, "auto-summarize reduced parts", {
+            before: parts.length,
+            after: newParts.length,
+          });
+          parts = newParts;
+          finalText = summaryResult.text;
+          aiUsed = true;
+          aiProvider = summaryResult.provider;
+          aiModel = summaryResult.model;
+        }
+      }
+    } catch (e) {
+      log("warn", scope, "auto-summarize failed; using original", { error: String(e) });
+    }
+  }
 
   // ── 12. Non-admin: format-only, do NOT publish ──────────────────
   if (!isAdmin) {

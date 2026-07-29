@@ -302,6 +302,7 @@ function isPromptParagraph(text: string): boolean {
     return text.length >= 20;
   }
 
+  // Must be at least 80 chars to be considered a prompt (short text = regular content)
   if (text.length < 80) return false;
 
   // English-dominant: more Latin chars than Persian/Arabic.
@@ -309,9 +310,30 @@ function isPromptParagraph(text: string): boolean {
   const persian = (text.match(/[\u0600-\u06FF]/g) || []).length;
   if (persian > latin) return false;
 
-  // Contains at least one prompt keyword.
+  // Must contain at least 2 prompt keywords (not just 1) to reduce false positives.
+  // Single keyword like "8k" or "render" in regular text is NOT a prompt.
   const lower = text.toLowerCase();
-  return PROMPT_KEYWORDS.some((kw) => lower.includes(kw));
+  const matchCount = PROMPT_KEYWORDS.filter((kw) => lower.includes(kw)).length;
+  if (matchCount < 2) return false;
+
+  // Additional check: must NOT contain common sentence patterns that indicate
+  // it's regular text (not a prompt).
+  const sentenceIndicators = [
+    /\.\s+[A-Z]/,  // "Sentence. Another" (normal sentence structure)
+    /\b(the|this|that|with|for|from|your|you can|check|visit|read)\b/gi,  // common English words
+  ];
+  const sentenceMatches = sentenceIndicators.reduce(
+    (count, re) => count + (text.match(re) || []).length,
+    0,
+  );
+  // If there are many sentence-like patterns, it's probably regular text, not a prompt.
+  if (sentenceMatches > 3) return false;
+
+  // Must contain comma-separated descriptors (typical prompt structure):
+  // "photorealistic, octane render, 8k" or "--ar 16:9, --v 6.0"
+  if (!/,/.test(text) && !/--\w+/.test(text)) return false;
+
+  return true;
 }
 
 export function protectPrompts(text: string): {
