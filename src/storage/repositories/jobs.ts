@@ -116,23 +116,25 @@ export async function getJob(env: Env, id: string): Promise<JobRecord | null> {
 /**
  * Atomically claim a scheduled-post job for publishing.
  *
- * Flips status `pending` → `publishing` ONLY IF the row is still pending.
+ * Uses a conditional UPDATE that goes directly `pending → published` (NOT
+ * `pending → publishing`) to avoid CHECK constraint failures on databases
+ * that were created before the 'publishing' status was added to the schema.
+ *
  * Returns true if THIS call claimed it (caller may publish), false if
  * another handler already claimed/published it (caller must back off).
  *
- * This is the fix for the double-publish race: the cron runs every 15 min
- * and may enqueue the same due job twice if the queue is slow. Without an
- * atomic claim, two `handlePublishScheduled` handlers both see status=pending
- * and both call publishPost → two posts in the channel.
+ * Race-condition-safe: the `WHERE status = 'pending'` clause ensures only
+ * one concurrent handler can flip the status. If two handlers race, the
+ * second gets 0 rows-changed and backs off.
  *
- * The caller must later call updateJobStatus(id, "published"|"failed") to
- * finalize. A `publishing` status that crashes mid-way will be picked up by
- * a future cron tick's pruning logic (or can be manually reset).
+ * IMPORTANT: the caller MUST publish the post AFTER this returns true,
+ * because the job status is already set to 'published'. If the publish
+ * fails, the caller should call updateJobStatus(id, "failed") to correct.
  */
 export async function claimForPublish(env: Env, id: string): Promise<boolean> {
   const r = await exec(
     env.DB,
-    "UPDATE jobs SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'pending'",
+    "UPDATE jobs SET status = 'published', updated_at = ? WHERE id = ? AND status = 'pending'",
     nowMs(),
     id,
   );

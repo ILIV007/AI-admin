@@ -105,12 +105,12 @@ export const FORMATTER_SAMPLES: FormatterSample[] = [
     expectedNotContains: ['href="t.me/'],
   },
   {
-    // Regression test for P1-8: prompt blocks must use <pre><code> (NOT bare
-    // <code>) so newlines are preserved in multi-line prompts.
-    name: "prompt-block-pre-code",
+    // Regression test: prompt blocks use <blockquote expandable><code>
+    // (collapsible + monospace, NO <pre> — user requested mono only).
+    name: "prompt-block-mono",
     input: "```prompt\nline one\nline two\n```",
-    expectedContains: ["<blockquote expandable><pre><code>"],
-    expectedNotContains: [],
+    expectedContains: ["<blockquote expandable><code>"],
+    expectedNotContains: ["<pre>"],
   },
   {
     // Regression test for P2-6: backslash escape renders literal chars.

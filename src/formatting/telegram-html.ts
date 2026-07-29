@@ -257,12 +257,12 @@ export function blocksToTelegramHtml(
 
       case "code": {
         if (block.language === "prompt") {
-          // P1-8 fix: prompt blocks often span MULTIPLE lines. Without <pre>,
-          // Telegram collapses newlines and the prompt becomes one wrapped
-          // line — unreadable. <pre><code> preserves newlines + monospace +
-          // tap-to-copy. Wrapped in <blockquote expandable> for collapsibility.
+          // Prompt block: collapsible blockquote + <code> (monospace, copyable)
+          // NO <pre> wrapper — user requested mono only, not code-block format.
+          // <code> in Telegram is inline monospace (tap-to-copy on mobile).
+          // <blockquote expandable> makes it collapsible.
           parts.push(
-            `<blockquote expandable><pre><code>${escapeHtml(block.code)}</code></pre></blockquote>`,
+            `<blockquote expandable><code>${escapeHtml(block.code)}</code></blockquote>`,
           );
           hasBlockquote = true;
         } else {

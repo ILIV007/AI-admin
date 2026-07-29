@@ -78,10 +78,10 @@ export function buildSystemPrompt(
       `- HEADINGS: Use 📦/⚡/💡/🔒/🌐/🐞/🧩 as functional emoji prefixes for section headers.\n` +
       `- STRUCTURE: Use bullets (•/-), numbered lists, and visual symbols (→ × | + ▸ ◆).\n` +
       `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically. (G)\n` +
-      `- RTL: Persian paragraphs should begin with Persian text when natural. If the subject is an English technical term (e.g. Python, React, API), starting with the English term is ACCEPTABLE and natural. Do NOT force artificial Persian prefixes like "زبان Python" or "فریم‌ورک React". (P1-2)\n` +
+      `- RTL: Persian paragraphs MUST begin with a Persian word. The ONLY exception is when the entire post is English. If a paragraph contains Persian text, its first word MUST be Persian. For English technical terms, use the pattern "هوش مصنوعی (AI)" or "زبان Python" — Persian word first, then the English term in parentheses. NEVER start a Persian paragraph with "Python", "React", "API", "AI", "GPU" or any English word directly. (P1-2)\n` +
       `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words (می‌رود, می‌تواند).\n` +
       `- CRITICAL PERSIAN: Do NOT double letters. Pay special attention to the letter ه (heh) — write it ONCE, never "هه". Check every word. If unsure, write the simpler form. Proofread your output for doubled letters before returning.\n` +
-      `- EMOJI: NEVER at the END of sentences/paragraphs. NEVER 🤖⚡🔥🚀 randomly. Max 1-2 per post, only when genuinely enhances content.\n` +
+      `- EMOJI: Use the tiered emoji system (see GUIDANCE section below). NEVER at the END of sentences/paragraphs. NEVER 🤖⚡🔥🚀. Each emoji must serve a structural purpose (section marker, bullet, divider).\n` +
       `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance.`,
   );
 
@@ -125,12 +125,65 @@ function describeEditIntensity(level: number): string {
 }
 
 function describeEmojiLevel(level: number): string {
+  // Tiered emoji system — LOWER levels use geometric shapes (subtle),
+  // HIGHER levels add character emojis (expressive).
+  //
+  // Level 20 (LOW):    geometric shapes only (🔺🔻🔸🔹...) + 1-3 character emojis for variety
+  // Level 40 (MEDIUM): geometric + more character emojis
+  // Level 60 (HIGH):   full character emoji set (👾✴️🌀🪐...)
+  // Level 80+ (MAX):   all emojis, generous usage
+  //
+  // Each higher level INCLUDES all lower-level emojis.
+  // NEVER at end of sentences. NEVER 🤖⚡🔥🚀. Each emoji must serve a structural purpose.
+
+  // Character emoji set (expressive — used at higher levels as the PRIMARY set)
+  const CHAR_EMOJIS = "👾 ✴️ 🌀 🪐 〽️ 🪽 📜 🗞️ 🫥 🫡 🔗 🫀 👓 🎩 🌂 🐙 🪼 🍖 🍣 🏉 🎻 🛸 🛰 🪝 🪫 🪔 🪙 🪪 🧬";
+  // Geometric emoji set (subtle — used at lower levels as the PRIMARY set)
+  const GEO_EMOJIS = "🔺 🔻 🔸 🔹 🔶 🔷 ◽️ ◼️ ◻️ ♦️";
+
   if (level <= 10) return "no emojis";
+
   if (level <= 30) {
-    return "LOW (max 1-2 per post). Only when genuinely enhances. NEVER at end of sentences. NEVER 🤖⚡🔥🚀.";
+    // Level 20: geometric shapes as primary, + 1-3 character emojis for variety
+    return (
+      "LOW (max 1-3 per post). PRIMARY set (geometric): " + GEO_EMOJIS + "\n" +
+      "VARIETY set (max 1-3 from this): " + CHAR_EMOJIS + "\n" +
+      "Use geometric shapes for bullet markers, dividers, and visual structure. " +
+      "Add 1-3 character emojis at the START of key paragraphs to mark sections. " +
+      "NEVER at end of sentences. Each emoji must serve a purpose."
+    );
   }
-  if (level <= 60) return "moderate — use creatively, never at end of sentences";
-  return "generous — use freely but professionally, never at end of sentences";
+
+  if (level <= 50) {
+    // Level 40: geometric + character, balanced
+    return (
+      "MEDIUM (max 3-5 per post). Both sets available:\n" +
+      "Geometric (for bullets/dividers): " + GEO_EMOJIS + "\n" +
+      "Character (for section markers): " + CHAR_EMOJIS + "\n" +
+      "Use geometric for sub-sections and bullets, character for main sections. " +
+      "Balanced usage — not too sparse, not too dense. NEVER at end of sentences."
+    );
+  }
+
+  if (level <= 70) {
+    // Level 60: character emojis as primary
+    return (
+      "HIGH (max 3-5 per post). PRIMARY set (character): " + CHAR_EMOJIS + "\n" +
+      "Geometric (for bullets/dividers): " + GEO_EMOJIS + "\n" +
+      "Use character emojis at the START of paragraphs for visual hierarchy. " +
+      "Geometric shapes for bullets and dividers. " +
+      "Each emoji must enhance readability — never decorative spam. NEVER at end of sentences."
+    );
+  }
+
+  // Level 80-100: all emojis, generous
+  return (
+    "GENEROUS (max 5-8 per post). All sets available, use creatively:\n" +
+    "Character: " + CHAR_EMOJIS + "\n" +
+    "Geometric: " + GEO_EMOJIS + "\n" +
+    "Use character emojis for main sections, geometric for sub-sections, bullets, and dividers. " +
+    "Rich visual structure — but each emoji must still serve a purpose. NEVER at end of sentences."
+  );
 }
 
 // ============================================================
