@@ -41,10 +41,25 @@ import { sanitizeAiOutput } from "../formatting/sanitizer";
 import { markdownToBlocks } from "../formatting/blocks";
 import { blocksToTelegramHtml } from "../formatting/telegram-html";
 import { chunkHtml } from "../formatting/chunker";
+import { truncateVisible, buildInlineKeyboard } from "../telegram/entities";
 import { getProfile } from "../config/defaults";
 import { isAuthorized, getRole } from "../storage/repositories/admins";
 import { fixRtlParagraphs } from "../ai/prompts";
+import { rewriteWithFallback } from "../ai/fallback";
+import { sendChatAction } from "../telegram/client";
+import {
+  publishPost,
+  sendPreview,
+  editChannelPost,
+} from "../telegram/publisher";
 import { can } from "../domain/roles";
+import { recordScheduled } from "../storage/repositories/stats";
+import {
+  recordPublishedPost,
+  getPublishedPost,
+  listPendingScheduledForUser,
+  createJob,
+} from "../storage/repositories/jobs";
 import { log } from "../observability/logger";
 
 // ============================================================
@@ -54,6 +69,12 @@ import { log } from "../observability/logger";
 // Telegram hard cap is 4096 visible chars. We chunk at 4000 to leave headroom
 // for the footer and any entity-expansion surprises.
 const CHUNK_MAX_VISIBLE = 4000;
+
+// 48-hour edit window for Telegram message edits.
+const TELEGRAM_EDIT_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+// Max pending scheduled posts per user (prevents unbounded D1 growth).
+const MAX_PENDING_SCHEDULED_PER_USER = 50;
 
 // ============================================================
 // runPipeline
@@ -136,7 +157,6 @@ export async function runPipeline(
     // Send typing again before AI call (typing expires after ~5s)
     if (isAdmin && content.chatType === "private" && content.fromId != null) {
       try {
-        const { sendChatAction } = await import("../telegram/client");
         await sendChatAction(env.BOT_TOKEN, {
           chat_id: content.fromId,
           action: "typing",
@@ -144,25 +164,15 @@ export async function runPipeline(
       } catch { /* ignore */ }
     }
     try {
-      // Dynamic import per spec — other agents own ../ai/fallback.
-      const aiMod: {
-        rewriteWithFallback: (
-          env: Env,
-          req: AIRequest,
-        ) => Promise<AIResult>;
-      } = await import("../ai/fallback");
       const profile = getProfile(settings.profile);
       const aiReq: AIRequest = {
         text: workingText,
         classification,
         settings,
         profile,
-        // Task 28: when the user picked "summarize" as their rewrite mode,
-        // route the request through the summarize branch of the prompt
-        // builder (compress to ~40%, drop filler, keep technical refs).
         mode: settings.rewriteMode === "summarize" ? "summarize" : "rewrite",
       };
-      const ai: AIResult = await aiMod.rewriteWithFallback(env, aiReq);
+      const ai: AIResult = await rewriteWithFallback(env, aiReq);
 
       if (ai?.ok && ai?.text) {
         // ── 6. Validate preservation ────────────────────────────
@@ -283,9 +293,6 @@ export async function runPipeline(
     // re-chunks the SUMMARIZED version, not the original.
     let bestHtml = html;
     try {
-      const summarizeAiMod: {
-        rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
-      } = await import("../ai/fallback");
       const summarizeProfile = getProfile(settings.profile);
       // P1-7 fix: summarize the ORIGINAL cleaned text (workingText), NOT
       // finalText (which has prompts restored, footer stripped, RTL marks
@@ -297,7 +304,7 @@ export async function runPipeline(
         profile: summarizeProfile,
         mode: "summarize",
       };
-      const summaryResult = await summarizeAiMod.rewriteWithFallback(env, summarizeReq);
+      const summaryResult = await rewriteWithFallback(env, summarizeReq);
       if (summaryResult?.ok && summaryResult?.text) {
         const summaryBlocks = markdownToBlocks(summaryResult.text);
         const summaryHtml = blocksToTelegramHtml(summaryBlocks, settings.footerText);
@@ -326,9 +333,6 @@ export async function runPipeline(
     if (hasPrompts && !summarizeSuccess && parts.length > 1) {
       log("info", scope, "prompt post still too long; ultra-summarize", { parts: parts.length });
       try {
-        const ultraMod: {
-          rewriteWithFallback: (env: Env, req: AIRequest) => Promise<AIResult>;
-        } = await import("../ai/fallback");
         const ultraProfile = getProfile(settings.profile);
         const ultraReq: AIRequest = {
           text: finalText,
@@ -346,7 +350,7 @@ export async function runPipeline(
             "ENTIRE output under 3000 visible characters so it fits in ONE Telegram message. " +
             "Preserve every ```prompt fence. Preserve ALL links. Preserve original language.",
         };
-        const ultraResult = await ultraMod.rewriteWithFallback(env, ultraReq);
+        const ultraResult = await rewriteWithFallback(env, ultraReq);
         if (ultraResult?.ok && ultraResult?.text) {
           const ultraBlocks = markdownToBlocks(ultraResult.text);
           const ultraHtml = blocksToTelegramHtml(ultraBlocks, settings.footerText);
@@ -384,7 +388,7 @@ export async function runPipeline(
       const cap = chunkMax - footerRoom;
       let single = parts[0];
       // Only truncate if it exceeds the cap.
-      const { truncateVisible } = await import("../telegram/entities");
+      // truncateVisible is now a static import.
       if (single.length > cap) {
         single = truncateVisible(single, Math.max(100, cap));
       }
@@ -480,17 +484,7 @@ export async function runPipeline(
 
     // Send preview to the admin's private chat (userId).
     try {
-      const publisherMod: {
-        sendPreview?: (
-          env: Env,
-          userId: number,
-          html: string,
-          parts: string[],
-          media?: ExtractedContent["media"],
-          keyboard?: string,
-        ) => Promise<{ ok: boolean; messageId?: number; error?: string }>;
-      } = await import("../telegram/publisher");
-      if (publisherMod.sendPreview && content.fromId != null) {
+      if (sendPreview && content.fromId != null) {
         // Build approval keyboard with Publish/Reject buttons
         let approvalKb: string | undefined;
         if (jobId) {
@@ -499,7 +493,7 @@ export async function runPipeline(
             approvalKb = approvalKeyboard(jobId);
           } catch { /* ignore */ }
         }
-        const preview = await publisherMod.sendPreview(
+        const preview = await sendPreview(
           env,
           content.fromId,
           html,
@@ -544,27 +538,6 @@ export async function runPipeline(
   }
   if (settings.scheduleEnabled && !settings.approvalMode && content.fromId != null) {
     try {
-      const jobsMod: {
-        listPendingScheduledForUser?: (
-          env: Env,
-          userId: number,
-          limit?: number,
-        ) => Promise<{ scheduledFor: number | null }[]>;
-        createJob?: (
-          env: Env,
-          job: {
-            type: "scheduled_post";
-            status: "pending";
-            userId: number;
-            chatId: number;
-            messageId: number;
-            payload: string;
-            scheduledFor: number;
-            publishedMessageId?: number | null;
-            publishedChatId?: number | null;
-          },
-        ) => Promise<string>;
-      } = await import("../storage/repositories/jobs");
       const schedulerMod: {
         computeNextScheduledTime: (
           now: number,
@@ -574,14 +547,14 @@ export async function runPipeline(
         ) => number;
       } = await import("./scheduler");
 
-      if (!jobsMod.listPendingScheduledForUser || !jobsMod.createJob) {
+      if (!listPendingScheduledForUser || !createJob) {
         throw new Error("jobs repo missing required exports");
       }
       if (!schedulerMod.computeNextScheduledTime) {
         throw new Error("scheduler module missing computeNextScheduledTime");
       }
 
-      const pending = await jobsMod.listPendingScheduledForUser(
+      const pending = await listPendingScheduledForUser(
         env,
         content.fromId,
         200,
@@ -592,11 +565,11 @@ export async function runPipeline(
 
       // P1-SS6 fix: queue depth limit — max 50 pending scheduled posts per user.
       // Prevents unbounded D1 growth + accidental spam-scheduling.
-      const MAX_PENDING_PER_USER = 50;
-      if (pendingFors.length >= MAX_PENDING_PER_USER) {
+      
+      if (pendingFors.length >= MAX_PENDING_SCHEDULED_PER_USER) {
         log("warn", scope, "schedule queue depth limit reached", {
           pending: pendingFors.length,
-          limit: MAX_PENDING_PER_USER,
+          limit: MAX_PENDING_SCHEDULED_PER_USER,
         });
         return {
           ok: false,
@@ -608,7 +581,7 @@ export async function runPipeline(
           aiUsed,
           aiProvider,
           aiModel,
-          errorMessage: `Too many pending scheduled posts (max ${MAX_PENDING_PER_USER}). Wait for some to publish or cancel existing ones.`,
+          errorMessage: `Too many pending scheduled posts (max ${MAX_PENDING_SCHEDULED_PER_USER}). Wait for some to publish or cancel existing ones.`,
         };
       }
 
@@ -636,8 +609,7 @@ export async function runPipeline(
       // the cron ever reconstructs HTML from `html` + appends footer.
       // P2-SS8 fix: also store AI metadata so the cron can report which
       // model processed the post.
-      const { chunkHtml: chunkHtmlNoFooter } = await import("../formatting/chunker");
-      const partsNoFooter = chunkHtmlNoFooter(html, chunkMax, "");
+      const partsNoFooter = chunkHtml(html, chunkMax, "");
       const payload = JSON.stringify({
         html,
         parts: partsNoFooter,
@@ -648,7 +620,7 @@ export async function runPipeline(
         aiModel,
         classification,
       });
-      const jobId = await jobsMod.createJob(env, {
+      const jobId = await createJob(env, {
         type: "scheduled_post",
         status: "pending",
         userId: content.fromId,
@@ -671,24 +643,12 @@ export async function runPipeline(
       // P1-SS2 fix: record the "scheduled" stat so the admin dashboard
       // counter reflects scheduled posts.
       try {
-        const { recordScheduled } = await import("../storage/repositories/stats");
         await recordScheduled(env, content.fromId);
       } catch { /* best effort */ }
 
       // P1-SS4 fix: show the scheduled time in the admin preview message.
       try {
-        const publisherMod: {
-          sendPreview?: (
-            env: Env,
-            userId: number,
-            html: string,
-            parts: string[],
-            media?: ExtractedContent["media"],
-            keyboard?: string,
-          ) => Promise<{ ok: boolean; messageId?: number; error?: string }>;
-        } = await import("../telegram/publisher");
-        if (publisherMod.sendPreview && content.fromId != null) {
-          const { buildInlineKeyboard } = await import("../telegram/entities");
+        if (sendPreview && content.fromId != null) {
           const rejectKb = buildInlineKeyboard([
             [{ text: "🚫 Cancel Scheduled Post", callback_data: `cancelsched:${jobId}` }],
           ]);
@@ -702,7 +662,7 @@ export async function runPipeline(
             `📅 <b>Scheduled Post</b>\n\n` +
             `⏰ Will publish: <code>${schedTime}</code>\n\n` +
             html;
-          await publisherMod.sendPreview(
+          await sendPreview(
             env,
             content.fromId,
             previewHtml,
@@ -751,26 +711,15 @@ export async function runPipeline(
     can(role, "edit_channel")
   ) {
     try {
-      const jobsMod: {
-        getPublishedPost?: (
-          env: Env,
-          sourceChatId: number,
-          sourceMessageId: number,
-        ) => Promise<{
-          publishedChatId: number;
-          publishedMessageId: number;
-          publishedAt: number;
-        } | null>;
-      } = await import("../storage/repositories/jobs");
-      if (jobsMod.getPublishedPost && content.fromId != null) {
-        const mapping = await jobsMod.getPublishedPost(
+      if (getPublishedPost && content.fromId != null) {
+        const mapping = await getPublishedPost(
           env,
           content.chatId,
           content.messageId,
         );
         if (mapping) {
           // 48h edit window check.
-          const editWindowMs = 48 * 60 * 60 * 1000;
+          const editWindowMs = TELEGRAM_EDIT_WINDOW_MS;
           const ageMs = Date.now() - mapping.publishedAt;
           if (ageMs > editWindowMs) {
             log("info", scope, "channel edit skipped: original post >48h old", {
@@ -778,22 +727,13 @@ export async function runPipeline(
             });
             // Fall through to new publish.
           } else {
-            const publisherMod: {
-              editChannelPost?: (
-                env: Env,
-                chatId: number,
-                messageId: number,
-                html: string,
-                hasMedia: boolean,
-              ) => Promise<{ ok: boolean; error?: string }>;
-            } = await import("../telegram/publisher");
-            if (publisherMod.editChannelPost) {
+            if (editChannelPost) {
               const editHtml = parts[0] || html;
               log("info", scope, "editing channel post in place", {
                 channelMsgId: mapping.publishedMessageId,
                 hasMedia: !!content.media,
               });
-              const editResult = await publisherMod.editChannelPost(
+              const editResult = await editChannelPost(
                 env,
                 mapping.publishedChatId,
                 mapping.publishedMessageId,
@@ -830,18 +770,10 @@ export async function runPipeline(
 
   // ── 12e. Publish directly to target channel ─────────────────────
   try {
-    const publisherMod: {
-      publishPost?: (
-        env: Env,
-        html: string,
-        parts: string[],
-        media?: ExtractedContent["media"],
-      ) => Promise<{ ok: boolean; messageIds: number[]; error?: string }>;
-    } = await import("../telegram/publisher");
-    if (!publisherMod.publishPost) {
+    if (!publishPost) {
       throw new Error("publisher.publishPost not available");
     }
-    const result = await publisherMod.publishPost(env, html, parts, content.media);
+    const result = await publishPost(env, html, parts, content.media);
     if (!result?.ok) {
       throw new Error(result?.error ?? "publish failed");
     }
@@ -856,7 +788,6 @@ export async function runPipeline(
     // edit of the source message can edit the channel post in place.
     if (result.messageIds.length > 0 && content.fromId != null) {
       try {
-        const { recordPublishedPost } = await import("../storage/repositories/jobs");
         // Resolve the target channel to a numeric chat id for storage.
         // For @username channels, parseChannelIdNum returns 0; store the
         // first published message_id with the resolved channel id (0 is
