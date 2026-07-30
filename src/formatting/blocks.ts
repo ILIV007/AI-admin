@@ -199,11 +199,9 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         const nextTrimmed = nextLine.trim();
         const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
         const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
-        // Note: code fences are intentionally NOT auto-quoted. A colon
-        // followed by a code fence should render the fence as a normal code
-        // block (with its own <pre> styling), not wrap it in a blockquote.
-        const isRegularText = nextTrimmed.length > 0 && !nextTrimmed.startsWith("#") && !nextTrimmed.startsWith(">") && !nextTrimmed.startsWith("-") && !nextTrimmed.startsWith("*") && !/^\d+\.\s/.test(nextTrimmed) && !/^(```|~~~)/.test(nextTrimmed);
-        if (isUrlStart || isMarkdownLink || isRegularText) {
+        const isCodeFence = /^(```|~~~)/.test(nextTrimmed);
+        const isRegularText = nextTrimmed.length > 0 && !nextTrimmed.startsWith("#") && !nextTrimmed.startsWith(">") && !nextTrimmed.startsWith("-") && !nextTrimmed.startsWith("*") && !/^\d+\.\s/.test(nextTrimmed);
+        if (isUrlStart || isMarkdownLink || isCodeFence || isRegularText) {
           // Collect the quote paragraph
           i = peek;
           const quoteLines: string[] = [];
