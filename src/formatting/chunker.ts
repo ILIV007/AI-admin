@@ -403,8 +403,17 @@ export function chunkHtml(
   }
 
   // Append the footer ONLY to the LAST chunk. Fixes V1 double-footer bug.
+  // Reserve footer space on the last chunk to prevent overflow.
   const lastIdx = balancedChunks.length - 1;
   if (lastIdx >= 0) {
+    const footerSpace = footerVis + 2; // +2 for "\n\n"
+    // If the last chunk + footer would exceed maxVisible, truncate it.
+    if (visibleLength(balancedChunks[lastIdx]) + footerSpace > maxVisible) {
+      balancedChunks[lastIdx] = truncateVisible(
+        balancedChunks[lastIdx],
+        maxVisible - footerSpace,
+      );
+    }
     balancedChunks[lastIdx] = balancedChunks[lastIdx] + (footerBlock ? "\n\n" + footerBlock : "");
   } else if (footerBlock) {
     balancedChunks.push(footerBlock);

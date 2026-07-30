@@ -21,43 +21,62 @@ const ZERO_WIDTH_RE = /[\u200B-\u200F\u202A-\u202E\uFEFF\u00AD]/g;
 
 // Raw HTML tag (open or close). We intentionally do NOT try to preserve any
 // of the AI's HTML — we re-render every tag from our own block/span IR.
-const HTML_TAG_RE = /<[^>]+>/g;
 
 export function sanitizeAiOutput(text: string): string {
   if (!text) return "";
 
-  // 1. Protect code fences so HTML stripping can't reach their contents.
+  // 1. Protect code fences AND inline code so HTML stripping can't reach
+  //    their contents. Both ```...``` and `...` may contain < and > chars.
   const fences: string[] = [];
   text = text.replace(/```[\s\S]*?```/g, (m) => {
     fences.push(m);
     return `${NUL}FENCE${fences.length - 1}${NUL}`;
   });
+  const inlineCodes: string[] = [];
+  text = text.replace(/`[^`\n]+`/g, (m) => {
+    inlineCodes.push(m);
+    return `${NUL}IC${inlineCodes.length - 1}${NUL}`;
+  });
 
-  // 2. Strip raw HTML tags the AI may have emitted.
-  text = text.replace(HTML_TAG_RE, "");
+  // 1b. Protect markdown links [text](url) — the URL may contain < or >
+  //     which should NOT be stripped.
+  const links: string[] = [];
+  text = text.replace(/\[[^\]]*\]\([^)]*\)/g, (m) => {
+    links.push(m);
+    return `${NUL}LINK${links.length - 1}${NUL}`;
+  });
 
-  // 3. Restore code fences.
-  text = text.replace(
-    /\u0000FENCE(\d+)\u0000/g,
-    (_, i) => fences[Number(i)] ?? "",
-  );
+  // 2. Strip raw HTML tags the AI may have emitted — but only real HTML tags,
+  //    not comparison operators like "x < 5" or "y > 3".
+  //    A real HTML tag starts with < followed by a letter or / (e.g. <b>, </i>).
+  //    "x < 5" has a space after <, so it won't match.
+  text = text.replace(/<\/?[a-zA-Z][^>]*>/g, "");
 
-  // 4. Normalize line endings.
+  // 3. Restore markdown links.
+  text = text.replace(/\u0000LINK(\d+)\u0000/g, (_, i) => links[Number(i)] ?? "");
+
+  // 4. Restore inline code.
+  text = text.replace(/\u0000IC(\d+)\u0000/g, (_, i) => inlineCodes[Number(i)] ?? "");
+
+  // 5. Restore code fences.
+  text = text.replace(/\u0000FENCE(\d+)\u0000/g, (_, i) => fences[Number(i)] ?? "");
+
+  // 6. Normalize line endings.
   text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-  // 5. Remove zero-width / bidi / soft-hyphen chars.
+  // 7. Remove zero-width / bidi / soft-hyphen chars.
   text = text.replace(ZERO_WIDTH_RE, "");
 
-  // 6. Trim trailing spaces on each line.
+  // 8. Trim trailing spaces on each line.
   text = text.replace(/[ \t]+\n/g, "\n");
 
-  // 7. Collapse 3+ newlines to 2.
+  // 9. Collapse 3+ newlines to 2.
   text = text.replace(/\n{3,}/g, "\n\n");
 
-  // 8. Trim overall.
+  // 10. Trim overall.
   text = text.trim();
 
-  // 9. Balance code fences: if odd number of ```, append one.
+  // 11. Balance code fences: if odd number of ```, append one.
   const fenceCount = (text.match(/```/g) || []).length;
   if (fenceCount % 2 === 1) {
     text += "\n```";

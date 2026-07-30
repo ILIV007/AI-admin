@@ -99,9 +99,15 @@ export async function publishPost(
       );
       if (mediaResult?.message_id) messageIds.push(mediaResult.message_id);
 
-      // Remaining parts go out as separate text messages.
+      // Remaining parts go out as reply chain (each part replies to the previous).
       for (let i = 1; i < safeParts.length; i++) {
-        const ids = await sendTextSafe(token, chatId, safeParts[i]);
+        const ids = await sendTextSafe(
+          token,
+          chatId,
+          safeParts[i],
+          undefined,
+          messageIds[messageIds.length - 1], // reply to previous message
+        );
         messageIds.push(...ids);
       }
       return { ok: true, messageIds };
