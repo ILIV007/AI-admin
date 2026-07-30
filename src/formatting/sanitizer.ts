@@ -10,6 +10,13 @@
  *
  * Code fences are extracted to placeholders BEFORE HTML stripping so that
  * any "<" or ">" inside a code block survives intact.
+ *
+ * CRITICAL: U+200C (ZERO WIDTH NON-JOINER = نیم‌فاصله) is a LEGITIMATE Persian
+ * typography character used for compound words (به‌روزرسانی, نمی‌دانم, etc).
+ * It must NOT be stripped — doing so causes Persian words to be joined
+ * together (به‌طور → بهطور). We only strip zero-width chars that are actual
+ * security risks (bidi overrides, BOM, soft hyphen) and zero-width SPACE
+ * (U+200B, which is invisible formatting, not a joiner).
  * -----------------------------------------------------------------------------
  */
 
@@ -17,7 +24,14 @@ const NUL = "\u0000";
 
 // Zero-width chars, BOM, soft hyphen, and bidi overrides. These can be used
 // to hide payloads or flip text direction; strip them unconditionally.
-const ZERO_WIDTH_RE = /[\u200B-\u200F\u202A-\u202E\uFEFF\u00AD]/g;
+//
+// CRITICAL FIX: U+200C (ZWNJ = نیم‌فاصله) is EXCLUDED from this set.
+// It is the Persian half-space character, essential for correct typography.
+// Stripping it causes compound words like به‌روزرسانی to become بهروزرسانی.
+// We keep U+200B (zero-width SPACE), U+200D (ZWJ — rare, mainly for emoji
+// sequences), U+200E/U+200F (LRM/RLM — bidi marks), bidi overrides, BOM,
+// and soft hyphen.
+const ZERO_WIDTH_RE = /[\u200B\u200D-\u200F\u202A-\u202E\uFEFF\u00AD]/g;
 
 // Raw HTML tag (open or close). We intentionally do NOT try to preserve any
 // of the AI's HTML — we re-render every tag from our own block/span IR.

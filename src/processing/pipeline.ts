@@ -40,6 +40,7 @@ import { validatePreservation } from "./preservation";
 import { sanitizeAiOutput } from "../formatting/sanitizer";
 import { markdownToBlocks } from "../formatting/blocks";
 import { blocksToTelegramHtml } from "../formatting/telegram-html";
+import { normalizePersianHalfSpaces } from "../formatting/persian-normalizer";
 import { chunkHtml } from "../formatting/chunker";
 import { truncateVisible, buildInlineKeyboard } from "../telegram/entities";
 import { getProfile } from "../config/defaults";
@@ -338,6 +339,13 @@ export async function runPipeline(
   // ── 8b. Fix RTL: prepend RLM mark to Persian paragraphs that start with
   //      an English word (P2-5). Defense-in-depth behind the AI instruction.
   finalText = fixRtlParagraphs(finalText);
+
+  // ── 8c. Normalize Persian half-spaces (نیم‌فاصله, U+200C).
+  //      Even with explicit AI instructions, models frequently forget to
+  //      insert half-spaces in compound words (بهروزرسانی instead of به‌روزرسانی).
+  //      This deterministic post-processor catches and fixes common misses.
+  //      Code fences, inline code, and links are protected internally.
+  finalText = normalizePersianHalfSpaces(finalText);
 
   // ── 9. Markdown → blocks ────────────────────────────────────────
   const blocks = markdownToBlocks(finalText);

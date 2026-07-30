@@ -306,18 +306,36 @@ function splitParagraphsSafe(html: string): string[] {
     .split(/\n\n+/)
     .filter((p) => p.trim().length > 0);
 
-  // Task 28: restore BQ FIRST, then PRE. Reason: BQ placeholders may
-  // contain PRE placeholders (e.g. prompt blocks render as
-  // <blockquote expandable><pre><code>...</code></pre></blockquote>, and
-  // the protection pass already replaced the inner <pre>...</pre> with a
-  // \u0000PRE_N\u0000 placeholder BEFORE wrapping the outer BQ). Doing PRE
-  // first would leave the PRE placeholder stranded inside the restored BQ.
-  return parts.map(
+  // Restore BQ FIRST, then PRE.
+  const restored = parts.map(
     (p) =>
       p
         .replace(/\u0000BQ(\d+)\u0000/g, (_, i) => bqs[Number(i)] ?? "")
         .replace(/\u0000PRE(\d+)\u0000/g, (_, i) => pres[Number(i)] ?? ""),
   );
+
+  // CRITICAL FIX: merge standalone headings with their following paragraph.
+  // A heading is rendered as <b>Title</b> (possibly with a trailing \n).
+  // Without this fix, a heading at the end of a chunk gets separated from
+  // its content in the next chunk — "topic in one post, continuation in next".
+  // We detect a standalone heading as a part that is ONLY a <b>...</b> tag
+  // (no blockquote, no pre, just bold). We merge it with the next part using
+  // \n\n so the chunker treats them as a single unit.
+  const merged: string[] = [];
+  for (let i = 0; i < restored.length; i++) {
+    const p = restored[i];
+    // Check if this part is a standalone heading: <b>...</b> with optional
+    // trailing whitespace/newline, and nothing else.
+    const isHeading = /^<b>[^<]*<\/b>\s*$/.test(p.trim());
+    if (isHeading && i + 1 < restored.length) {
+      // Merge heading + next paragraph into one unit.
+      merged.push(p.trim() + "\n\n" + restored[i + 1]);
+      i++; // skip the next part (it's been merged)
+    } else {
+      merged.push(p);
+    }
+  }
+  return merged;
 }
 
 // ============================================================

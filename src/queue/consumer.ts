@@ -1168,15 +1168,20 @@ async function handlePublishScheduled(
     }
     ctx.waitUntil(safe(recordPublished(env, job.userId)));
 
-    // Send copy to admin + notification
+    // Send full post copy + nice report to the admin who scheduled it.
+    // ALWAYS send — even if job.userId === adminId (the owner should see their
+    // own scheduled posts published). Previously this was skipped when the
+    // scheduler was the owner, which was a bug.
     try {
-      const adminId = Number(env.ADMIN_ID);
-      if (adminId && job.userId !== adminId) {
-        // Send post copy to admin
+      const adminId = job.userId; // the admin who scheduled this post
+      if (adminId) {
+        // 1. Send the FULL post copy (all parts, not just parts[0]).
         if (payload.media) {
+          // Media post: send media with caption = parts[0]
+          const caption = truncateVisible(payload.parts[0] || "", TELEGRAM_LIMITS.CAPTION_MAX_LEN);
           const mediaParams: Record<string, unknown> = {
             chat_id: adminId,
-            caption: truncateVisible(payload.parts[0] || "", TELEGRAM_LIMITS.CAPTION_MAX_LEN),
+            caption,
             parse_mode: "HTML",
           };
           if (payload.media.type === "photo") {
@@ -1188,8 +1193,20 @@ async function handlePublishScheduled(
           } else if (payload.media.type === "document") {
             mediaParams.document = payload.media.fileId;
             await sendDocument(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          } else if (payload.media.type === "animation") {
+            mediaParams.animation = payload.media.fileId;
+            await sendAnimation(env.BOT_TOKEN, mediaParams as never).catch(() => undefined);
+          }
+          // Send remaining parts (1+) as text messages replying to the media
+          for (let i = 1; i < payload.parts.length; i++) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: adminId,
+              text: payload.parts[i],
+              parse_mode: "HTML",
+            }).catch(() => undefined);
           }
         } else {
+          // Text-only: send all parts as reply chain
           for (const part of payload.parts) {
             await sendMessage(env.BOT_TOKEN, {
               chat_id: adminId,
@@ -1198,14 +1215,55 @@ async function handlePublishScheduled(
             }).catch(() => undefined);
           }
         }
-        // Send notification
+
+        // 2. Build a nice report with full details.
+        const publishedAt = new Date();
+        const schedTime = job.scheduledFor ? new Date(job.scheduledFor) : null;
+        const delayMs = schedTime ? publishedAt.getTime() - schedTime.getTime() : 0;
+        const delayMin = Math.round(delayMs / 60000);
+
+        // Parse AI info from payload if present
+        let aiInfo = "—";
+        try {
+          const p = JSON.parse(job.payload) as { aiUsed?: boolean; aiProvider?: string; aiModel?: string };
+          if (p.aiUsed && p.aiProvider) {
+            aiInfo = `${p.aiProvider}/${p.aiModel || "?"}`;
+          } else if (p.aiUsed) {
+            aiInfo = "✓";
+          } else {
+            aiInfo = "بدون AI";
+          }
+        } catch { /* ignore */ }
+
+        const schedTimeStr = schedTime
+          ? schedTime.toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" })
+          : "—";
+        const pubTimeStr = publishedAt.toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" });
+
+        const reportParts: string[] = [
+          `<blockquote><b>📅 پست زمان‌بندی‌شده منتشر شد</b></blockquote>`,
+          ``,
+          `<b>📋 جزئیات:</b>`,
+          `• زمان‌بندی: <code>${schedTimeStr}</code>`,
+          `• انتشار: <code>${pubTimeStr}</code>`,
+        ];
+        if (delayMin > 0) {
+          reportParts.push(`• تأخیر: <code>${delayMin} دقیقه</code>`);
+        }
+        reportParts.push(`• بخش‌ها: <code>${payload.parts.length}</code>`);
+        reportParts.push(`• هوش مصنوعی: <code>${aiInfo}</code>`);
+        reportParts.push(`• شناسه: <code>${jobId}</code>`);
+        if (result.messageIds.length > 0) {
+          reportParts.push(`• پیام‌های کانال: <code>${result.messageIds.join(", ")}</code>`);
+        }
+
         await sendMessage(env.BOT_TOKEN, {
           chat_id: adminId,
-          text: `<blockquote><b>📅 Scheduled Post Published</b></blockquote>\nJob ID: <code>${jobId}</code>`,
+          text: reportParts.join("\n"),
           parse_mode: "HTML",
         }).catch(() => undefined);
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore — don't block the publish */ }
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
     const attempts = await incrementAttempts(env, jobId);
