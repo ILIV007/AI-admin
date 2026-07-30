@@ -31,7 +31,12 @@ import { log } from "../../observability/logger";
 // ============================================================
 
 const AUTH_KV_PREFIX = "auth:user";
-const AUTH_CACHE_TTL_SEC = 300; // 5 min cache (was 120s — reduces KV reads by 60%)
+const AUTH_POSITIVE_TTL_SEC = 300; // 5 min cache for admins (role may change)
+const AUTH_NEGATIVE_TTL_SEC = 3600; // FIX-8: 1 hour for non-admins (was 5 min)
+// Non-admins rarely become admins; a 1-hour negative cache dramatically
+// reduces KV writes + D1 reads during spam attacks (1000 msgs from
+// non-admins = 1000 writes with 5-min TTL, but only ~24 writes with 1h TTL
+// because the cache hit rate approaches 100% within each hour).
 
 function authKvKey(userId: number): string {
   return `${AUTH_KV_PREFIX}:${userId}`;
@@ -132,8 +137,10 @@ export async function isAuthorized(env: Env, userId: number): Promise<boolean> {
   const admin = await getAdmin(env, userId);
   const ok = admin !== null;
 
-  // Write back to KV (best-effort).
-  await kvPut(env, authKvKey(userId), ok ? "1" : "0", AUTH_CACHE_TTL_SEC);
+  // Write back to KV (best-effort). FIX-8: use a longer TTL for non-admins
+  // (1 hour) since they rarely become admins; admins get a shorter TTL (5 min)
+  // so role changes propagate quickly.
+  await kvPut(env, authKvKey(userId), ok ? "1" : "0", ok ? AUTH_POSITIVE_TTL_SEC : AUTH_NEGATIVE_TTL_SEC);
   return ok;
 }
 

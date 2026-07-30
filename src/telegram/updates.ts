@@ -148,8 +148,9 @@ function extractFromMessage(
     isEdit,
     replyToText,
     // P1-CE3 fix: carry the edit_date so downstream code knows how old the
-    // edit is (Telegram blocks edits older than 48h).
-    editDate: (msg as { edit_date?: number }).edit_date,
+    // edit is. NOTE: Telegram bots can edit their own channel posts at any
+    // time (no 48h limit), so this is informational only.
+    editDate: msg.edit_date,
   };
 }
 

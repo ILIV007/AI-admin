@@ -56,6 +56,7 @@ export interface TelegramUpdate {
 export interface TelegramMessage {
   message_id: number;
   date: number;
+  edit_date?: number;
   chat: {
     id: number;
     type: "private" | "group" | "supergroup" | "channel";
@@ -193,6 +194,13 @@ export interface Settings {
   scheduleEnabled?: boolean;
   scheduleMessagesPerDay?: number;
   scheduleIntervalHours?: number;
+  /**
+   * Start hour (0-23) for daily schedule slots, in Asia/Tehran timezone.
+   * The day is divided into `scheduleMessagesPerDay` equal slots starting
+   * from this hour. Example: startHour=9, perDay=4 → 09:00, 15:00, 21:00, 03:00.
+   * Optional for backward compat; defaults to 9 via DEFAULT_SETTINGS.
+   */
+  scheduleStartHour?: number;
 }
 
 // ============================================================
@@ -300,6 +308,7 @@ export type Span =
 export type JobType = "scheduled_post" | "approval";
 export type JobStatus =
   | "pending"
+  | "publishing"
   | "published"
   | "rejected"
   | "expired"
@@ -374,6 +383,14 @@ export interface MediaGroupItem {
   fromId: number;
   text: string;
   media: ExtractedContent["media"];
+  /**
+   * The Telegram chat type ("private", "group", "supergroup", "channel")
+   * of the chat the media group was sent from. Stored so the finalizer can
+   * reconstruct the correct ExtractedContent.chatType instead of hardcoding
+   * "channel". Optional for backward compat with old DB rows that predate
+   * the chat_type column.
+   */
+  chatType?: string;
   receivedAt: number;
   finalized: number; // 0 = not finalized
 }

@@ -85,6 +85,7 @@ export async function tgApi<T = unknown>(
   // Up to 4 iterations: initial + retry on 429 + retry on 5xx (max 2).
   const MAX_5XX_RETRIES = 2;
   let totalAttempts = 0;
+  let retried429 = false; // track 429 retry separately (max one 429 retry total)
   for (let attempt = 0; attempt < 2 + MAX_5XX_RETRIES; attempt++) {
     totalAttempts++;
     const url = `${API_BASE}${token}/${method}`;
@@ -137,8 +138,11 @@ export async function tgApi<T = unknown>(
       throw new Error(`tgApi[${method}] invalid JSON response: ${(err as Error).message}`);
     }
 
-    // 429 rate-limit → sleep and retry ONCE.
-    if (!data.ok && data.parameters?.retry_after && attempt === 0) {
+    // 429 rate-limit → sleep and retry ONCE (on any attempt, not just the first).
+    // Previously this only fired when attempt === 0, which meant a 5xx retry
+    // that then got a 429 would throw instead of retrying.
+    if (!data.ok && data.parameters?.retry_after && !retried429) {
+      retried429 = true;
       const waitMs = (data.parameters.retry_after + 0.5) * 1000;
       await sleep(waitMs);
       continue;

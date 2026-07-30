@@ -53,9 +53,9 @@ import {
   personalityKeyboard,
   providerKeyboard,
   rewriteModeKeyboard,
-  scheduleIntervalKeyboard,
   scheduleMessagesPerDayKeyboard,
   scheduleSettingsKeyboard,
+  scheduleStartHourKeyboard,
   settingsKeyboard,
 } from "./keyboards";
 import {
@@ -72,7 +72,6 @@ import {
 } from "../storage/repositories/settings";
 import { getStats } from "../storage/repositories/stats";
 import {
-  SCHEDULE_INTERVAL_OPTIONS,
   SCHEDULE_PER_DAY_OPTIONS,
 } from "../config/defaults";
 
@@ -277,14 +276,18 @@ async function handleSet(
       }
       const settings = await getSettingsFor(env, fromId);
       const cfg = resolveScheduleConfig(settings);
+      // FIX SC-8: show today's slot preview in the schedule menu.
+      const { computeDaySlotsPreview } = await import("../processing/scheduler");
+      const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
+      const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
       const text =
         `📅 <b>Schedule</b>\n\n` +
         `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
-        `📊 Messages per day: <b>${cfg.perDay}</b>\n` +
-        `⏱ Interval: <b>${cfg.intervalHours}h</b>\n\n` +
-        `<i>When ON, every admin post is stored in the queue and published ` +
-        `${cfg.intervalHours === 24 ? "24h" : cfg.intervalHours + "h"} after receipt ` +
-        `(up to ${cfg.perDay} per 24h cycle).</i>`;
+        `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
+        `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
+        `<b>Today's slots (Tehran):</b>\n${slotStr}\n\n` +
+        `<i>Posts are randomly distributed across available slots. ` +
+        `When all of today's slots are taken, the post rolls to tomorrow.</i>`;
       await editText(env, cq, text, scheduleSettingsKeyboard(settings));
       return;
     }
@@ -494,7 +497,7 @@ Channel: <code>${escapeHtml(
 function resolveScheduleConfig(settings: Settings): {
   enabled: boolean;
   perDay: number;
-  intervalHours: number;
+  startHour: number;
 } {
   return {
     enabled: settings.scheduleEnabled === true,
@@ -502,12 +505,13 @@ function resolveScheduleConfig(settings: Settings): {
       Number.isFinite(settings.scheduleMessagesPerDay) &&
       SCHEDULE_PER_DAY_OPTIONS.includes(settings.scheduleMessagesPerDay as number)
         ? (settings.scheduleMessagesPerDay as number)
-        : 1,
-    intervalHours:
-      Number.isFinite(settings.scheduleIntervalHours) &&
-      SCHEDULE_INTERVAL_OPTIONS.includes(settings.scheduleIntervalHours as number)
-        ? (settings.scheduleIntervalHours as number)
-        : 24,
+        : 4,
+    startHour:
+      Number.isFinite(settings.scheduleStartHour) &&
+      settings.scheduleStartHour! >= 0 &&
+      settings.scheduleStartHour! <= 23
+        ? settings.scheduleStartHour!
+        : 9,
   };
 }
 
@@ -516,15 +520,16 @@ function resolveScheduleConfig(settings: Settings): {
  * (caller checked the `schedule` permission).
  *
  * Callback shapes:
- *   set:sched:toggle:on|off    → flip scheduleEnabled
- *   set:sched:perday:{n}       → set scheduleMessagesPerDay (n in
- *                                SCHEDULE_PER_DAY_OPTIONS)
- *   set:sched:interval:{n}     → set scheduleIntervalHours (n in
- *                                SCHEDULE_INTERVAL_OPTIONS)
+ *   set:sched:toggle:on|off     → flip scheduleEnabled
+ *   set:sched:perday:{n}        → set scheduleMessagesPerDay (n in
+ *                                 SCHEDULE_PER_DAY_OPTIONS)
+ *   set:sched:starthour:{n}     → set scheduleStartHour (n in 0-23)
+ *
+ * The old `set:sched:interval:{n}` callback is no longer surfaced in the
+ * UI but is still accepted for backward compat (old inline keyboards may
+ * still be displayed on users' clients).
  *
  * After mutation: persist + audit + re-render the appropriate keyboard.
- * For perday/interval we re-render the picker (so the ✅ updates);
- * for toggle we re-render the top-level schedule menu.
  */
 async function handleSchedUpdate(
   env: Env,
@@ -540,7 +545,7 @@ async function handleSchedUpdate(
   const settings = await getSettingsFor(env, fromId);
   let auditAction: string | undefined;
   let auditDetail: string | undefined;
-  let reRender: "menu" | "perday" | "interval" = "menu";
+  let reRender: "menu" | "perday" | "starthour" | "interval" = "menu";
 
   if (action === "toggle" && (value === "on" || value === "off")) {
     settings.scheduleEnabled = value === "on";
@@ -557,16 +562,28 @@ async function handleSchedUpdate(
     auditAction = "settings.scheduleMessagesPerDay";
     auditDetail = String(n);
     reRender = "perday";
-  } else if (action === "interval" && value != null) {
+  } else if (action === "starthour" && value != null) {
     const n = parseInt(value, 10);
-    if (!Number.isFinite(n) || !SCHEDULE_INTERVAL_OPTIONS.includes(n)) {
+    if (!Number.isFinite(n) || n < 0 || n > 23) {
+      await safeAnswer(env, cq.id, "⚠️ Invalid hour", true);
+      return;
+    }
+    settings.scheduleStartHour = n;
+    auditAction = "settings.scheduleStartHour";
+    auditDetail = String(n);
+    reRender = "starthour";
+  } else if (action === "interval" && value != null) {
+    // Backward compat: old inline keyboards may still send interval callbacks.
+    // We accept and store the value but the new scheduler ignores it.
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 24) {
       await safeAnswer(env, cq.id, "⚠️ Invalid value", true);
       return;
     }
     settings.scheduleIntervalHours = n;
     auditAction = "settings.scheduleIntervalHours";
     auditDetail = String(n);
-    reRender = "interval";
+    reRender = "menu";
   } else {
     await safeAnswer(env, cq.id, "⚠️ Unknown schedule action", true);
     return;
@@ -587,14 +604,18 @@ async function handleSchedUpdate(
 
   const cfg = resolveScheduleConfig(settings);
   if (reRender === "menu") {
+    // FIX SC-8: show today's slot preview in the schedule menu.
+    const { computeDaySlotsPreview } = await import("../processing/scheduler");
+    const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
+    const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
     const text =
       `📅 <b>Schedule</b>\n\n` +
       `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
-      `📊 Messages per day: <b>${cfg.perDay}</b>\n` +
-      `⏱ Interval: <b>${cfg.intervalHours}h</b>\n\n` +
-      `<i>When ON, every admin post is stored in the queue and published ` +
-      `${cfg.intervalHours === 24 ? "24h" : cfg.intervalHours + "h"} after receipt ` +
-      `(up to ${cfg.perDay} per 24h cycle).</i>`;
+      `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
+      `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
+      `<b>Today's slots (Tehran):</b>\n${slotStr}\n\n` +
+      `<i>Posts are randomly distributed across available slots. ` +
+      `When all of today's slots are taken, the post rolls to tomorrow.</i>`;
     await editText(env, cq, text, scheduleSettingsKeyboard(settings));
   } else if (reRender === "perday") {
     await editText(
@@ -603,13 +624,25 @@ async function handleSchedUpdate(
       "📊 <b>Messages per day</b>\nSelect a value:",
       scheduleMessagesPerDayKeyboard(cfg.perDay),
     );
-  } else {
+  } else if (reRender === "starthour") {
     await editText(
       env,
       cq,
-      "⏱ <b>Interval (hours)</b>\nSelect a value:",
-      scheduleIntervalKeyboard(cfg.intervalHours),
+      "🕐 <b>Start Hour (Tehran)</b>\nSelect:",
+      scheduleStartHourKeyboard(cfg.startHour),
     );
+  } else {
+    // interval backward compat — just re-render menu
+    const { computeDaySlotsPreview } = await import("../processing/scheduler");
+    const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
+    const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
+    const text =
+      `📅 <b>Schedule</b>\n\n` +
+      `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
+      `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
+      `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
+      `<b>Today's slots (Tehran):</b>\n${slotStr}`;
+    await editText(env, cq, text, scheduleSettingsKeyboard(settings));
   }
 }
 
@@ -624,7 +657,7 @@ async function handlePick(
   role: Role,
 ): Promise<void> {
   // Schedule pickers use the `schedule` permission, not `change_settings`.
-  if (data === "pick:sched:perday" || data === "pick:sched:interval") {
+  if (data === "pick:sched:perday" || data === "pick:sched:starthour" || data === "pick:sched:interval") {
     if (!can(role, "schedule")) {
       await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
       return;
@@ -637,9 +670,22 @@ async function handlePick(
     if (data === "pick:sched:perday") {
       keyboard = scheduleMessagesPerDayKeyboard(cfg.perDay);
       text = "📊 <b>Messages per day</b>\nSelect a value:";
+    } else if (data === "pick:sched:starthour") {
+      keyboard = scheduleStartHourKeyboard(cfg.startHour);
+      text = "🕐 <b>Start Hour (Tehran)</b>\nSelect:";
     } else {
-      keyboard = scheduleIntervalKeyboard(cfg.intervalHours);
-      text = "⏱ <b>Interval (hours)</b>\nSelect a value:";
+      // pick:sched:interval — backward compat; old keyboards may still send this.
+      // Re-render the top-level menu since the interval picker was removed.
+      const { computeDaySlotsPreview } = await import("../processing/scheduler");
+      const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
+      const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
+      keyboard = scheduleSettingsKeyboard(settings);
+      text =
+        `📅 <b>Schedule</b>\n\n` +
+        `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
+        `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
+        `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
+        `<b>Today's slots (Tehran):</b>\n${slotStr}`;
     }
     await safeAnswer(env, cq.id, "");
     await editText(env, cq, text, keyboard);

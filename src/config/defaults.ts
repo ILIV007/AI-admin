@@ -25,13 +25,16 @@ export const DEFAULT_SETTINGS: Settings = {
   openrouterModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
   profile: "ilivir3",
   uiLanguage: "en",
-  // Schedule system (task 26):
+  // Schedule system (task 26, redesigned v2.9.5):
   //   OFF by default — admin must opt in via /schedule menu.
-  //   When enabled with these defaults, every post is published 24h after
-  //   receipt, one per 24h cycle (i.e. daily).
+  //   When enabled, posts are assigned to FIXED DAILY TIME SLOTS in Tehran
+  //   timezone. Default: 4 slots/day starting at 09:00 → 09:00, 15:00, 21:00, 03:00.
+  //   The old intervalHours field is kept for backward compat but no longer
+  //   drives scheduling (the new model computes spacing as 24/perDay).
   scheduleEnabled: false,
   scheduleMessagesPerDay: 4,
   scheduleIntervalHours: 6,
+  scheduleStartHour: 9, // 09:00 Tehran time
 };
 
 // ============================================================
@@ -164,10 +167,12 @@ export const AI_BUDGET = {
  * `set:sched:perday:{n}` / `set:sched:interval:{n}` handlers validate
  * against this list).
  *
- * 24h / 24h combinations: 1 post per day, 24h apart (the default).
- * 24h / 1h combinations: 24 posts per day, 1h apart (one per hour).
+ * SCHEDULE_PER_DAY_OPTIONS is capped at 8 (the scheduler divides the day
+ * into N equal slots; more than 8 would produce slots < 3h apart which is
+ * too frequent for a curated channel). Old stored values of 12/24 are
+ * clamped to 8 by the scheduler's Math.min(8, ...) guard.
  */
-export const SCHEDULE_PER_DAY_OPTIONS: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 24];
+export const SCHEDULE_PER_DAY_OPTIONS: readonly number[] = [1, 2, 3, 4, 6, 8];
 export const SCHEDULE_INTERVAL_OPTIONS: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 24];
 
 /** 24-hour window in milliseconds — one scheduling "cycle". */

@@ -47,7 +47,6 @@ import {
   ALL_MODELS,
   GEMINI_MODELS,
   OPENROUTER_MODELS,
-  SCHEDULE_INTERVAL_OPTIONS,
   SCHEDULE_PER_DAY_OPTIONS,
   type ModelEntry,
 } from "../config/defaults";
@@ -77,7 +76,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.9.3";
+const VERSION = "v2.9.6";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -583,28 +582,35 @@ export async function handleSchedule(
   }
 
   const { scheduleSettingsKeyboard } = await import("./keyboards");
+  const startHour =
+    Number.isFinite(settings.scheduleStartHour) &&
+    settings.scheduleStartHour! >= 0 &&
+    settings.scheduleStartHour! <= 23
+      ? settings.scheduleStartHour!
+      : 9;
   const cfg = {
     enabled: settings.scheduleEnabled === true,
     perDay:
       Number.isFinite(settings.scheduleMessagesPerDay) &&
       SCHEDULE_PER_DAY_OPTIONS.includes(settings.scheduleMessagesPerDay as number)
         ? (settings.scheduleMessagesPerDay as number)
-        : 1,
-    intervalHours:
-      Number.isFinite(settings.scheduleIntervalHours) &&
-      SCHEDULE_INTERVAL_OPTIONS.includes(settings.scheduleIntervalHours as number)
-        ? (settings.scheduleIntervalHours as number)
-        : 24,
+        : 4,
+    startHour,
   };
+
+  // Show today's slot preview (FIX SC-8).
+  const { computeDaySlotsPreview } = await import("../processing/scheduler");
+  const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
+  const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
 
   const text =
     `📅 <b>Schedule</b>\n\n` +
     `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
-    `📊 Messages per day: <b>${cfg.perDay}</b>\n` +
-    `⏱ Interval: <b>${cfg.intervalHours}h</b>\n\n` +
-    `<i>When ON, every admin post is stored in the queue and published ` +
-    `${cfg.intervalHours === 24 ? "24h" : cfg.intervalHours + "h"} after receipt ` +
-    `(up to ${cfg.perDay} per 24h cycle). The cron publishes due posts every minute.</i>`;
+    `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
+    `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
+    `<b>Today's slots (Tehran):</b>\n${slotStr}\n\n` +
+    `<i>Posts are assigned to the next available slot (randomly distributed). ` +
+    `The cron publishes due posts every 30 minutes.</i>`;
 
   await safeSend(env, message.chat.id, text, scheduleSettingsKeyboard(settings));
 }
@@ -1182,12 +1188,18 @@ export async function handleResetAll(
     results.push("❌ Media groups: " + String(e));
   }
   try {
-    // 8. Clear all KV cache keys
-    const list = await env.AI_ADMIN_KV.list();
-    for (const key of list.keys) {
-      await env.AI_ADMIN_KV.delete(key.name);
-    }
-    results.push("✅ KV cache: cleared");
+    // 8. Clear all KV cache keys (FIX-2: paginate — KV.list returns max 1000
+    //    keys per call; without pagination, namespaces with >1000 keys would
+    //    leave keys behind. Also parallelize deletes for speed.)
+    let cursor: string | undefined;
+    let deletedCount = 0;
+    do {
+      const list = await env.AI_ADMIN_KV.list({ cursor, limit: 1000 });
+      await Promise.all(list.keys.map((k) => env.AI_ADMIN_KV.delete(k.name)));
+      deletedCount += list.keys.length;
+      cursor = list.list_complete ? undefined : list.cursor;
+    } while (cursor);
+    results.push(`✅ KV cache: cleared (${deletedCount} keys)`);
   } catch (e) {
     results.push("❌ KV cache: " + String(e));
   }
@@ -1462,15 +1474,17 @@ export async function handleQueue(
 
   try {
     // Run all count queries in parallel for speed.
+    // History records (payload contains "is_history":true) are filtered out
+    // so they don't inflate the real approval/scheduled-post counts.
     const [statusCounts, typeCounts, dueNowRows, recentPending, oldestFailed] =
       await Promise.all([
         execAll<JobStatusCount>(
           env.DB,
-          "SELECT status, COUNT(*) as c FROM jobs GROUP BY status",
+          "SELECT status, COUNT(*) as c FROM jobs WHERE payload NOT LIKE '%\"is_history\":true%' GROUP BY status",
         ),
         execAll<JobTypeCount>(
           env.DB,
-          "SELECT type, COUNT(*) as c FROM jobs GROUP BY type",
+          "SELECT type, COUNT(*) as c FROM jobs WHERE payload NOT LIKE '%\"is_history\":true%' GROUP BY type",
         ),
         execAll<{ c: number }>(
           env.DB,
@@ -2178,137 +2192,6 @@ export async function dispatchCommand(
       await safeSend(env, message.chat.id, "⚠️ Unknown command. See /help.");
       return true;
   }
-}
-
-// ============================================================
-// Schedule parser
-// ============================================================
-
-/**
- * Parse a schedule argument in Asia/Tehran timezone.
- *
- * Supported formats:
- *   "in 30m"     → 30 minutes from now
- *   "in 2h"      → 2 hours from now
- *   "in 1d"      → 1 day from now
- *   "at 15:30"   → today at 15:30 Tehran; if past, tomorrow same time
- *   "at 3:30pm"  → today at 15:30
- *   "tomorrow 09:00" → tomorrow at 09:00 Tehran
- *   "tomorrow at 09:00" → same
- *
- * @returns epoch ms, or null on parse failure.
- */
-export function parseScheduleArg(args: string): number | null {
-  const trimmed = args.trim().toLowerCase();
-  if (!trimmed) return null;
-
-  // --- "in Nu" ---
-  const inMatch = trimmed.match(
-    /^in\s+(\d+)\s*(m|min|minute|minutes|h|hr|hour|hours|d|day|days|w|week|weeks)$/,
-  );
-  if (inMatch) {
-    const n = parseInt(inMatch[1], 10);
-    const unit = inMatch[2];
-    let ms = 0;
-    if (unit.startsWith("m")) ms = n * 60_000;
-    else if (unit.startsWith("h")) ms = n * 3_600_000;
-    else if (unit.startsWith("d")) ms = n * 86_400_000;
-    else if (unit.startsWith("w")) ms = n * 604_800_000;
-    return Date.now() + ms;
-  }
-
-  // --- "at HH:MM" or "at HH:MM am/pm" ---
-  const atMatch = trimmed.match(
-    /^at\s+(\d{1,2}):(\d{2})\s*(am|pm)?$/,
-  );
-  if (atMatch) {
-    let h = parseInt(atMatch[1], 10);
-    const m = parseInt(atMatch[2], 10);
-    const ap = atMatch[3];
-    if (ap === "pm" && h < 12) h += 12;
-    if (ap === "am" && h === 12) h = 0;
-    if (h > 23 || m > 59) return null;
-    return tehranTodayOrTomorrow(h, m);
-  }
-
-  // --- "tomorrow [at] HH:MM" ---
-  const tomMatch = trimmed.match(
-    /^tomorrow(?:\s+at)?\s+(\d{1,2}):(\d{2})$/,
-  );
-  if (tomMatch) {
-    const h = parseInt(tomMatch[1], 10);
-    const m = parseInt(tomMatch[2], 10);
-    if (h > 23 || m > 59) return null;
-    return tehranTomorrow(h, m);
-  }
-
-  return null;
-}
-
-/**
- * Compute the UTC epoch ms for "today at HH:MM" in Tehran wall-clock. If that
- * time has already passed today, return tomorrow at the same time.
- */
-function tehranTodayOrTomorrow(hour: number, minute: number): number {
-  const today = tehranTodayAt(hour, minute);
-  if (today > Date.now()) return today;
-  return today + 86_400_000;
-}
-
-/** Compute the UTC epoch ms for "tomorrow at HH:MM" in Tehran wall-clock. */
-function tehranTomorrow(hour: number, minute: number): number {
-  return tehranTodayAt(hour, minute) + 86_400_000;
-}
-
-/**
- * Compute the UTC epoch ms for "today at HH:MM" in Tehran, where "today" is
- * derived from the current Tehran wall-clock. Uses Intl.DateTimeFormat to
- * discover Tehran's wall clock WITHOUT hardcoding the +03:30 offset (so the
- * code still works if Iran ever re-introduces DST).
- */
-function tehranTodayAt(hour: number, minute: number): number {
-  const now = new Date();
-  // Format current time in Tehran to grab Y/M/D/H/M.
-  const fmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Tehran",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(now);
-  const map: Record<string, number> = {};
-  for (const p of parts) {
-    if (p.type !== "literal") {
-      const v = parseInt(p.value, 10);
-      if (!Number.isNaN(v)) map[p.type] = p.value === "24" ? 0 : v;
-    }
-  }
-  const y = map.year;
-  const mo = map.month - 1;
-  const d = map.day;
-
-  // Construct a UTC date with Tehran's wall-clock components for the target
-  // time. This is NOT the target instant yet — it's the target wall-clock
-  // interpreted as UTC. We then apply Tehran's current UTC offset to correct.
-  const wallAsUtc = Date.UTC(y, mo, d, hour, minute, 0, 0);
-
-  // Compute Tehran's offset at the current instant by formatting `now` in
-  // Tehran and comparing the wall-clock reading to the UTC value.
-  const tehranWallNow = Date.UTC(
-    map.year,
-    map.month - 1,
-    map.day,
-    map.hour,
-    map.minute,
-    0,
-    0,
-  );
-  const offsetMs = tehranWallNow - now.getTime();
-
-  return wallAsUtc - offsetMs;
 }
 
 // ============================================================

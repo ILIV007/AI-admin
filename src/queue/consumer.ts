@@ -38,12 +38,15 @@ import { log } from "../observability/logger";
 import { extractContent } from "../telegram/updates";
 import { getSettings } from "../storage/repositories/settings";
 import {
+  bumpMultiple,
   recordAiCall,
   recordApproval,
   recordFailed,
   recordPublished,
   recordReceived,
+  recordScheduled,
 } from "../storage/repositories/stats";
+import type { Stats } from "../types";
 import * as mediaGroupsRepo from "../storage/repositories/media-groups";
 import {
   claimForPublish,
@@ -52,7 +55,6 @@ import {
   incrementAttempts,
   updateJobStatus,
 } from "../storage/repositories/jobs";
-import { recordScheduled } from "../storage/repositories/stats";
 import { sendMessage, sendChatAction, editMessageText, sendPhoto, sendVideo, sendDocument, sendAnimation } from "../telegram/client";
 import { isAuthorized } from "../storage/repositories/admins";
 import { enqueueMediaGroupFinalize } from "./producer";
@@ -231,6 +233,7 @@ async function handleProcessUpdate(
       fromId: userId,
       text: content.text,
       media: content.media,
+      chatType: content.chatType,
       receivedAt: Date.now(),
       finalized: 0,
     };
@@ -395,27 +398,26 @@ async function handleProcessUpdate(
   }
   const elapsedMs = Date.now() - t0;
 
-  // Record stats based on outcome. Fire-and-forget via ctx.waitUntil.
+  // Record stats based on outcome. FIX-4: use a SINGLE bumpMultiple call
+  // (1 D1 UPDATE per row) instead of 3-4 separate recordX calls (12-16 writes).
+  // Fire-and-forget via ctx.waitUntil.
+  const statsFields: Partial<Record<keyof Stats, number>> = { totalReceived: 1 };
   if (result.aiUsed) {
-    ctx.waitUntil(safe(recordAiCall(env, userId)));
+    statsFields.aiCalls = 1;
   }
-  if (result.action === "published") {
-    ctx.waitUntil(safe(recordPublished(env, userId)));
+  if (result.action === "published" || result.action === "edited") {
+    statsFields.totalPublished = 1;
+    if (result.aiUsed) statsFields.totalRewritten = 1;
     // Create a history record so /Admi-bug history tab can show it
     ctx.waitUntil(safe(createHistoryRecord(env, userId, content, result, elapsedMs)));
-  } else if (result.action === "edited") {
-    // P0-CE1: channel edit succeeded — count as a published stat (the post
-    // was updated in place, no new message in the channel).
-    ctx.waitUntil(safe(recordPublished(env, userId)));
   } else if (result.action === "preview") {
-    ctx.waitUntil(safe(recordApproval(env, userId)));
+    statsFields.totalApprovals = 1;
   } else if (result.action === "scheduled") {
-    // Scheduled posts are counted as "scheduled" now; they'll be counted as
-    // "published" later when the cron publishes them.
-    ctx.waitUntil(safe(recordScheduled(env, userId)));
+    statsFields.totalScheduled = 1;
   } else if (result.action === "failed") {
-    ctx.waitUntil(safe(recordFailed(env, userId)));
+    statsFields.totalFailed = 1;
   }
+  ctx.waitUntil(safe(bumpMultiple(env, userId, statsFields)));
 
   // ── Send post copy to admin + edit loading → report ─────────────
   // ALWAYS send to admin if they're authorized (regardless of chatType)
@@ -447,6 +449,10 @@ async function createHistoryRecord(
       aiModel: result.aiModel || null,
       elapsedMs,
       originalTextPreview: content.text.slice(0, 200),
+      // Marker so /queue and stats queries can filter out history records
+      // from real approval/scheduled-post job counts. Without this, every
+      // published post inflates the "approval" job count in /queue.
+      is_history: true,
     });
     await createJob(env, {
       type: "approval", // reuse existing type (CHECK constraint allows this)
@@ -885,7 +891,10 @@ async function handleFinalizeMediaGroup(
     fromId: firstItem.fromId,
     fromName: "",
     chatId: firstItem.chatId,
-    chatType: "channel",
+    // Use the stored chatType from the first item instead of hardcoding
+    // "channel". Falls back to "channel" for legacy DB rows that don't have
+    // the chat_type column (chatType will be undefined).
+    chatType: firstItem.chatType ?? "channel",
     messageId: firstItem.messageId,
     text: combinedText,
     entities: [],
@@ -1075,9 +1084,22 @@ async function handlePublishScheduled(
     log("warn", "queue.consumer.handlePublishScheduled", "job not found", { jobId });
     return;
   }
-  // Atomically claim the job (pending → publishing). This prevents the
-  // double-publish race where the cron enqueues the same due job twice and
-  // two handlers both see status=pending. Only the first caller gets true.
+
+  // Stale 'publishing' recovery: if a previous attempt crashed after claiming
+  // the job (pending → publishing) but before completing the publish, the job
+  // is stuck in 'publishing'. Reset it to 'pending' and re-throw so the queue
+  // retries from a clean state. (Only applies to databases with the
+  // 'publishing' status; legacy DBs use 'published' as the claim state.)
+  if (job.status === "publishing") {
+    log("warn", "queue.consumer.handlePublishScheduled", "resetting stale 'publishing' job to pending", { jobId });
+    await updateJobStatus(env, jobId, "pending");
+    throw new Error("stale publishing state; reset to pending for retry");
+  }
+
+  // Atomically claim the job (pending → publishing on new DBs, or
+  // pending → published on legacy DBs). This prevents the double-publish race
+  // where the cron enqueues the same due job twice and two handlers both see
+  // status=pending. Only the first caller gets true.
   const claimed = await claimForPublish(env, jobId);
   if (!claimed) {
     log("info", "queue.consumer.handlePublishScheduled", `job already claimed/published; skipping`, { jobId, status: job.status });
@@ -1193,6 +1215,18 @@ async function handlePublishScheduled(
         error: msg,
         attempts,
       });
+      // Reset status to 'pending' so the next retry can re-claim the job.
+      // Without this, the job would be stuck in 'publishing' (new DB) or
+      // 'published' (legacy DB) and the retry's claimForPublish would
+      // find no matching 'pending' row — the post would be silently lost.
+      try {
+        await updateJobStatus(env, jobId, "pending", { errorMessage: msg });
+      } catch (e) {
+        log("error", "queue.consumer.handlePublishScheduled", "failed to reset job to pending", {
+          jobId,
+          error: String(e),
+        });
+      }
       // Re-throw so the outer handler calls message.retry().
       throw err;
     }

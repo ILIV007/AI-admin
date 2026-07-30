@@ -40,6 +40,7 @@ interface MediaGroupRow {
   file_id: string | null;
   file_name: string | null;
   mime_type: string | null;
+  chat_type: string | null;
   received_at: number;
   finalized: number;
 }
@@ -61,6 +62,9 @@ function rowToItem(r: MediaGroupRow): MediaGroupItem {
     fromId: r.from_id,
     text: r.text,
     media,
+    // chat_type is null on legacy DBs that predate the column — fall back
+    // to undefined so the caller can apply its own default.
+    chatType: r.chat_type ?? undefined,
     receivedAt: r.received_at,
     finalized: r.finalized,
   };
@@ -73,29 +77,56 @@ function rowToItem(r: MediaGroupRow): MediaGroupItem {
 /**
  * Add an item to a media group. `INSERT OR IGNORE` makes it safe against
  * Telegram retries (which re-send the same message_id within the group).
+ *
+ * Stores `chat_type` on databases that have the column (new schema). On
+ * legacy databases without the column, the insert falls back to omitting it.
  */
 export async function addItem(env: Env, item: MediaGroupItem): Promise<void> {
   const mediaType = item.media?.type ?? null;
   const fileId = item.media?.fileId ?? null;
   const fileName = item.media?.fileName ?? null;
   const mimeType = item.media?.mimeType ?? null;
-  await exec(
-    env.DB,
-    `INSERT OR IGNORE INTO media_group_items
-       (media_group_id, message_id, chat_id, from_id, text,
-        media_type, file_id, file_name, mime_type, received_at, finalized)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-    item.mediaGroupId,
-    item.messageId,
-    item.chatId,
-    item.fromId,
-    item.text,
-    mediaType,
-    fileId,
-    fileName,
-    mimeType,
-    item.receivedAt,
-  );
+  const chatType = item.chatType ?? null;
+  // Try with chat_type column first (new schema).
+  try {
+    await exec(
+      env.DB,
+      `INSERT OR IGNORE INTO media_group_items
+         (media_group_id, message_id, chat_id, from_id, text,
+          media_type, file_id, file_name, mime_type, chat_type, received_at, finalized)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      item.mediaGroupId,
+      item.messageId,
+      item.chatId,
+      item.fromId,
+      item.text,
+      mediaType,
+      fileId,
+      fileName,
+      mimeType,
+      chatType,
+      item.receivedAt,
+    );
+  } catch {
+    // Legacy DB without chat_type column — retry without it.
+    await exec(
+      env.DB,
+      `INSERT OR IGNORE INTO media_group_items
+         (media_group_id, message_id, chat_id, from_id, text,
+          media_type, file_id, file_name, mime_type, received_at, finalized)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      item.mediaGroupId,
+      item.messageId,
+      item.chatId,
+      item.fromId,
+      item.text,
+      mediaType,
+      fileId,
+      fileName,
+      mimeType,
+      item.receivedAt,
+    );
+  }
 }
 
 /**

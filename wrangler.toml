@@ -16,9 +16,12 @@ compatibility_flags = ["nodejs_compat"]
 
 # ============================================================
 # THE ONE cron trigger — every 30 minutes (resource optimization).
-# Handles: scheduled-post publishing, approval expiry, model-health
-# refresh, debug/seen-updates pruning, owner/stats bootstrap.
-# 30-min interval = 48 runs/day (well within free tier, 50% fewer than 15-min).
+# Handles: scheduled-post publishing, approval expiry, stale-publishing
+# recovery, model-health refresh (once per day), debug/seen-updates pruning,
+# owner/stats bootstrap, history pruning, DLQ monitoring.
+# 30-min interval = 48 runs/day (well within free tier; user explicitly
+# requested 30-min for optimal resource usage). Scheduled posts at fixed
+# time slots may publish up to 30 min late — acceptable trade-off.
 # ============================================================
 [triggers]
 crons = ["*/30 * * * *"]

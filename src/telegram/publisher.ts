@@ -164,10 +164,15 @@ export async function publishPost(
  * Edit an existing channel post. Uses editMessageText for text-only posts,
  * editMessageCaption when the original post had media (we can't swap the
  * file itself via the Bot API — only the caption).
+ *
+ * The chatId may be a numeric id (e.g. -1001234567890) OR a @username
+ * string. The Telegram API accepts both. This is important because
+ * resolveChannelIdNum returns 0 for @username channels — the caller falls
+ * back to passing env.TARGET_CHANNEL (the @username string) directly.
  */
 export async function editChannelPost(
   env: Env,
-  chatId: number,
+  chatId: number | string,
   messageId: number,
   html: string,
   hasMedia: boolean,

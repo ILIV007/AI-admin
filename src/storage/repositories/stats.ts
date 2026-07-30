@@ -194,6 +194,53 @@ async function bumpBoth(
   ]);
 }
 
+/**
+ * FIX-4: Atomically increment MULTIPLE stats fields in a SINGLE UPDATE per row.
+ *
+ * Replaces the old pattern of 3-4 separate bumpBoth calls (each doing 2
+ * ensureStatsRow + 2 UPDATE = 4 D1 writes → 12-16 writes per publish event).
+ * With bumpMultiple, a typical publish event bumps 3 fields in 2 D1 writes
+ * (1 ensureStatsRow + 1 multi-field UPDATE for global, same for user = 4
+ * writes total, but the ensureStatsRow is skipped if the row exists).
+ *
+ * @param userId  The user whose stats should be bumped (also bumps global).
+ * @param fields  Map of Stats field → increment amount. Non-incrementable
+ *                fields (like lastUpdated) are silently skipped.
+ */
+export async function bumpMultiple(
+  env: Env,
+  userId: number,
+  fields: Partial<Record<keyof Stats, number>>,
+): Promise<void> {
+  const sets: string[] = [];
+  const values: number[] = [];
+  for (const [field, by] of Object.entries(fields)) {
+    if (!isIncrementable(field as keyof Stats)) continue;
+    const col = FIELD_TO_COLUMN[field as keyof Stats];
+    sets.push(`${col} = ${col} + ?`);
+    values.push(by ?? 1);
+  }
+  if (sets.length === 0) return;
+  sets.push("last_updated = ?");
+  values.push(nowMs());
+
+  const sql = `UPDATE stats SET ${sets.join(", ")} WHERE key = ?`;
+
+  // Global row + user row in parallel. ensureStatsRow first so the UPDATE
+  // matches a row (INSERT OR IGNORE is cheap if the row already exists).
+  const uKey = userKey(userId);
+  await Promise.all([
+    (async () => {
+      await ensureStatsRow(env, GLOBAL_KEY);
+      await exec(env.DB, sql, ...values, GLOBAL_KEY);
+    })(),
+    (async () => {
+      await ensureStatsRow(env, uKey);
+      await exec(env.DB, sql, ...values, uKey);
+    })(),
+  ]);
+}
+
 export async function recordReceived(env: Env, userId: number): Promise<void> {
   await bumpBoth(env, userId, "totalReceived");
 }

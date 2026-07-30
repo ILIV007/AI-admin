@@ -73,8 +73,10 @@ const CHUNK_MAX_VISIBLE = 4000;
 // Telegram caption hard cap is 1024 visible chars. We chunk at 1000 for headroom.
 const CAPTION_MAX_VISIBLE = 1000;
 
-// 48-hour edit window for Telegram message edits.
-const TELEGRAM_EDIT_WINDOW_MS = 48 * 60 * 60 * 1000;
+// NOTE: There is NO 48-hour edit window for channel posts. Telegram bots can
+// edit their OWN channel messages at ANY time. The 48h limit only applies to
+// group/supergroup/private messages. We removed the TELEGRAM_EDIT_WINDOW_MS
+// constant and the age check in the channel-edit branch (FIX CE-4).
 
 // Max pending scheduled posts per user (prevents unbounded D1 growth).
 const MAX_PENDING_SCHEDULED_PER_USER = 50;
@@ -668,8 +670,8 @@ export async function runPipeline(
         computeNextScheduledTime: (
           now: number,
           pendingScheduledFors: number[],
-          messagesPerDay: number,
-          intervalHours: number,
+          slotsPerDay: number,
+          startHour?: number,
         ) => number;
       } = await import("./scheduler");
 
@@ -716,18 +718,23 @@ export async function runPipeline(
         Number.isFinite(settings.scheduleMessagesPerDay) &&
         settings.scheduleMessagesPerDay! >= 1
           ? settings.scheduleMessagesPerDay!
-          : 1;
-      const intervalHours =
-        Number.isFinite(settings.scheduleIntervalHours) &&
-        settings.scheduleIntervalHours! >= 1
-          ? settings.scheduleIntervalHours!
-          : 24;
+          : 4;
+      // FIX SC-3: use scheduleStartHour (Tehran) instead of intervalHours.
+      // The new scheduler divides the day into `perDay` equal slots starting
+      // at startHour. intervalHours is kept for backward compat but no
+      // longer drives scheduling.
+      const startHour =
+        Number.isFinite(settings.scheduleStartHour) &&
+        settings.scheduleStartHour! >= 0 &&
+        settings.scheduleStartHour! <= 23
+          ? settings.scheduleStartHour!
+          : 9;
 
       const scheduledFor = schedulerMod.computeNextScheduledTime(
         Date.now(),
         pendingFors,
         perDay,
-        intervalHours,
+        startHour,
       );
 
       // P1-SS3 fix: store parts WITHOUT footer in the payload. The cron
@@ -762,7 +769,7 @@ export async function runPipeline(
         jobId,
         scheduledFor,
         perDay,
-        intervalHours,
+        startHour,
         pendingCount: pendingFors.length,
       });
 
@@ -827,9 +834,9 @@ export async function runPipeline(
   // permission, this is an EDIT of a previously-published source message,
   // AND we have a mapping to the channel message_id → edit in place.
   //
-  // Telegram limits edits to 48h after the original post. We check
-  // editDate (or fall back to "now") and skip the edit branch if the
-  // mapping is older than 48h, falling through to a new publish.
+  // NOTE: Telegram bots can edit their OWN channel posts at ANY time — there
+  // is NO 48h limit for channel messages. The 48h limit only applies to
+  // group/supergroup/private messages. So we removed the age check.
   if (
     settings.channelEditing &&
     isAdmin &&
@@ -844,46 +851,48 @@ export async function runPipeline(
           content.messageId,
         );
         if (mapping) {
-          // 48h edit window check.
-          const editWindowMs = TELEGRAM_EDIT_WINDOW_MS;
-          const ageMs = Date.now() - mapping.publishedAt;
-          if (ageMs > editWindowMs) {
-            log("info", scope, "channel edit skipped: original post >48h old", {
-              ageHours: Math.round(ageMs / (60 * 60 * 1000)),
+          if (editChannelPost) {
+            // FIX CE-5: For multi-part posts we can only edit the FIRST
+            // channel message (we only stored its message_id). Use the FULL
+            // html truncated to 4096 visible chars so the edit contains as
+            // much content as possible rather than just parts[0].
+            const { truncateVisible } = await import("../telegram/entities");
+            const editHtml = truncateVisible(html, 4096);
+            // FIX CE-2: mapping.publishedChatId is now a STRING (TEXT column)
+            // so it can be "@ILIVIR3" or "-100xxx". editChannelPost accepts
+            // number | string. No fallback to env.TARGET_CHANNEL needed —
+            // the stored value is already the correct chat identifier.
+            const editChatId = mapping.publishedChatId || env.TARGET_CHANNEL;
+            log("info", scope, "editing channel post in place", {
+              channelMsgId: mapping.publishedMessageId,
+              hasMedia: !!content.media,
+              chatIdIsString: typeof editChatId === "string",
+              htmlLen: editHtml.length,
             });
-            // Fall through to new publish.
-          } else {
-            if (editChannelPost) {
-              const editHtml = parts[0] || html;
-              log("info", scope, "editing channel post in place", {
-                channelMsgId: mapping.publishedMessageId,
-                hasMedia: !!content.media,
-              });
-              const editResult = await editChannelPost(
-                env,
-                mapping.publishedChatId,
-                mapping.publishedMessageId,
-                editHtml,
-                !!content.media,
-              );
-              if (editResult?.ok) {
-                return {
-                  ok: true,
-                  action: "edited",
-                  html,
-                  parts,
-                  media: content.media,
-                  classification,
-                  aiUsed,
-                  aiProvider,
-                  aiModel,
-                };
-              }
-              log("warn", scope, "channel edit failed; falling back to new publish", {
-                error: editResult?.error,
-              });
-              // Fall through to new publish so the edited content isn't lost.
+            const editResult = await editChannelPost(
+              env,
+              editChatId,
+              mapping.publishedMessageId,
+              editHtml,
+              !!content.media,
+            );
+            if (editResult?.ok) {
+              return {
+                ok: true,
+                action: "edited",
+                html,
+                parts,
+                media: content.media,
+                classification,
+                aiUsed,
+                aiProvider,
+                aiModel,
+              };
             }
+            log("warn", scope, "channel edit failed; falling back to new publish", {
+              error: editResult?.error,
+            });
+            // Fall through to new publish so the edited content isn't lost.
           }
         }
       }
@@ -912,13 +921,14 @@ export async function runPipeline(
 
     // P1-CE2 fix: record the source→channel message mapping so that a later
     // edit of the source message can edit the channel post in place.
+    // FIX CE-6: if this fails, the admin must be warned (channel editing
+    // will NOT work for this post). We still don't block the publish.
     if (result.messageIds.length > 0 && content.fromId != null) {
       try {
-        // Resolve the target channel to a numeric chat id for storage.
-        // For @username channels, parseChannelIdNum returns 0; store the
-        // first published message_id with the resolved channel id (0 is
-        // acceptable — the lookup is by source message, not channel).
-        const targetChatId = await resolveChannelIdNum(env);
+        // FIX CE-2: store the channel identifier as a STRING. For @username
+        // channels this is "@ILIVIR3"; for numeric channels it's
+        // "-1001234567890". Both are valid chat_id values for the edit API.
+        const targetChatId = resolveChannelId(env);
         await recordPublishedPost(
           env,
           content.chatId,
@@ -927,9 +937,25 @@ export async function runPipeline(
           result.messageIds[0],
         );
       } catch (e) {
-        log("warn", scope, "recordPublishedPost failed (non-fatal)", {
+        log("error", scope, "recordPublishedPost FAILED — channel edit will NOT work for this post", {
           error: String(e),
         });
+        // Notify the admin so they know channel editing won't work.
+        // Best-effort; never blocks the publish.
+        try {
+          const { notifyAdmin } = await import("../observability/notify");
+          await notifyAdmin(
+            env,
+            "⚠️ <b>Channel Edit Warning</b>\n\n" +
+            "Failed to save the post mapping (source → channel message). " +
+            "Channel editing will NOT work for this post — if you edit your " +
+            "source message, a new channel post will be created instead of " +
+            "editing the existing one.\n\n" +
+            "Error: <code>" + escapeHtmlSimple(String(e)) + "</code>\n\n" +
+            "Fix: run <code>/Admi-bug</code> → Init Schema to ensure the " +
+            "<code>published_posts</code> table exists.",
+          );
+        } catch { /* ignore notification failure */ }
       }
     }
 
@@ -962,13 +988,23 @@ export async function runPipeline(
 }
 
 /**
- * Resolve env.TARGET_CHANNEL to a numeric chat id for storage in
- * published_posts. For @username channels, returns 0 (the mapping lookup
- * is by source message, not channel, so 0 is acceptable as a sentinel).
- * For numeric channel ids (e.g. "-1001234567890"), returns the number.
+ * Resolve env.TARGET_CHANNEL to the channel identifier string for storage in
+ * published_posts. Returns the value as-is: either a @username ("@ILIVIR3")
+ * or a numeric id ("-1001234567890"). Both are valid chat_id values for the
+ * Telegram Bot API's editMessageText / editMessageCaption methods.
+ *
+ * FIX CE-2: previously this returned a NUMBER (0 for @username), which made
+ * editChannelPost send chat_id: 0 → 400 error. Now we store the string so
+ * the edit path can pass it directly.
  */
-async function resolveChannelIdNum(env: Env): Promise<number> {
-  const t = env.TARGET_CHANNEL?.trim() ?? "";
-  if (/^-?\d+$/.test(t)) return Number(t);
-  return 0;
+function resolveChannelId(env: Env): string {
+  return env.TARGET_CHANNEL?.trim() ?? "";
+}
+
+/** Minimal HTML escaper for inline error messages in notifyAdmin. */
+function escapeHtmlSimple(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }

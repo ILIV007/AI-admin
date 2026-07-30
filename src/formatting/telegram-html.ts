@@ -321,8 +321,12 @@ export function blocksToTelegramHtml(
     }
   }
 
-  // Footer — ALWAYS escaped, always with \n spacing before it
-  parts.push(`<blockquote>${escapeHtml(footer)}</blockquote>`);
+  // Footer — ALWAYS escaped, always with \n spacing before it.
+  // Guard against empty/whitespace-only footer to avoid emitting an empty
+  // <blockquote></blockquote> which Telegram renders as an ugly empty quote.
+  if (footer && footer.trim().length > 0) {
+    parts.push(`<blockquote>${escapeHtml(footer)}</blockquote>`);
+  }
 
   // Join parts:
   // - Colon/question → next quote: single \n (connected, no gap)

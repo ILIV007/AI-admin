@@ -290,13 +290,13 @@ export function disabledKeyboard(text: string): string {
 /**
  * Resolve the effective schedule config from a Settings object, applying
  * DEFAULT_SETTINGS-style fallbacks for older rows that predate the schedule
- * fields. We can't import DEFAULT_SETTINGS here without creating a circular
- * dep risk in tests, so we inline the same defaults.
+ * fields (or predate scheduleStartHour which was added in v2.9.5).
  */
 function resolveScheduleConfig(settings: Settings): {
   enabled: boolean;
   perDay: number;
   intervalHours: number;
+  startHour: number;
 } {
   return {
     enabled: settings.scheduleEnabled === true,
@@ -304,18 +304,25 @@ function resolveScheduleConfig(settings: Settings): {
       Number.isFinite(settings.scheduleMessagesPerDay) &&
       SCHEDULE_PER_DAY_OPTIONS.includes(settings.scheduleMessagesPerDay as number)
         ? (settings.scheduleMessagesPerDay as number)
-        : 1,
+        : 4,
+    // intervalHours is kept for backward compat but no longer drives scheduling.
     intervalHours:
       Number.isFinite(settings.scheduleIntervalHours) &&
       SCHEDULE_INTERVAL_OPTIONS.includes(settings.scheduleIntervalHours as number)
         ? (settings.scheduleIntervalHours as number)
-        : 24,
+        : 6,
+    startHour:
+      Number.isFinite(settings.scheduleStartHour) &&
+      settings.scheduleStartHour! >= 0 &&
+      settings.scheduleStartHour! <= 23
+        ? settings.scheduleStartHour!
+        : 9,
   };
 }
 
 /**
  * Top-level schedule menu. Shows current config + a toggle + pickers for
- * perDay and interval. Reached from the main menu's "📅 Schedule" button
+ * perDay and startHour. Reached from the main menu's "📅 Schedule" button
  * (`set:schedule` callback) and from the `/schedule` command.
  */
 export function scheduleSettingsKeyboard(settings: Settings): string {
@@ -334,12 +341,12 @@ export function scheduleSettingsKeyboard(settings: Settings): string {
     ],
     [
       {
-        text: `📊 Messages/day: ${cfg.perDay}`,
+        text: `📊 Posts/day: ${cfg.perDay}`,
         callback_data: "pick:sched:perday",
       },
       {
-        text: `⏱ Interval: ${cfg.intervalHours}h`,
-        callback_data: "pick:sched:interval",
+        text: `🕐 Start: ${String(cfg.startHour).padStart(2, "0")}:00`,
+        callback_data: "pick:sched:starthour",
       },
     ],
     [{ text: "🔙 Back", callback_data: "back:menu" }],
@@ -349,16 +356,16 @@ export function scheduleSettingsKeyboard(settings: Settings): string {
 }
 
 /**
- * Picker for messagesPerDay. Renders the 8 allowed values; the currently
- * selected one is marked with ✅. Layout: 4 buttons per row × 2 rows.
+ * Picker for messagesPerDay. Renders the 6 allowed values; the currently
+ * selected one is marked with ✅. Layout: 3 buttons per row × 2 rows.
  */
 export function scheduleMessagesPerDayKeyboard(current: number): string {
   const rows: { text: string; callback_data: string }[][] = [
-    SCHEDULE_PER_DAY_OPTIONS.slice(0, 4).map((n) => ({
+    SCHEDULE_PER_DAY_OPTIONS.slice(0, 3).map((n) => ({
       text: `${n}${mark(current === n)}`,
       callback_data: `set:sched:perday:${n}`,
     })),
-    SCHEDULE_PER_DAY_OPTIONS.slice(4, 8).map((n) => ({
+    SCHEDULE_PER_DAY_OPTIONS.slice(3, 6).map((n) => ({
       text: `${n}${mark(current === n)}`,
       callback_data: `set:sched:perday:${n}`,
     })),
@@ -368,20 +375,20 @@ export function scheduleMessagesPerDayKeyboard(current: number): string {
 }
 
 /**
- * Picker for intervalHours. Renders the 8 allowed values; the currently
- * selected one is marked with ✅. Layout: 4 buttons per row × 2 rows.
+ * Picker for scheduleStartHour (Tehran). Renders common start hours; the
+ * currently selected one is marked with ✅. Layout: 4 buttons per row.
  */
-export function scheduleIntervalKeyboard(current: number): string {
-  const rows: { text: string; callback_data: string }[][] = [
-    SCHEDULE_INTERVAL_OPTIONS.slice(0, 4).map((n) => ({
-      text: `${n}h${mark(current === n)}`,
-      callback_data: `set:sched:interval:${n}`,
-    })),
-    SCHEDULE_INTERVAL_OPTIONS.slice(4, 8).map((n) => ({
-      text: `${n}h${mark(current === n)}`,
-      callback_data: `set:sched:interval:${n}`,
-    })),
-    [{ text: "🔙 Back", callback_data: "set:schedule" }],
-  ];
+export function scheduleStartHourKeyboard(current: number): string {
+  const hours = [6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 22];
+  const rows: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < hours.length; i += 4) {
+    rows.push(
+      hours.slice(i, i + 4).map((h) => ({
+        text: `${String(h).padStart(2, "0")}:00${mark(current === h)}`,
+        callback_data: `set:sched:starthour:${h}`,
+      })),
+    );
+  }
+  rows.push([{ text: "🔙 Back", callback_data: "set:schedule" }]);
   return buildInlineKeyboard(rows);
 }

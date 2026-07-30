@@ -116,9 +116,11 @@ export async function getJob(env: Env, id: string): Promise<JobRecord | null> {
 /**
  * Atomically claim a scheduled-post job for publishing.
  *
- * Uses a conditional UPDATE that goes directly `pending → published` (NOT
- * `pending → publishing`) to avoid CHECK constraint failures on databases
- * that were created before the 'publishing' status was added to the schema.
+ * Uses a conditional UPDATE that goes `pending → publishing` on databases
+ * whose CHECK constraint includes 'publishing' (new schema). On legacy
+ * databases created before 'publishing' was added, the UPDATE will fail with
+ * a CHECK constraint violation — we catch that and fall back to the legacy
+ * `pending → published` transition so old deployments keep working.
  *
  * Returns true if THIS call claimed it (caller may publish), false if
  * another handler already claimed/published it (caller must back off).
@@ -127,18 +129,34 @@ export async function getJob(env: Env, id: string): Promise<JobRecord | null> {
  * one concurrent handler can flip the status. If two handlers race, the
  * second gets 0 rows-changed and backs off.
  *
- * IMPORTANT: the caller MUST publish the post AFTER this returns true,
- * because the job status is already set to 'published'. If the publish
- * fails, the caller should call updateJobStatus(id, "failed") to correct.
+ * IMPORTANT: the caller MUST publish the post AFTER this returns true. If
+ * the publish fails with a retryable error, the caller MUST reset the status
+ * back to 'pending' (via updateJobStatus) so a subsequent retry can re-claim.
+ * If the publish fails permanently, set status to 'failed'.
  */
 export async function claimForPublish(env: Env, id: string): Promise<boolean> {
-  const r = await exec(
-    env.DB,
-    "UPDATE jobs SET status = 'published', updated_at = ? WHERE id = ? AND status = 'pending'",
-    nowMs(),
-    id,
-  );
-  return (r.meta?.changes ?? 0) > 0;
+  // Try the 'publishing' transition first (new schema).
+  try {
+    const r = await exec(
+      env.DB,
+      "UPDATE jobs SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'pending'",
+      nowMs(),
+      id,
+    );
+    if ((r.meta?.changes ?? 0) > 0) return true;
+    // 0 rows changed — either already claimed or doesn't exist.
+    return false;
+  } catch {
+    // Legacy database without 'publishing' in the CHECK constraint.
+    // Fall back to the old pending → published transition.
+    const r = await exec(
+      env.DB,
+      "UPDATE jobs SET status = 'published', updated_at = ? WHERE id = ? AND status = 'pending'",
+      nowMs(),
+      id,
+    );
+    return (r.meta?.changes ?? 0) > 0;
+  }
 }
 
 // ============================================================
@@ -265,6 +283,40 @@ export async function listStaleApprovals(
 }
 
 /**
+ * Stale 'publishing' jobs: status='publishing', updated_at < `before`.
+ *
+ * A job enters 'publishing' when claimed for publish. If the worker crashes
+ * mid-publish (between claimForPublish and the actual Telegram API call), the
+ * job is stuck in 'publishing' forever — the queue retry may have been
+ * exhausted, or the crash happened before the retry could fire.
+ *
+ * The cron picks these up and resets them to 'pending' so they can be
+ * re-claimed on the next tick. On legacy databases that don't have the
+ * 'publishing' status (CHECK constraint without it), this query returns 0
+ * rows — which is correct because legacy DBs use 'published' as the claim
+ * state and those jobs are handled by the 'failed' path instead.
+ */
+export async function listStalePublishing(
+  env: Env,
+  before: number,
+): Promise<JobRecord[]> {
+  try {
+    const rows = await execAll<JobRow>(
+      env.DB,
+      `SELECT * FROM jobs
+        WHERE status = 'publishing'
+          AND updated_at < ?
+        ORDER BY updated_at ASC`,
+      before,
+    );
+    return rows.map(rowToJob);
+  } catch {
+    // Legacy DB without 'publishing' in the schema — return empty.
+    return [];
+  }
+}
+
+/**
  * Recent jobs for a user — used by the dashboard / stats display.
  */
 export async function listRecentJobs(
@@ -317,7 +369,7 @@ export async function listPendingScheduledForUser(
 interface PublishedPostRow {
   source_chat_id: number;
   source_message_id: number;
-  published_chat_id: number;
+  published_chat_id: string; // TEXT — may be numeric id or @username
   published_message_id: number;
   published_at: number;
 }
@@ -325,7 +377,7 @@ interface PublishedPostRow {
 export interface PublishedPost {
   sourceChatId: number;
   sourceMessageId: number;
-  publishedChatId: number;
+  publishedChatId: string; // TEXT — numeric id or @username
   publishedMessageId: number;
   publishedAt: number;
 }
@@ -348,12 +400,16 @@ function rowToPublishedPost(r: PublishedPostRow): PublishedPost {
  *
  * Uses INSERT OR REPLACE so re-publishing the same source message updates
  * the mapping (e.g. after a delete + re-publish).
+ *
+ * `publishedChatId` is a STRING: either a numeric id ("-1001234567890") or
+ * a @username ("@ILIVIR3"). Stored as TEXT in D1 so the edit path can pass
+ * it directly to editChannelPost which accepts number | string.
  */
 export async function recordPublishedPost(
   env: Env,
   sourceChatId: number,
   sourceMessageId: number,
-  publishedChatId: number,
+  publishedChatId: string,
   publishedMessageId: number,
 ): Promise<void> {
   await exec(

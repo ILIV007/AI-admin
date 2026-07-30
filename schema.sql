@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id                   TEXT PRIMARY KEY,           -- ulid-ish
   type                 TEXT NOT NULL CHECK (type IN ('scheduled_post','approval')),
   status               TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending','published','rejected','expired','failed')),
+                       CHECK (status IN ('pending','publishing','published','rejected','expired','failed')),
   user_id              INTEGER NOT NULL,
   chat_id              INTEGER NOT NULL,
   message_id           INTEGER NOT NULL,
@@ -53,10 +53,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, created_at);
 -- Maps an admin's source message to the channel message it produced, so
 -- that when the admin edits their source message, the bot can edit the
 -- corresponding channel post in place (within Telegram's 48h edit window).
+-- published_chat_id is TEXT (not INTEGER) so it can store either a numeric
+-- id ("-1001234567890") OR a @username string ("@ILIVIR3"). Both are valid
+-- chat_id values for the Telegram Bot API.
 CREATE TABLE IF NOT EXISTS published_posts (
   source_chat_id      INTEGER NOT NULL,
   source_message_id   INTEGER NOT NULL,
-  published_chat_id   INTEGER NOT NULL,
+  published_chat_id   TEXT NOT NULL,
   published_message_id INTEGER NOT NULL,
   published_at        INTEGER NOT NULL,
   PRIMARY KEY (source_chat_id, source_message_id)
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS media_group_items (
   file_id        TEXT,
   file_name      TEXT,
   mime_type      TEXT,
+  chat_type      TEXT,
   received_at    INTEGER NOT NULL,
   finalized      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (media_group_id, message_id)

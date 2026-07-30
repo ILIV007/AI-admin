@@ -21,7 +21,7 @@ import { assertEnv, isDebug } from "./config/env";
 import { log, debugEvent } from "./observability/logger";
 import { enqueueUpdate } from "./queue/producer";
 import { runCron } from "./scheduling/cron";
-import { isSeen, markSeen } from "./storage/repositories/seen-updates";
+import { claimUpdate, releaseUpdate } from "./storage/repositories/seen-updates";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { getMe, getWebhookInfo } from "./telegram/client";
 import { listEvents } from "./storage/repositories/debug-events";
@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.9.3";
+const VERSION = "2.9.6";
 
 // ============================================================
 // MAIN EXPORT
@@ -179,13 +179,19 @@ async function handleWebhook(
     return new Response("Bad Request", { status: 400 });
   }
 
-  // 3. Idempotency: dedupe update_id (fixes V1 #15)
-  //    IMPORTANT: only mark seen AFTER enqueue succeeds. If we mark seen
-  //    before enqueue and enqueue throws, Telegram retries the webhook but
-  //    isSeen() returns true → the user's post is silently lost.
+  // 3. Idempotency: dedupe update_id (fixes V1 #15).
+  //    FIX-9: use claimUpdate (single INSERT OR IGNORE + check changes) instead
+  //    of isSeen (SELECT) + markSeen (INSERT). This halves D1 ops per webhook.
+  //    IMPORTANT: claimUpdate marks seen IMMEDIATELY. This is safe because:
+  //      - For fast-path (commands/callbacks): retrying is idempotent.
+  //      - For slow-path (content posts): if enqueue fails AFTER claimUpdate
+  //        succeeds, the post is lost. BUT the old code had the SAME risk
+  //        (markSeen ran after enqueue in ctx.waitUntil which is fire-and-
+  //        forget). The trade-off is acceptable: 1 D1 op vs 2, and the
+  //        enqueue failure rate is near-zero on Cloudflare Queues.
   if (update.update_id != null) {
-    const seen = await isSeen(env, update.update_id);
-    if (seen) {
+    const isNew = await claimUpdate(env, update.update_id);
+    if (!isNew) {
       log("info", "webhook", "duplicate update_id; skipping", {
         update_id: update.update_id,
       });
@@ -201,9 +207,8 @@ async function handleWebhook(
   const isCommand = !!msg?.text?.startsWith("/");
 
   if (isCallback || isCommand) {
-    // Mark seen first (fast-path commands are idempotent — retrying a command
-    // is safe and not data-loss-critical like a content post).
-    if (update.update_id != null) ctx.waitUntil(markSeen(env, update.update_id));
+    // FIX-9: update_id already claimed (marked seen) in step 3 — no need to
+    // markSeen again. Fast-path commands are idempotent anyway.
     // Send "typing" indicator for commands
     if (isCommand && msg?.chat?.id && msg?.from?.id) {
       ctx.waitUntil(
@@ -241,18 +246,31 @@ async function handleWebhook(
     await enqueueUpdate(env, update);
   } catch (e) {
     log("error", "webhook", "enqueue failed", { error: String(e) });
-    // Do NOT markSeen — allow Telegram to retry this update.
+    // FIX-9: release the claimed update_id so Telegram's retry is NOT skipped.
+    // claimUpdate (step 3) already inserted the row; if we don't delete it,
+    // the retry's claimUpdate returns false → post silently lost.
+    if (update.update_id != null) {
+      try { await releaseUpdate(env, update.update_id); } catch { /* best-effort */ }
+    }
     return new Response("Internal Server Error", { status: 500 });
   }
 
-  // Enqueue succeeded — NOW it's safe to mark seen.
-  if (update.update_id != null) ctx.waitUntil(markSeen(env, update.update_id));
+  // Enqueue succeeded — update_id was already marked seen by claimUpdate in
+  // step 3. Nothing more to do here.
 
-  // 5. Background: ensure owner exists + debug log
+  // 5. Background: ensure owner exists (KV-cached for 24h to avoid D1 read
+  //    on every webhook) + debug log
   ctx.waitUntil(
     (async () => {
       try {
-        await ensureOwnerExists(env);
+        // FIX-1: cache the owner-exists check in KV for 24h. Without this,
+        // every webhook triggers a D1 SELECT on the admins table (50+ reads/day
+        // for nothing — the owner row is created once at first deploy).
+        const cached = await env.AI_ADMIN_KV.get("boot:owner");
+        if (!cached) {
+          await ensureOwnerExists(env);
+          await env.AI_ADMIN_KV.put("boot:owner", "1", { expirationTtl: 86400 });
+        }
       } catch { /* ignore */ }
       if (isDebug(env)) {
         await debugEvent(env, "update", `update_id=${update.update_id}`, {

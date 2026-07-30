@@ -203,7 +203,12 @@ export async function rewriteWithFallback(
   if (!isSkippable(primaryHealth)) {
     const r1 = await primaryProvider.call(req, env, primaryModel);
     if (r1.ok) {
-      await writeHealth(env, markSuccess(primaryHealth, primaryProviderName, primaryModel));
+      // FIX-3: only write health on success if state CHANGED (was unhealthy
+      // or had recent failures). If the model was already healthy with 0
+      // failures, the write is redundant — saves a KV write per AI call.
+      if (!primaryHealth?.healthy || (primaryHealth.consecutiveFailures ?? 0) > 0) {
+        await writeHealth(env, markSuccess(primaryHealth, primaryProviderName, primaryModel));
+      }
       return r1;
     }
     await writeHealth(
@@ -233,7 +238,10 @@ export async function rewriteWithFallback(
     await sleep(AI_BUDGET.BACKOFF_MS);
     const r2 = await primaryProvider.call(req, env, candidate);
     if (r2.ok) {
-      await writeHealth(env, markSuccess(candidateHealth, primaryProviderName, candidate));
+      // FIX-3: skip redundant health write when already healthy.
+      if (!candidateHealth?.healthy || (candidateHealth.consecutiveFailures ?? 0) > 0) {
+        await writeHealth(env, markSuccess(candidateHealth, primaryProviderName, candidate));
+      }
       return r2;
     }
     await writeHealth(env, markFailure(candidateHealth, primaryProviderName, candidate, r2.error ?? "unknown"));
@@ -274,7 +282,10 @@ async function crossProviderFallback(
   await sleep(AI_BUDGET.BACKOFF_MS);
   const r = await otherProvider.call(req, env, otherModel);
   if (r.ok) {
-    await writeHealth(env, markSuccess(otherHealth, otherProviderName, otherModel));
+    // FIX-3: skip redundant health write when already healthy.
+    if (!otherHealth?.healthy || (otherHealth.consecutiveFailures ?? 0) > 0) {
+      await writeHealth(env, markSuccess(otherHealth, otherProviderName, otherModel));
+    }
     return r;
   }
   await writeHealth(
@@ -299,11 +310,16 @@ function parseStatusFromError(error: string | undefined): number {
 
 /**
  * Periodically ping every model in the catalog and refresh health cache.
- * Designed to run from the cron trigger.
+ * Designed to run from the cron trigger (once per day — FIX-6).
  *
- * - Skips models checked within the last REFRESH_MIN_INTERVAL_MS (10 min).
+ * - Skips models checked within the last REFRESH_MIN_INTERVAL_MS (30 min).
  * - Spaces pings by PING_DELAY_MS (500ms) to be gentle on free quotas.
- * - Writes back to KV with 1h TTL.
+ * - Writes back to KV with 2h TTL.
+ *
+ * FIX-7: the ping now uses a MINIMAL direct fetch (no buildSystemPrompt,
+ * no profile, no classification). This cuts token usage from ~2000 to ~10
+ * per model (99.5% reduction). The old approach built a full AIRequest with
+ * a 2000-token system prompt just to check if the model responds — wasteful.
  */
 export async function refreshModelHealth(env: Env): Promise<void> {
   const now = Date.now();
@@ -318,50 +334,9 @@ export async function refreshModelHealth(env: Env): Promise<void> {
       continue;
     }
 
-    // P1-6 fix: build a MINIMAL ping request that bypasses all formatting
-    // rules. The previous version used buildSystemPrompt with dozens of
-    // constraints (markdown-only, no translation, Persian punctuation, etc.)
-    // which could confuse the model into returning a non-"pong" response and
-    // falsely marking itself unhealthy. Now the profile soul is the ONLY
-    // instruction, and settings disable all emoji/edit intensity.
-    const pingReq: AIRequest = {
-      text: "ping",
-      classification: {
-        category: "general",
-        language: "en",
-        hasCode: false,
-        hasGithubLink: false,
-        hasLongText: false,
-        wordCount: 1,
-        recommendedRewrite: "none",
-        recommendedNeedsRewrite: false,
-      },
-      settings: {
-        ...DEFAULT_SETTINGS,
-        aiProvider: provider,
-        geminiModel: provider === "gemini" ? model : DEFAULT_SETTINGS.geminiModel,
-        openrouterModel:
-          provider === "openrouter" ? model : DEFAULT_SETTINGS.openrouterModel,
-        rewriteMode: "none",
-        approvalMode: false,
-        emojiLevel: 0,
-        editIntensity: 0,
-      },
-      profile: {
-        key: "ping",
-        name: "Ping",
-        description: "",
-        soul: "You are a health-check responder. Reply with exactly one word: pong",
-        style: "",
-        rules: "",
-        formatting: "",
-        defaultSettings: {},
-      },
-      mode: "rewrite",
-    };
-
-    const providerObj = provider === "openrouter" ? openrouterProvider : geminiProvider;
-    const result = await providerObj.call(pingReq, env, model);
+    // FIX-7: minimal direct fetch — no system prompt, no profile, no
+    // classification. Just "ping" → expect any HTTP 200 response.
+    const result = await pingModelDirect(env, provider, model);
 
     let next: ModelHealth;
     if (result.ok) {
@@ -373,5 +348,57 @@ export async function refreshModelHealth(env: Env): Promise<void> {
 
     // Be gentle on free quota.
     await sleep(PING_DELAY_MS);
+  }
+}
+
+/**
+ * Minimal direct API ping — bypasses the full AIRequest/provider pipeline.
+ * Sends a tiny request ("ping" with maxOutputTokens=5) directly to the
+ * provider's API. Returns ok=true on any HTTP 200 response (we don't care
+ * about the response content — we just want to know the endpoint is alive
+ * and the API key is valid).
+ */
+async function pingModelDirect(
+  env: Env,
+  provider: "gemini" | "openrouter",
+  model: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    if (provider === "gemini") {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "ping" }], role: "user" }],
+          generationConfig: { maxOutputTokens: 5, temperature: 0 },
+        }),
+        signal: controller.signal,
+      });
+      return resp.ok ? { ok: true } : { ok: false, error: `HTTP ${resp.status}` };
+    }
+    // openrouter
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://ilivir3.bot",
+        "X-Title": "AI Admin Health",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 5,
+      }),
+      signal: controller.signal,
+    });
+    return resp.ok ? { ok: true } : { ok: false, error: `HTTP ${resp.status}` };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  } finally {
+    clearTimeout(timeout);
   }
 }
