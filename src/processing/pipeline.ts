@@ -214,9 +214,14 @@ export async function runPipeline(
   // FIX: for "normal" rewriteMode with editIntensity > 0, always use AI.
   // Previously, if the classifier said "no rewrite needed" AND mode was "normal",
   // AI was skipped — even if the user wanted formatting improvements.
+  //
+  // CRITICAL: if the post has NO text (media-only, e.g. a photo with no caption),
+  // do NOT use AI — there's nothing to rewrite. Use format-only mode instead.
+  // The publisher handles empty captions correctly (sends media without caption).
   let useAi = false;
   const canUseAi = isAdmin && (role === "owner" || role === "editor");
-  if (settings.rewriteMode !== "none" && canUseAi) {
+  const hasText = workingText.trim().length > 0;
+  if (settings.rewriteMode !== "none" && canUseAi && hasText) {
     if (settings.rewriteMode !== "normal") {
       // light/aggressive/summarize → always use AI
       useAi = true;
@@ -227,6 +232,10 @@ export async function runPipeline(
       // normal mode + user wants edits → use AI for formatting
       useAi = true;
     }
+  }
+  if (useAi && !hasText) {
+    log("info", scope, "no text content (media-only); skipping AI, using format-only");
+    useAi = false;
   }
 
   // ── 4. AI rewrite (admins only) ─────────────────────────────────

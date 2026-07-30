@@ -40,7 +40,7 @@ import { sleep } from "./provider";
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
-const HEALTH_CACHE_VERSION = "v7"; // bump v6→v7: fixed fallback chain logic
+const HEALTH_CACHE_VERSION = "v8"; // bump v7→v8: 2.5 models no longer primary; reset health cache
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
 const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records

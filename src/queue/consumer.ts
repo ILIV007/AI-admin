@@ -1216,7 +1216,11 @@ async function handlePublishScheduled(
           }
         }
 
-        // 2. Build a nice report with full details.
+        // 2. Build a nice report with full details (i18n — respects uiLanguage).
+        const { t, getUiLanguage } = await import("../i18n");
+        const schedSettings = await getSettings(env, job.userId).catch(() => null);
+        const lang = getUiLanguage(schedSettings ?? undefined);
+
         const publishedAt = new Date();
         const schedTime = job.scheduledFor ? new Date(job.scheduledFor) : null;
         const delayMs = schedTime ? publishedAt.getTime() - schedTime.getTime() : 0;
@@ -1231,30 +1235,32 @@ async function handlePublishScheduled(
           } else if (p.aiUsed) {
             aiInfo = "✓";
           } else {
-            aiInfo = "بدون AI";
+            aiInfo = t(lang, "sched_report.no_ai");
           }
         } catch { /* ignore */ }
 
+        // Use the UI language's locale for date formatting (fa-IR or en-US)
+        const dateLocale = lang === "fa" ? "fa-IR" : "en-US";
         const schedTimeStr = schedTime
-          ? schedTime.toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" })
+          ? schedTime.toLocaleString(dateLocale, { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" })
           : "—";
-        const pubTimeStr = publishedAt.toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" });
+        const pubTimeStr = publishedAt.toLocaleString(dateLocale, { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" });
 
         const reportParts: string[] = [
-          `<blockquote><b>📅 پست زمان‌بندی‌شده منتشر شد</b></blockquote>`,
+          `<blockquote><b>${t(lang, "sched_report.title")}</b></blockquote>`,
           ``,
-          `<b>📋 جزئیات:</b>`,
-          `• زمان‌بندی: <code>${schedTimeStr}</code>`,
-          `• انتشار: <code>${pubTimeStr}</code>`,
+          `<b>${t(lang, "sched_report.details")}</b>`,
+          `• ${t(lang, "sched_report.scheduled_for")}: <code>${schedTimeStr}</code>`,
+          `• ${t(lang, "sched_report.published_at")}: <code>${pubTimeStr}</code>`,
         ];
         if (delayMin > 0) {
-          reportParts.push(`• تأخیر: <code>${delayMin} دقیقه</code>`);
+          reportParts.push(`• ${t(lang, "sched_report.delay")}: <code>${delayMin} ${t(lang, "sched_report.delay_unit")}</code>`);
         }
-        reportParts.push(`• بخش‌ها: <code>${payload.parts.length}</code>`);
-        reportParts.push(`• هوش مصنوعی: <code>${aiInfo}</code>`);
-        reportParts.push(`• شناسه: <code>${jobId}</code>`);
+        reportParts.push(`• ${t(lang, "sched_report.parts")}: <code>${payload.parts.length}</code>`);
+        reportParts.push(`• ${t(lang, "sched_report.ai_used")}: <code>${aiInfo}</code>`);
+        reportParts.push(`• ${t(lang, "sched_report.job_id")}: <code>${jobId}</code>`);
         if (result.messageIds.length > 0) {
-          reportParts.push(`• پیام‌های کانال: <code>${result.messageIds.join(", ")}</code>`);
+          reportParts.push(`• ${t(lang, "sched_report.channel_msgs")}: <code>${result.messageIds.join(", ")}</code>`);
         }
 
         await sendMessage(env.BOT_TOKEN, {

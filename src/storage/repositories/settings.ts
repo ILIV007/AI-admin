@@ -51,11 +51,17 @@ function mergeSettings(env: Env, partial: Partial<Settings> | null | undefined):
   const merged = { ...base, ...partial };
 
   // MIGRATION: fix stale model values from older bot versions.
-  // gemini-2.5-flash and gemini-2.5-flash-lite are NOW back in the catalog
-  // as last-resort fallbacks, so they are NOT stale anymore.
+  // These models are either dead (removed from catalog) or are "last resort"
+  // fallbacks that should NOT be stored as the PRIMARY model. If a user's
+  // stored settings have one of these as the primary, reset to the current
+  // default (gemini-3.6-flash). The models are still in the catalog so the
+  // fallback CHAIN includes them — they just won't be the first-choice model.
   const STALE_GEMINI = new Set([
+    // Dead models (removed from catalog):
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
     "gemini-1.5-flash", "gemini-1.5-flash-8b",
+    // Last-resort fallbacks (in catalog but should NOT be primary):
+    "gemini-2.5-flash", "gemini-2.5-flash-lite",
   ]);
   const STALE_OR = new Set([
     "google/gemma-2-9b-it:free",
