@@ -180,7 +180,7 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       // Now we only auto-quote when the following content is a bare URL or a
       // code block (cases where a quote genuinely improves readability).
       // For normal prose after a colon, the AI should use explicit > markdown.
-      const endsWithColon = /[:：]\s*$/.test(paraText.trim());
+      const endsWithColonOrQuestion = /[:：؟?]\s*$/.test(paraText.trim());
 
       blocks.push({
         kind: "paragraph",
@@ -191,7 +191,7 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       // This applies to: bare URLs, markdown links, code fences, AND regular
       // text paragraphs that follow a colon. The colon signals "here is what
       // I'm introducing" — the content after it should be quoted.
-      if (endsWithColon && i < lines.length) {
+      if (endsWithColonOrQuestion && i < lines.length) {
         // Skip blank lines between colon and content
         let peek = i;
         while (peek < lines.length && lines[peek].trim() === "") peek++;

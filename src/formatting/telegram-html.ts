@@ -215,14 +215,15 @@ export function blocksToTelegramHtml(
         }
 
         // RULE: Only quote SOME paragraphs, not all
-        // - Paragraphs that are JUST a link → always quote (also handle
-        //   surrounding whitespace-only text spans)
+        // - Paragraphs that are JUST a link → always quote
+        // - Paragraphs that contain ONLY a link (with optional whitespace) → quote
         // - Very long (>400 chars) → collapsible blockquote
         // - Long (>200 chars) → regular blockquote
         // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
         // - Short → no quote (just text)
+        const hasLink = block.spans.some((s) => s.kind === "link");
         const isJustLink =
-          block.spans.some((s) => s.kind === "link") &&
+          hasLink &&
           block.spans.every(
             (s) => s.kind === "link" || (s.kind === "text" && s.text.trim() === ""),
           );

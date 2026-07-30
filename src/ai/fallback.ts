@@ -225,32 +225,28 @@ export async function rewriteWithFallback(
     }
   }
 
-  // ---------- Attempt 2: primary provider + 1 fallback model ----------
+  // ---------- Attempt 2: same-provider fallback (ALL remaining models) ----------
+  // Try ALL remaining models in the chain, not just 1.
+  // This ensures: 3.6 fails → try 3.5 → try 3.1-lite → try 3.0
+  // before giving up and going cross-provider.
   const chain = getFallbackChain(primaryProviderName, primaryModel);
+  let lastError: AIResult | null = null;
   for (const candidate of chain) {
-    if (candidate === primaryModel) continue; // already tried (or skipped)
+    if (candidate === primaryModel) continue;
     const candidateHealth = await readHealth(env, primaryProviderName, candidate);
     if (isSkippable(candidateHealth)) continue;
-
-    // Honor backoff between retries (only when we are actually retrying).
     await sleep(AI_BUDGET.BACKOFF_MS);
-
     const r2 = await primaryProvider.call(req, env, candidate);
     if (r2.ok) {
       await writeHealth(env, markSuccess(candidateHealth, primaryProviderName, candidate));
       return r2;
     }
-    await writeHealth(
-      env,
-      markFailure(candidateHealth, primaryProviderName, candidate, r2.error ?? "unknown"),
-    );
-    // We promised: max 2 attempts inside the primary chain. Stop after the
-    // first fallback attempt regardless of outcome.
-    return crossProviderFallback(env, req, primaryProviderName, r2);
+    await writeHealth(env, markFailure(candidateHealth, primaryProviderName, candidate, r2.error ?? "unknown"));
+    lastError = r2;
+    const status2 = parseStatusFromError(r2.error);
+    if (status2 === 401 || status2 === 402 || status2 === 403) break;
   }
-
-  // No fallback candidate was available (everything skippable) — go cross-provider.
-  return crossProviderFallback(env, req, primaryProviderName, {
+  return crossProviderFallback(env, req, primaryProviderName, lastError ?? {
     ok: false,
     text: "",
     provider: primaryProviderName,
