@@ -40,7 +40,7 @@ import { isRetryableError, sleep } from "./provider";
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
-const HEALTH_CACHE_VERSION = "v3"; // bump v2→v3: fixed isSkippable logic
+const HEALTH_CACHE_VERSION = "v4"; // bump v3→v4: model ranking fix
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
 const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records

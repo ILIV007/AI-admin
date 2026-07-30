@@ -77,7 +77,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.8.4";
+const VERSION = "v2.8.6";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -2342,7 +2342,7 @@ async function readHealthFor(
   model: string,
 ): Promise<ModelHealth | null> {
   try {
-    const raw = await env.AI_ADMIN_KV.get(`ai:health:v3:${provider}:${model}`);
+    const raw = await env.AI_ADMIN_KV.get(`ai:health:v4:${provider}:${model}`);
     if (!raw) return null;
     return JSON.parse(raw) as ModelHealth;
   } catch {

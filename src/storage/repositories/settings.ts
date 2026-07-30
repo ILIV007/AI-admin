@@ -56,6 +56,9 @@ function mergeSettings(env: Env, partial: Partial<Settings> | null | undefined):
   const STALE_GEMINI = new Set([
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
     "gemini-1.5-flash", "gemini-1.5-flash-8b",
+    // gemini-2.5-flash and gemini-2.5-flash-lite are KEPT in the catalog as
+    // legacy fallbacks (last 2 in the chain). They are NOT stale — users can
+    // select them. Only the truly dead models (2.0, 1.5) are stale.
   ]);
   const STALE_OR = new Set([
     "google/gemma-2-9b-it:free",

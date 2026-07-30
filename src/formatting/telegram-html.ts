@@ -285,17 +285,18 @@ export function blocksToTelegramHtml(
         });
         const inner = items.join("\n");
         const listLen = inner.length;
-        // Ordered lists (steps) with >2 items → collapsible if very long
-        if (block.ordered && block.items.length > 2 && listLen > 300) {
-          parts.push(`<blockquote expandable>${inner}</blockquote>`);
-          hasBlockquote = true;
-        } else if (block.items.length > 1) {
-          // Regular list → blockquote (not collapsible unless very long)
+        // ALL multi-item lists are wrapped in <blockquote>.
+        // Single-item lists are also quoted if they're substantive (>20 chars).
+        if (block.items.length > 1) {
           if (listLen > 400) {
             parts.push(`<blockquote expandable>${inner}</blockquote>`);
           } else {
             parts.push(`<blockquote>${inner}</blockquote>`);
           }
+          hasBlockquote = true;
+        } else if (listLen > 20) {
+          // Single item but substantive → quote it
+          parts.push(`<blockquote>${inner}</blockquote>`);
           hasBlockquote = true;
         } else {
           parts.push(inner);

@@ -50,9 +50,9 @@ export const GEMINI_MODELS: ModelEntry[] = [
   { id: "gemini-3.6-flash", provider: "gemini", label: "Gemini 3.6 Flash", maxTokens: 8192, notes: "Newest" },
   { id: "gemini-3.5-flash", provider: "gemini", label: "Gemini 3.5 Flash", maxTokens: 8192 },
   { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash-Lite", maxTokens: 8192, notes: "Fastest" },
-  { id: "gemini-3-flash", provider: "gemini", label: "Gemini 3 Flash", maxTokens: 8192 },
-  { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", maxTokens: 8192, notes: "Stable default" },
-  { id: "gemini-2.5-flash-lite", provider: "gemini", label: "Gemini 2.5 Flash-Lite", maxTokens: 8192 },
+  { id: "gemini-3-flash", provider: "gemini", label: "Gemini 3 Flash", maxTokens: 8192, notes: "Stable" },
+  { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", maxTokens: 8192, notes: "Legacy fallback" },
+  { id: "gemini-2.5-flash-lite", provider: "gemini", label: "Gemini 2.5 Flash-Lite", maxTokens: 8192, notes: "Legacy" },
 ];
 
 export const OPENROUTER_MODELS: ModelEntry[] = [
