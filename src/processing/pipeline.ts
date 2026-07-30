@@ -171,13 +171,17 @@ export async function runPipeline(
     const channelMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
     if (channelMatch) {
       const channelName = channelMatch[1];
-      // Remove ALL occurrences of @channelName (with optional emoji prefix)
-      // Pattern: optional emoji/space + @channelName + word boundary
+      // CRITICAL FIX: only strip STANDALONE @channelName lines (where the
+      // mention is the ONLY content on the line). Do NOT strip lines that
+      // contain @channelName + other content (links, descriptions, etc).
+      // The old regex [^\n]* ate the entire line including any links.
       const channelRegex = new RegExp(
-        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${channelName}\\b[^\\n]*`,
+        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${channelName}\\s*(?:[|｜\\-—–]\\s*.*)?[ \\t]*(?=\\n|$)`,
         "gu",
       );
       inputText = inputText.replace(channelRegex, "").trim();
+      // Also remove inline @channelName (not at start of line) — just the mention, keep the rest
+      inputText = inputText.replace(new RegExp(`\\s*@${channelName}\\b`, "g"), "").trim();
     }
     // Also remove the full footer text if it appears anywhere
     const footerEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -301,16 +305,23 @@ export async function runPipeline(
   // The AI knows about ILIVIR3 from the system prompt and might include
   // @ILIVIR3 in its output. Remove ALL occurrences to prevent duplicate
   // channel IDs before the footer.
+  // CRITICAL FIX: only strip lines that are JUST @channelName (with optional
+  // emoji/space prefix), NOT lines that contain @channelName AND other content
+  // like links. The old regex [^\n]* would eat the entire line including
+  // any links on it.
   if (settings.footerText) {
     const chMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
     if (chMatch) {
       const chName = chMatch[1];
-      // Remove @channelName anywhere in the text (with optional emoji prefix on its own line)
+      // Only remove lines where @channelName is the ONLY content (standalone mention lines).
+      // Do NOT remove lines that have @channelName + other text (e.g. links, descriptions).
       const chRegex = new RegExp(
-        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\b[^\\n]*`,
+        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\s*(?:[|｜\\-—–]\\s*.*)?[ \\t]*(?=\\n|$)`,
         "gu",
       );
       finalText = finalText.replace(chRegex, "").trim();
+      // Also remove inline @channelName (not at start of line) — just remove the mention, keep the rest
+      finalText = finalText.replace(new RegExp(`\\s*@${chName}\\b`, "g"), "").trim();
     }
     // Also remove the full footer text if it appears anywhere
     const fEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
