@@ -85,19 +85,37 @@ export async function publishPost(
       // --- Media path: first part becomes the media caption. ---
       const firstCaption = safeParts[0] ?? "";
 
-      // Caption hard limit is 1024 visible chars; truncate safely.
-      const safeCaption = truncateVisible(
-        firstCaption,
-        TELEGRAM_LIMITS.CAPTION_MAX_LEN,
-      );
+      // If the caption is empty (no text content, just media), send media
+      // WITHOUT a caption — do NOT send an empty caption or a separate text
+      // message saying "no caption".
+      const captionVisibleLen = visibleLength(firstCaption);
+      const hasCaption = captionVisibleLen > 0 &&
+        firstCaption.replace(/<[^>]+>/g, "").trim().length > 0;
 
-      const mediaResult = await sendMediaWithCaption(
-        token,
-        chatId,
-        safeCaption,
-        media,
-      );
-      if (mediaResult?.message_id) messageIds.push(mediaResult.message_id);
+      if (hasCaption) {
+        // Caption hard limit is 1024 visible chars; truncate safely.
+        const safeCaption = truncateVisible(
+          firstCaption,
+          TELEGRAM_LIMITS.CAPTION_MAX_LEN,
+        );
+
+        const mediaResult = await sendMediaWithCaption(
+          token,
+          chatId,
+          safeCaption,
+          media,
+        );
+        if (mediaResult?.message_id) messageIds.push(mediaResult.message_id);
+      } else {
+        // No caption — send media without any text
+        const mediaResult = await sendMediaWithCaption(
+          token,
+          chatId,
+          "",
+          media,
+        );
+        if (mediaResult?.message_id) messageIds.push(mediaResult.message_id);
+      }
 
       // Remaining parts go out as reply chain (each part replies to the previous).
       for (let i = 1; i < safeParts.length; i++) {
@@ -106,7 +124,7 @@ export async function publishPost(
           chatId,
           safeParts[i],
           undefined,
-          messageIds[messageIds.length - 1], // reply to previous message
+          messageIds[messageIds.length - 1],
         );
         messageIds.push(...ids);
       }
@@ -278,28 +296,27 @@ async function sendMediaWithCaption(
     ? truncateVisible(caption, TELEGRAM_LIMITS.CAPTION_MAX_LEN)
     : "";
 
-  // Common base. `reply_markup` is included even if undefined — the wrappers
-  // accept it as optional.
-  const base = {
+  // If caption is empty (no text content), do NOT send caption at all —
+  // just send the media without any text. Telegram API ignores empty caption
+  // but some clients show an empty blockquote — so we omit it entirely.
+  const base: Record<string, unknown> = {
     chat_id: chatId,
-    caption: safeCaption,
     reply_markup: replyMarkup,
   };
+  if (safeCaption && safeCaption.replace(/<[^>]+>/g, "").trim().length > 0) {
+    base.caption = safeCaption;
+  }
 
   switch (media.type) {
     case "photo":
-      return sendPhoto(token, { ...base, photo: media.fileId });
+      return sendPhoto(token, { chat_id: chatId, photo: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
     case "video":
-      return sendVideo(token, { ...base, video: media.fileId });
+      return sendVideo(token, { chat_id: chatId, video: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
     case "document":
-      return sendDocument(token, {
-        ...base,
-        document: media.fileId,
-      });
+      return sendDocument(token, { chat_id: chatId, document: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
     case "animation":
-      return sendAnimation(token, { ...base, animation: media.fileId });
+      return sendAnimation(token, { chat_id: chatId, animation: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
     default:
-      // Exhaustiveness guard — should never happen with a discriminated union.
       throw new Error(
         `sendMediaWithCaption: unknown media type ${JSON.stringify(media.type)}`,
       );

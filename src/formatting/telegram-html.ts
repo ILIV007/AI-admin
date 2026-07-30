@@ -228,12 +228,16 @@ export function blocksToTelegramHtml(
             (s) => s.kind === "link" || (s.kind === "text" && s.text.trim() === ""),
           );
         if (isJustLink) {
-          parts.push(`<blockquote>${rendered}</blockquote>`);
+          if (textLen > 200) {
+            parts.push(`<blockquote expandable>${rendered}</blockquote>`);
+          } else {
+            parts.push(`<blockquote>${rendered}</blockquote>`);
+          }
           hasBlockquote = true;
-        } else if (textLen > 400) {
+        } else if (textLen > 300) {
           parts.push(`<blockquote expandable>${rendered}</blockquote>`);
           hasBlockquote = true;
-        } else if (textLen > 200) {
+        } else if (textLen > 150) {
           parts.push(`<blockquote>${rendered}</blockquote>`);
           hasBlockquote = true;
         } else if (textLen > 80 && !hasBlockquote) {
@@ -274,10 +278,16 @@ export function blocksToTelegramHtml(
 
       case "quote":
         // User explicitly used > markdown quote
-        parts.push(
-          `<blockquote>${block.spans.map(renderSpan).join("")}</blockquote>`,
-        );
-        hasBlockquote = true;
+        {
+          const quoteText = block.spans.map(renderSpan).join("");
+          const quoteLen = spanTextLength(block.spans);
+          if (quoteLen > 300) {
+            parts.push(`<blockquote expandable>${quoteText}</blockquote>`);
+          } else {
+            parts.push(`<blockquote>${quoteText}</blockquote>`);
+          }
+          hasBlockquote = true;
+        }
         break;
 
       case "list": {
@@ -288,16 +298,16 @@ export function blocksToTelegramHtml(
         const inner = items.join("\n");
         const listLen = inner.length;
         // ALL multi-item lists are wrapped in <blockquote>.
-        // Single-item lists are also quoted if they're substantive (>20 chars).
+        // Long lists (>150 chars) → collapsible (expandable).
+        // Single-item lists with substance (>20 chars) → quoted.
         if (block.items.length > 1) {
-          if (listLen > 400) {
+          if (listLen > 150) {
             parts.push(`<blockquote expandable>${inner}</blockquote>`);
           } else {
             parts.push(`<blockquote>${inner}</blockquote>`);
           }
           hasBlockquote = true;
         } else if (listLen > 20) {
-          // Single item but substantive → quote it
           parts.push(`<blockquote>${inner}</blockquote>`);
           hasBlockquote = true;
         } else {
