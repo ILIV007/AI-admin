@@ -316,33 +316,44 @@ async function handleProcessUpdate(
   const settings = await getSettings(env, userId);
 
   // Send "typing" indicator to admin (shows bot is working)
-  // Use content.chatId (the chat where the message came from) for typing
+  // Use ctx.waitUntil so typing doesn't block the pipeline.
   if (isAdmin) {
-    await sendChatAction(env.BOT_TOKEN, {
-      chat_id: content.chatId,
-      action: "typing",
-    }).catch(() => undefined);
-    // Also send typing to admin's private chat if different
-    if (userId !== content.chatId) {
-      await sendChatAction(env.BOT_TOKEN, {
-        chat_id: userId,
-        action: "typing",
-      }).catch(() => undefined);
-    }
+    ctx.waitUntil(
+      (async () => {
+        await sendChatAction(env.BOT_TOKEN, {
+          chat_id: content.chatId,
+          action: "typing",
+        }).catch(() => undefined);
+        if (userId !== content.chatId) {
+          await sendChatAction(env.BOT_TOKEN, {
+            chat_id: userId,
+            action: "typing",
+          }).catch(() => undefined);
+        }
+      })(),
+    );
   }
 
-  // Send a loading message to admin that will be edited to a report later
+  // Send loading message to admin that will be edited to a report later.
+  // Use ctx.waitUntil so it doesn't block the pipeline.
   let loadingMsgId: number | undefined;
   if (isAdmin) {
     try {
       const { t, getUiLanguage } = await import("../i18n");
       const lang = getUiLanguage(settings);
       const loadingText = `<blockquote><b>${t(lang, "processing")}</b></blockquote>\n\n${t(lang, "processing.steps")}`;
-      const loadingResp = await sendMessage(env.BOT_TOKEN, {
+      // Fire loading message in background — don't block pipeline
+      const loadingPromise = sendMessage(env.BOT_TOKEN, {
         chat_id: userId,
         text: loadingText,
         parse_mode: "HTML",
       }).catch(() => undefined);
+      // But we need loadingMsgId for the report edit later, so await it
+      // with a short timeout — if it takes too long, just skip it.
+      const loadingResp = await Promise.race([
+        loadingPromise,
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+      ]);
       if (loadingResp && typeof loadingResp === "object" && "message_id" in loadingResp) {
         loadingMsgId = (loadingResp as { message_id: number }).message_id;
       }

@@ -75,7 +75,6 @@ export async function tgApi<T = unknown>(
   body: Record<string, unknown>,
 ): Promise<T> {
   // CRITICAL: Remove undefined/null values — Telegram API rejects them.
-  // This matches V1 behavior (tgCall cleaned payload before sending).
   const cleanBody: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
     if (value !== undefined && value !== null) {
@@ -83,8 +82,11 @@ export async function tgApi<T = unknown>(
     }
   }
 
-  // At most 2 iterations: initial attempt + one retry on 429.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Up to 4 iterations: initial + retry on 429 + retry on 5xx (max 2).
+  const MAX_5XX_RETRIES = 2;
+  let totalAttempts = 0;
+  for (let attempt = 0; attempt < 2 + MAX_5XX_RETRIES; attempt++) {
+    totalAttempts++;
     const url = `${API_BASE}${token}/${method}`;
 
     let response: Response;
@@ -95,11 +97,28 @@ export async function tgApi<T = unknown>(
         body: JSON.stringify(cleanBody),
       });
     } catch (err) {
-      // Network error — no point retrying; surface immediately.
+      // Network error — retry once after 1s, then surface.
+      if (attempt === 0) {
+        await sleep(1000);
+        continue;
+      }
       throw new Error(`tgApi[${method}] network error: ${(err as Error).message}`);
     }
 
-    // HTTP non-200 → try to extract description from JSON body, then throw.
+    // HTTP 5xx (520, 502, 503, 504) → retry with backoff.
+    // These are transient Cloudflare/Telegram server errors. HTTP 520
+    // specifically means "Cloudflare could not process the response from
+    // the origin server" — retrying usually works.
+    if (response.status >= 500 && response.status < 600) {
+      if (attempt < MAX_5XX_RETRIES + 1) {
+        const backoff = Math.min(1000 * Math.pow(2, attempt), 5000); // 1s, 2s, 4s, 5s cap
+        await sleep(backoff);
+        continue;
+      }
+      throw new Error(`tgApi[${method}] HTTP ${response.status}: server error (retried ${attempt} times)`);
+    }
+
+    // HTTP non-200 (non-5xx) → try to extract description, then throw.
     if (!response.ok) {
       let description = `HTTP ${response.status}`;
       try {
@@ -120,7 +139,6 @@ export async function tgApi<T = unknown>(
 
     // 429 rate-limit → sleep and retry ONCE.
     if (!data.ok && data.parameters?.retry_after && attempt === 0) {
-      // Telegram returns retry_after in seconds. Add a 0.5s safety margin.
       const waitMs = (data.parameters.retry_after + 0.5) * 1000;
       await sleep(waitMs);
       continue;
@@ -136,8 +154,7 @@ export async function tgApi<T = unknown>(
     return data.result as T;
   }
 
-  // Unreachable: the loop either returns or throws on iteration 0/1.
-  throw new Error(`tgApi[${method}] exhausted retries (unexpected)`);
+  throw new Error(`tgApi[${method}] exhausted retries (${totalAttempts} attempts)`);
 }
 
 // ============================================================

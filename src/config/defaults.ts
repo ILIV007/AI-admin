@@ -148,8 +148,8 @@ export const MEDIA_GROUP_WINDOW_MS = 5_000; // 5s after last item
 // AI request budget
 export const AI_BUDGET = {
   MAX_RETRIES: 2, // max 2 attempts per post (primary + 1 fallback)
-  TIMEOUT_MS: 15_000,
-  BACKOFF_MS: 800,
+  TIMEOUT_MS: 12_000, // reduced from 15s — AI should respond in <10s
+  BACKOFF_MS: 500, // reduced from 800ms — faster fallback
 };
 
 // ============================================================
