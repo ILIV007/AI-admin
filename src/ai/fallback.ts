@@ -33,14 +33,14 @@ import {
 import { geminiProvider } from "./gemini";
 import { openrouterProvider } from "./openrouter";
 import type { AIProvider } from "./provider";
-import { isRetryableError, sleep } from "./provider";
+import { sleep } from "./provider";
 
 // ============================================================
 // Health cache constants
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
-const HEALTH_CACHE_VERSION = "v6"; // bump v5→v6: gemini-2.5 re-added to catalog
+const HEALTH_CACHE_VERSION = "v7"; // bump v6→v7: fixed fallback chain logic
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
 const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records
@@ -210,19 +210,14 @@ export async function rewriteWithFallback(
       env,
       markFailure(primaryHealth, primaryProviderName, primaryModel, r1.error ?? "unknown"),
     );
-    if (!isRetryableError(parseStatusFromError(r1.error))) {
-      // Auth/permission errors (401/402/403) are provider-wide (same API key),
-      // so skip the entire same-provider chain and go to the OTHER provider.
-      // Model-level errors (400/404/405/422) are per-model and the next entry
-      // in the same-provider fallback chain is the correct retry.
-      const status = parseStatusFromError(r1.error);
-      const isAuth = status === 401 || status === 402 || status === 403;
-      if (isAuth) {
-        return crossProviderFallback(env, req, primaryProviderName, r1);
-      }
-      // Non-retryable but model-specific (e.g. 404 model-not-found): fall
-      // through to the same-provider fallback chain below.
+    // For ALL errors (retryable or not), fall through to the same-provider
+    // fallback chain. Only auth errors (401/402/403) skip the chain entirely.
+    const status = parseStatusFromError(r1.error);
+    const isAuth = status === 401 || status === 402 || status === 403;
+    if (isAuth) {
+      return crossProviderFallback(env, req, primaryProviderName, r1);
     }
+    // All other errors (timeout, 429, 5xx, 404, 400) → try next model in chain
   }
 
   // ---------- Attempt 2: same-provider fallback (ALL remaining models) ----------

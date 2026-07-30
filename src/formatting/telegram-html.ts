@@ -248,7 +248,8 @@ export function blocksToTelegramHtml(
       case "heading": {
         const rendered = block.spans.map(renderSpan).join("");
         // No emoji prefix — user requested plain text headings.
-        parts.push(`<b>${rendered}</b>\n`);
+        // No trailing \n — the join logic handles spacing between parts.
+        parts.push(`<b>${rendered}</b>`);
         break;
       }
 
