@@ -80,7 +80,7 @@ export function buildSystemPrompt(
       `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically.\n` +
       `- LINKS: Keep links on their OWN line, separate from paragraphs. Do NOT embed links inside blockquotes. Format: paragraph text\\n\\n[text](url) — NOT: paragraph [text](url) text.\n` +
       `- RTL: Persian paragraphs MUST begin with a Persian word. For English technical terms, use "هوش مصنوعی (AI)" or "زبان Python" — Persian word first, then the English term in parentheses. NEVER start a Persian paragraph with an English word.\n` +
-      `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words.\n` +
+      `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) in compound words like می‌رود, می‌تواند, همه‌ی, همه‌ما, این‌که, آن‌که, به‌طور, در‌حال‌که. ALWAYS use half-spaces (ـ) between prefix/suffix and word stem. NEVER write words without half-spaces (مثل: همهما ❌, همه‌ما ✓).\n` +
       `- CRITICAL PERSIAN: Do NOT double letters. The letter ه (heh) — write it ONCE, never "هه". Proofread before returning.\n` +
       `- EMOJI: Use ONLY the emojis listed in the GUIDANCE section. NEVER use 🌍🌐💡📌📦⚡🔒🐞🧩🤖🔥🚀🎉😍✨ or ANY emoji NOT in the approved list. If an emoji is not in the GUIDANCE list, do NOT use it. Emojis are OPTIONAL — most posts should have ZERO emojis. Only use on long posts (5+ paragraphs). Do NOT repeat the same emoji. Do NOT put emojis on every paragraph. NEVER at the END of sentences.\n` +
       `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance.`,

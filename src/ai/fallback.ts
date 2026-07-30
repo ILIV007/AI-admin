@@ -40,7 +40,7 @@ import { isRetryableError, sleep } from "./provider";
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
-const HEALTH_CACHE_VERSION = "v2"; // bump this when model catalog changes to invalidate old cache
+const HEALTH_CACHE_VERSION = "v3"; // bump v2→v3: fixed isSkippable logic
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
 const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records
@@ -82,6 +82,11 @@ async function writeHealth(env: Env, h: ModelHealth): Promise<void> {
 function isSkippable(h: ModelHealth | null): boolean {
   if (!h) return false;
   if (h.healthy) return false;
+  // Only skip if the model has reached the unhealthy threshold (3 permanent
+  // failures). Transient errors (429/5xx) increment the counter but do NOT
+  // make the model skippable until the threshold is reached.
+  // This prevents a single timeout from skipping the primary model.
+  if (h.consecutiveFailures < UNHEALTHY_THRESHOLD) return false;
   return Date.now() - h.lastCheck < UNHEALTHY_SKIP_MS;
 }
 
@@ -104,15 +109,29 @@ function markFailure(
   error: string,
 ): ModelHealth {
   const prevFailures = h?.consecutiveFailures ?? 0;
-  // M1 fix: do NOT increment the failure counter for TRANSIENT errors (429
-  // rate-limit, 5xx server errors). These are temporary — the model is fine,
-  // it's just busy. Only permanent failures (4xx except 429) should count
-  // toward the unhealthy threshold. This prevents a brief rate-limit burst
-  // from marking a healthy model as unhealthy and causing the bot to randomly
-  // fall back to a different model.
   const status = parseStatusFromError(error);
   const isTransient = status === 429 || (status >= 500 && status < 600) || status === 0;
-  const consecutiveFailures = isTransient ? prevFailures : prevFailures + 1;
+
+  if (isTransient) {
+    // CRITICAL FIX: for transient errors (429/5xx/timeout), do NOT mark the
+    // model as unhealthy. Only increment the counter — and only mark unhealthy
+    // when the THRESHOLD is reached. This prevents a single timeout from
+    // making the primary model skippable for 5 minutes, which caused the bot
+    // to fall back to gemini-2.5 after a single transient failure on 3.6.
+    const consecutiveFailures = prevFailures + 1; // still count, but dont skip
+    const healthy = consecutiveFailures < UNHEALTHY_THRESHOLD;
+    return {
+      model,
+      provider: provider as ModelHealth["provider"],
+      healthy,
+      lastCheck: Date.now(),
+      lastError: error,
+      consecutiveFailures,
+    };
+  }
+
+  // Non-transient (4xx except 429): permanent failure, increment and mark
+  const consecutiveFailures = prevFailures + 1;
   const healthy = consecutiveFailures < UNHEALTHY_THRESHOLD;
   return {
     model,
