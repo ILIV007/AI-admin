@@ -40,7 +40,7 @@ import { isRetryableError, sleep } from "./provider";
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
-const HEALTH_CACHE_VERSION = "v4"; // bump v3→v4: model ranking fix
+const HEALTH_CACHE_VERSION = "v5"; // bump v4→v5: removed gemini-2.5 from catalog
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
 const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records
@@ -117,7 +117,7 @@ function markFailure(
     // model as unhealthy. Only increment the counter — and only mark unhealthy
     // when the THRESHOLD is reached. This prevents a single timeout from
     // making the primary model skippable for 5 minutes, which caused the bot
-    // to fall back to gemini-2.5 after a single transient failure on 3.6.
+    // to fall back to a different model after a single transient failure.
     const consecutiveFailures = prevFailures + 1; // still count, but dont skip
     const healthy = consecutiveFailures < UNHEALTHY_THRESHOLD;
     return {
