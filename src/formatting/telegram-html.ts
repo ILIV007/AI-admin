@@ -314,22 +314,25 @@ export function blocksToTelegramHtml(
   parts.push(`<blockquote>${escapeHtml(footer)}</blockquote>`);
 
   // Join parts:
-  // - Text ending with ":" → next is a quote: single \n (connected, no gap)
+  // - Colon/question → next quote: single \n (connected, no gap)
+  // - Paragraph → next quote (related content): single \n (connected)
   // - Everything else: \n\n (normal paragraph spacing)
-  // - Footer: \n (single newline, it's a small blockquote)
+  // - Footer: \n (single newline)
   const result: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     result.push(parts[i]);
     if (i < parts.length - 1) {
-      const currentEndsColon = /[:：]\s*$/.test(parts[i].replace(/<[^>]+>$/g, "").trim());
+      const currentEndsColonQ = /[:：؟?]\s*$/.test(parts[i].replace(/<[^>]+>$/g, "").trim());
       const nextIsQuote = parts[i + 1].startsWith("<blockquote");
-      const isFooter = i === parts.length - 2; // last content before footer
-      if (currentEndsColon && nextIsQuote) {
-        result.push("\n"); // colon → adjacent quote (connected, no gap)
+      const isFooter = i === parts.length - 2;
+      if (currentEndsColonQ && nextIsQuote) {
+        result.push("\n"); // colon/question → quote (connected, no gap)
+      } else if (nextIsQuote && !isFooter) {
+        result.push("\n"); // paragraph → quote (related, connected)
       } else if (isFooter) {
-        result.push("\n"); // footer: single newline before it
+        result.push("\n"); // footer: single newline
       } else {
-        result.push("\n\n"); // normal spacing between all other parts
+        result.push("\n\n"); // normal spacing between paragraphs
       }
     }
   }

@@ -15,7 +15,7 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.8.8";
+const VERSION = "2.8.9";
 
 // ============================================================
 // AUTH
@@ -161,7 +161,7 @@ export async function handlePanelRoute(
       ];
       const withHealth = await Promise.all(
         allModels.map(async (m) => {
-          const key = `ai:health:v5:${m.provider}:${m.id}`;
+          const key = `ai:health:v6:${m.provider}:${m.id}`;
           let health: { healthy?: boolean; lastCheck?: number; consecutiveFailures?: number } | null = null;
           try {
             const raw = await env.AI_ADMIN_KV.get(key);

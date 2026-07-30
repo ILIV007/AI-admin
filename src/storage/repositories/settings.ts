@@ -50,11 +50,10 @@ function mergeSettings(env: Env, partial: Partial<Settings> | null | undefined):
 
   const merged = { ...base, ...partial };
 
-  // MIGRATION: fix stale model values. gemini-2.5-flash and gemini-2.5-flash-lite
-  // have been COMPLETELY REMOVED from the catalog. Any D1 row still referencing
-  // them gets automatically migrated to gemini-3.6-flash (the current default).
+  // MIGRATION: fix stale model values from older bot versions.
+  // gemini-2.5-flash and gemini-2.5-flash-lite are NOW back in the catalog
+  // as last-resort fallbacks, so they are NOT stale anymore.
   const STALE_GEMINI = new Set([
-    "gemini-2.5-flash", "gemini-2.5-flash-lite",
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
     "gemini-1.5-flash", "gemini-1.5-flash-8b",
   ]);

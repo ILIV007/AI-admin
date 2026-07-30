@@ -40,7 +40,7 @@ import { isRetryableError, sleep } from "./provider";
 // ============================================================
 
 const KV_KEY_PREFIX = "ai:health";
-const HEALTH_CACHE_VERSION = "v5"; // bump v4→v5: removed gemini-2.5 from catalog
+const HEALTH_CACHE_VERSION = "v6"; // bump v5→v6: gemini-2.5 re-added to catalog
 const UNHEALTHY_SKIP_MS = 5 * 60 * 1000; // 5 min: skip models that failed recently
 const UNHEALTHY_THRESHOLD = 3; // mark unhealthy after 3 consecutive failures
 const HEALTH_TTL_SEC = 2 * 60 * 60; // 2 hour KV TTL for health records
