@@ -252,7 +252,13 @@ async function handleProcessUpdate(
   if (content.text && content.text.startsWith("/")) {
     try {
       const { dispatchCommand } = await import("../admin/commands");
-      await dispatchCommand(env, ctx, update.message ?? update.channel_post!, content);
+      // FIX G-3: handle edited_message and edited_channel_post too.
+      // Previously only message/channel_post were checked — edited messages
+      // starting with "/" would pass undefined to dispatchCommand → TypeError.
+      const cmdMsg = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
+      if (cmdMsg) {
+        await dispatchCommand(env, ctx, cmdMsg, content);
+      }
     } catch (e) {
       log("error", "queue.consumer", "command dispatch failed", {
         error: String(e),
@@ -271,7 +277,12 @@ async function handleProcessUpdate(
       hasText: !!content.text,
       hasMedia: !!content.media,
     });
-    const channelSettings = await getSettings(env, userId || Number(env.ADMIN_ID));
+    // FIX CE-ROOT: Channel editing is a bot-level setting configured by the
+    // owner via /menu. The channel post's fromId is the CHANNEL's ID (e.g.
+    // -1001234567890), not the owner's — so getSettings(channelId) returns
+    // DEFAULT_SETTINGS where channelEditing=false, making the feature ALWAYS
+    // off. Fix: always read the OWNER's settings (env.ADMIN_ID).
+    const channelSettings = await getSettings(env, Number(env.ADMIN_ID));
     if (channelSettings.channelEditing) {
       // Skip if this is the bot's own post (prevent infinite loop)
       // Cache bot ID in KV to avoid calling getMe every time
@@ -306,8 +317,12 @@ async function handleProcessUpdate(
   if (content.chatType === "private" && userId !== null) {
     try {
       const { handleAddAdminReply } = await import("../admin/addadmin");
-      const handled = await handleAddAdminReply(env, update.message!);
-      if (handled) return;
+      // FIX G-6: handle edited_message too (was only update.message!).
+      const addAdminMsg = update.message || update.edited_message;
+      if (addAdminMsg) {
+        const handled = await handleAddAdminReply(env, addAdminMsg);
+        if (handled) return;
+      }
     } catch (e) {
       log("warn", "queue.consumer", "addadmin reply check failed", {
         error: String(e),
@@ -704,15 +719,21 @@ async function runChannelEditPipeline(
     workingText = sanitizeAiOutput(workingText);
 
     // 4b. Strip ANY @channel references from final text (AI may add them)
+    // FIX CE-3: use the same safe regex as pipeline.ts — only strip
+    // standalone mention lines, NOT lines that contain @channel + links.
     if (settings.footerText) {
       const chMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
       if (chMatch) {
         const chName = chMatch[1];
+        // Only remove lines where @channelName is the ONLY content (standalone).
+        // Do NOT remove lines with @channelName + other text (links, descriptions).
         const chRegex = new RegExp(
-          `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\b[^\\n]*`,
+          `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\s*(?:[|｜\\-—–]\\s*.*)?[ \\t]*(?=\\n|$)`,
           "gu",
         );
         workingText = workingText.replace(chRegex, "").trim();
+        // Also remove inline @channelName (just the mention, keep the rest)
+        workingText = workingText.replace(new RegExp(`\\s*@${chName}\\b`, "g"), "").trim();
       }
       const fEscaped = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       workingText = workingText.replace(new RegExp(fEscaped, "gi"), "").trim();
@@ -721,13 +742,55 @@ async function runChannelEditPipeline(
 
     workingText = restorePrompts(workingText, prompts);
 
+    // FIX CE-2: Add missing pipeline steps (same as main pipeline.ts):
+    // 4c. Validate preservation (URLs, repos, code blocks)
+    const { validatePreservation } = await import("../processing/preservation");
+    const validation = validatePreservation(content.text, workingText);
+    if (!validation.ok) {
+      const criticalMissing = validation.missing.filter(
+        (m) => m.startsWith("url:") || m.startsWith("repo:"),
+      );
+      if (criticalMissing.length > 0) {
+        log("warn", scope, "channel edit: critical content missing, using original", {
+          criticalMissing,
+        });
+        workingText = content.text; // fall back to original
+      }
+    }
+
+    // 4d. Fix RTL paragraphs (Persian text starting with English words)
+    const { fixRtlParagraphs } = await import("../ai/prompts");
+    workingText = fixRtlParagraphs(workingText);
+
+    // 4e. Normalize Persian half-spaces (نیم‌فاصله)
+    const { normalizePersianHalfSpaces } = await import("../formatting/persian-normalizer");
+    workingText = normalizePersianHalfSpaces(workingText);
+
     // 5. Format to HTML
     const { markdownToBlocks } = await import("../formatting/blocks");
     const { blocksToTelegramHtml } = await import("../formatting/telegram-html");
     const { chunkHtml } = await import("../formatting/chunker");
     const blocks = markdownToBlocks(workingText);
     const html = blocksToTelegramHtml(blocks, settings.footerText);
-    const parts = chunkHtml(html, 4000, settings.footerText);
+
+    // FIX CE-4: use chunkMixedMedia logic for correct media caption limits.
+    // For media posts, the caption limit is 1024 (we use 1000), not 4096.
+    const hasMedia = !!content.media;
+    const CAPTION_MAX = 1000;
+    const TEXT_MAX = 4000;
+    let parts: string[];
+    if (hasMedia) {
+      const captionParts = chunkHtml(html, CAPTION_MAX, "");
+      if (captionParts.length <= 1) {
+        parts = chunkHtml(html, CAPTION_MAX, settings.footerText);
+      } else {
+        const remaining = captionParts.slice(1).join("\n\n");
+        const textParts = chunkHtml(remaining, TEXT_MAX, settings.footerText);
+        parts = [captionParts[0], ...textParts];
+      }
+    } else {
+      parts = chunkHtml(html, TEXT_MAX, settings.footerText);
+    }
 
     // Channel posts are single message — use first part only
     const editHtml = parts[0] || html;
