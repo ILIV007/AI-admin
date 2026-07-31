@@ -29,11 +29,29 @@ import type {
 
 const PERSONALITY_HINTS: Record<Settings["personalityMode"], string> = {
   friendly:
-    "Tone: warm, conversational, approachable. Use casual transitions. Like a knowledgeable friend explaining to a peer.",
+    `TONE: Warm, human, and genuinely interested. Write like a knowledgeable friend who's excited to share something cool — not like a news anchor or a manual.
+
+CRITICAL ANTI-ROBOT RULES:
+- NEVER start with "In today's..." / "It is worth noting" / "As we know" / "In the world of" — these are instant AI tells.
+- NEVER use "moreover", "furthermore", "additionally", "it should be noted" — they sound robotic.
+- Vary sentence length: mix short punchy ones with longer flowing ones. Don't make every sentence the same structure.
+- GENUINE emotion is OK: if something is impressive, say so. If it's surprising, show surprise. Don't be flat.
+- Use natural transitions: "خب", "راستش", "نکته جالب اینجاست", "guess what", "here's the thing" — not "Firstly, secondly".
+- Talk TO the reader, not AT them: "می‌تونی", "you'll see", "ما اینجا", not "the user can" / "one might".
+- Occasionally add a personal touch: a brief opinion, a relatable comparison, a light observation. Not every post, but when it fits.
+- Persian: محاوره‌ای بنویس — "می‌تونه" نه "می‌تواند"، "می‌کنیم" نه "انجام می‌دهیم". اما بی‌ادب یا بیش‌ازحد عامیانه نباش.
+- English: contractions (it's, you'll, we've, that's). Conversational openers when natural.`,
   professional:
-    "Tone: formal, authoritative, concise. Like a senior engineer documenting for peers. Avoid filler.",
+    `TONE: Clear, competent, respectful. Like a senior engineer sharing knowledge with peers — confident but not cold.
+
+- Still human, still natural — just more measured. No filler, but no robotic stiffness either.
+- Persian: formal but readable — "می‌تواند" is fine, but avoid overly literary constructions.
+- English: precise, no contractions, but still conversational flow.`,
   neutral:
-    "Tone: balanced, factual, straightforward. Prioritize clarity over style.",
+    `TONE: Balanced, factual, clear. Prioritize information delivery over personality — but never sound like a machine.
+
+- Dry is fine, flat is not. Keep a natural rhythm.
+- Don't add personality flourishes, but don't strip all life from the text either.`,
 };
 
 // ============================================================
@@ -83,7 +101,7 @@ export function buildSystemPrompt(
       `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) MANDATORY in ALL compound words. Use U+200C (zero-width non-joiner). Examples: به‌روزرسانی ✓ (not بهروزرسانی), نمی‌دانم ✓ (not نمیدانم), نکرده‌اید ✓ (not نکردهاید), می‌توانید ✓ (not میتوانید), می‌رود ✓ (not میرود), همه‌ما ✓ (not همهما), این‌که ✓, آن‌که ✓, به‌طور ✓, در‌حال‌که ✓, چون‌که ✓, نگه‌داری ✓, سرعت‌بخشی ✓, توسعه‌دهنده ✓, کاربران‌گرامی ✓. ALWAYS insert half-space between: prefix+stem (می، نمی، هیچ، این، آن، به، در) and between noun+suffix (ها، ی، شو، ش). If unsure whether to use half-space, use a regular space instead — NEVER write words joined together without any separator. Proofread EVERY word for missing half-spaces before returning.\n` +
       `- CRITICAL PERSIAN: Do NOT double letters. The letter ه (heh) — write it ONCE, never "هه". Proofread before returning.\n` +
       `- EMOJI: Use ONLY the emojis listed in the GUIDANCE section. NEVER use 🌍🌐💡📌📦⚡🔒🐞🧩🤖🔥🚀🎉😍✨ or ANY emoji NOT in the approved list. If an emoji is not in the GUIDANCE list, do NOT use it. Emojis are OPTIONAL — most posts should have ZERO emojis. Only use on long posts (5+ paragraphs). Do NOT repeat the same emoji. Do NOT put emojis on every paragraph. NEVER at the END of sentences.\n` +
-      `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance.`,
+      `- Keep the original meaning and tone. Improve readability and structure, do NOT change the substance. But DO let your personality show — be human, be warm, be genuine. Don't sanitize all emotion out of the text.`,
   );
 
   // --- Mode-specific instructions ---
