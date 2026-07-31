@@ -304,23 +304,17 @@ async function sendMediaWithCaption(
   // If caption is empty (no text content), do NOT send caption at all —
   // just send the media without any text. Telegram API ignores empty caption
   // but some clients show an empty blockquote — so we omit it entirely.
-  const base: Record<string, unknown> = {
-    chat_id: chatId,
-    reply_markup: replyMarkup,
-  };
-  if (safeCaption && safeCaption.replace(/<[^>]+>/g, "").trim().length > 0) {
-    base.caption = safeCaption;
-  }
+  const hasCaption = safeCaption && safeCaption.replace(/<[^>]+>/g, "").trim().length > 0;
 
   switch (media.type) {
     case "photo":
-      return sendPhoto(token, { chat_id: chatId, photo: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
+      return sendPhoto(token, { chat_id: chatId, photo: media.fileId, caption: hasCaption ? safeCaption : undefined, reply_markup: replyMarkup });
     case "video":
-      return sendVideo(token, { chat_id: chatId, video: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
+      return sendVideo(token, { chat_id: chatId, video: media.fileId, caption: hasCaption ? safeCaption : undefined, reply_markup: replyMarkup });
     case "document":
-      return sendDocument(token, { chat_id: chatId, document: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
+      return sendDocument(token, { chat_id: chatId, document: media.fileId, caption: hasCaption ? safeCaption : undefined, reply_markup: replyMarkup });
     case "animation":
-      return sendAnimation(token, { chat_id: chatId, animation: media.fileId, caption: safeCaption || undefined, reply_markup: replyMarkup });
+      return sendAnimation(token, { chat_id: chatId, animation: media.fileId, caption: hasCaption ? safeCaption : undefined, reply_markup: replyMarkup });
     default:
       throw new Error(
         `sendMediaWithCaption: unknown media type ${JSON.stringify(media.type)}`,

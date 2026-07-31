@@ -782,9 +782,51 @@ export async function runPipeline(
         publishedChatId: null,
       });
 
+      // FIX SCHED-3: race condition — two concurrent posts could both see the
+      // same free slots and pick the same one. After createJob, re-check if
+      // another job already has this exact slot. If so, recompute and update.
+      let finalScheduledFor = scheduledFor;
+      try {
+        const recheck = await listPendingScheduledForUser(env, content.fromId, 100);
+        const sameSlotJobs = recheck.filter(
+          (j) => j.scheduledFor === scheduledFor && j.id !== jobId,
+        );
+        if (sameSlotJobs.length > 0) {
+          // Collision! Another job got the same slot. Recompute with the
+          // updated pending list (which now includes the other job).
+          const updatedFors = recheck
+            .map((j) => j.scheduledFor)
+            .filter((t): t is number => typeof t === "number" && Number.isFinite(t));
+          const newScheduledFor = schedulerMod.computeNextScheduledTime(
+            Date.now(),
+            updatedFors,
+            perDay,
+            startHour,
+          );
+          // Direct UPDATE to set the new scheduledFor
+          const { exec } = await import("../storage/d1");
+          await exec(
+            env.DB,
+            "UPDATE jobs SET scheduled_for = ?, updated_at = ? WHERE id = ?",
+            newScheduledFor,
+            Date.now(),
+            jobId,
+          );
+          finalScheduledFor = newScheduledFor;
+          log("warn", scope, "slot collision detected; rescheduled", {
+            jobId,
+            originalSlot: scheduledFor,
+            newSlot: newScheduledFor,
+            collisionCount: sameSlotJobs.length,
+          });
+        }
+      } catch (e) {
+        log("warn", scope, "collision check failed (non-fatal)", { error: String(e) });
+      }
+
       log("info", scope, "scheduled_post job created", {
         jobId,
-        scheduledFor,
+        scheduledFor: finalScheduledFor,
         perDay,
         startHour,
         pendingCount: pendingFors.length,
@@ -803,7 +845,7 @@ export async function runPipeline(
             [{ text: "🚫 Cancel Scheduled Post", callback_data: `cancelsched:${jobId}` }],
           ]);
           // Format the scheduled time in Persian locale + Tehran timezone.
-          const schedTime = new Date(scheduledFor).toLocaleString("fa-IR", {
+          const schedTime = new Date(finalScheduledFor).toLocaleString("fa-IR", {
             timeZone: "Asia/Tehran",
             dateStyle: "medium",
             timeStyle: "short",
@@ -836,7 +878,7 @@ export async function runPipeline(
         aiProvider,
         aiModel,
         jobId,
-        scheduledFor,
+        scheduledFor: finalScheduledFor,
       };
     } catch (e) {
       log("error", scope, "schedule job creation failed; falling back to publish", {

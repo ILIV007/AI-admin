@@ -271,7 +271,6 @@ export function buildScheduleCalendarView(
 ): ScheduleDayView[] {
   const perDay = Math.max(1, Math.min(8, Math.floor(slotsPerDay)));
   const start = Math.max(0, Math.min(23, Math.floor(startHour)));
-  const now = Date.now();
   const tn = tehranNow();
 
   // Build a map: epoch ms (rounded to minute) → job
@@ -311,7 +310,10 @@ export function buildScheduleCalendarView(
     for (const slotEpoch of slots) {
       const rounded = Math.round(slotEpoch / 60000) * 60000;
       const job = jobMap.get(rounded);
-      const occupied = !!job && slotEpoch > now;
+      // FIX SCHED-5: show as occupied if a job exists, regardless of whether
+      // the slot time has passed. Previously, past-pending jobs (cron hasn't
+      // published them yet) showed as ⬜ (free) which was misleading.
+      const occupied = !!job;
       if (occupied) occupiedCount++;
 
       // Format slot time in Tehran

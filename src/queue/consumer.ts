@@ -416,7 +416,9 @@ async function handleProcessUpdate(
   // Record stats based on outcome. FIX-4: use a SINGLE bumpMultiple call
   // (1 D1 UPDATE per row) instead of 3-4 separate recordX calls (12-16 writes).
   // Fire-and-forget via ctx.waitUntil.
-  const statsFields: Partial<Record<keyof Stats, number>> = { totalReceived: 1 };
+  // FIX BUG-NEW-1: totalReceived already counted by recordReceived() above
+  // (line 222). Don't double-count it here.
+  const statsFields: Partial<Record<keyof Stats, number>> = {};
   if (result.aiUsed) {
     statsFields.aiCalls = 1;
   }
@@ -432,7 +434,10 @@ async function handleProcessUpdate(
   } else if (result.action === "failed") {
     statsFields.totalFailed = 1;
   }
-  ctx.waitUntil(safe(bumpMultiple(env, userId, statsFields)));
+  // Only call bumpMultiple if there are fields to bump (avoid empty UPDATE)
+  if (Object.keys(statsFields).length > 0) {
+    ctx.waitUntil(safe(bumpMultiple(env, userId, statsFields)));
+  }
 
   // ── Send post copy to admin + edit loading → report ─────────────
   // ALWAYS send to admin if they're authorized (regardless of chatType)

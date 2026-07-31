@@ -51,7 +51,7 @@ import { exec, execAll } from "../storage/d1";
 // ============================================================
 
 /** How many scheduled posts to dispatch per cron tick. */
-const SCHEDULED_BATCH_SIZE = 20;
+const SCHEDULED_BATCH_SIZE = 50;
 
 /** Retention window for seen_updates rows (7 days). */
 const SEEN_UPDATES_RETENTION_MS = 7 * 24 * 3600 * 1000;
