@@ -405,7 +405,7 @@ function parseInlineInner(text: string): Span[] {
       }
     }
 
-    // Bare URL
+    // Bare URL with protocol (http:// or https://)
     if (text.startsWith("http://", i) || text.startsWith("https://", i)) {
       const m = /^https?:\/\/[^\s<>"']+/i.exec(text.slice(i));
       if (m) {
@@ -413,6 +413,51 @@ function parseInlineInner(text: string): Span[] {
         spans.push({ kind: "link", text: m[0], url: m[0] });
         i += m[0].length;
         continue;
+      }
+    }
+
+    // Bare URL WITHOUT protocol — detect common domains like:
+    // example.com, github.com/owner/repo, t.me/channel, etc.
+    // This catches URLs the AI writes without https:// prefix.
+    // Pattern: domain.tld/path (must have a dot, not start with space/punct)
+    if (i === 0 || /[\s\n\(\[\{>]/.test(text[i - 1])) {
+      const bareUrlMatch = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s<>"']*)?/i.exec(text.slice(i));
+      if (bareUrlMatch) {
+        const bareUrl = bareUrlMatch[0];
+        // Exclude common false positives:
+        // 1. File extensions: .tar.gz, .js, .ts, .json, .html, .css, .py, etc.
+        // 2. Version numbers: 1.2.3
+        // 3. Persian text ending with period
+        const domainPart = bareUrl.split("/")[0];
+        const tldMatch = /\.([a-z]{2,})$/i.exec(domainPart);
+        if (tldMatch) {
+          const tld = tldMatch[1].toLowerCase();
+          // Common file extensions that look like TLDs — exclude
+          const fileExtensions = new Set([
+            "gz", "js", "ts", "py", "rb", "go", "rs", "sh", "md",
+            "json", "html", "css", "xml", "yaml", "yml", "toml",
+            "png", "jpg", "jpeg", "gif", "svg", "webp", "ico",
+            "mp3", "mp4", "avi", "mov", "wav", "flac",
+            "zip", "rar", "7z", "tar", "deb", "rpm", "dmg", "iso",
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+            "txt", "log", "csv", "sql", "db", "sqlite",
+          ]);
+          // Also exclude if it's all digits (version number like 1.2.3)
+          const isAllDigitsOrDots = /^[0-9.]+$/.test(domainPart);
+
+          // Allow short domains like t.me, x.com, etc. if they have a valid TLD
+          // and are NOT all digits/dots and NOT a file extension.
+          // We removed the vowel check because it excluded valid short domains
+          // like "t.me" (t has no vowel).
+          if (!fileExtensions.has(tld) && !isAllDigitsOrDots &&
+              domainPart.includes(".") && !domainPart.startsWith(".") && !domainPart.endsWith("..")) {
+            flush();
+            // Store with https:// prefix as the URL, but keep original text
+            spans.push({ kind: "link", text: bareUrl, url: `https://${bareUrl}` });
+            i += bareUrl.length;
+            continue;
+          }
+        }
       }
     }
 

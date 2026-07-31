@@ -754,15 +754,16 @@ export async function runPipeline(
         startHour,
       );
 
-      // P1-SS3 fix: store parts WITHOUT footer in the payload. The cron
-      // appends the footer at publish time. This prevents double-footer if
-      // the cron ever reconstructs HTML from `html` + appends footer.
-      // P2-SS8 fix: also store AI metadata so the cron can report which
-      // model processed the post.
-      const partsNoFooter = chunkMixedMedia(html, hasMedia, "", CAPTION_MAX_VISIBLE, CHUNK_MAX_VISIBLE);
+      // P1-SS3 fix: store parts WITH footer embedded in the last part.
+      // Previously stored WITHOUT footer (footer="") which caused chunkHtml
+      // to NOT strip the footer from html, resulting in the footer being
+      // chunked as a separate text message (double post).
+      // Now: chunk with the actual footer so chunkHtml properly strips it
+      // from html and appends it ONLY to the last part.
+      const partsWithFooter = chunkMixedMedia(html, hasMedia, settings.footerText, CAPTION_MAX_VISIBLE, CHUNK_MAX_VISIBLE);
       const payload = JSON.stringify({
         html,
-        parts: partsNoFooter,
+        parts: partsWithFooter,
         media: content.media,
         footer: settings.footerText,
         aiUsed,
