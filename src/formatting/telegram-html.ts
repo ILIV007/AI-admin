@@ -331,9 +331,16 @@ export function blocksToTelegramHtml(
 
   // Join parts:
   // - Colon/question → next quote: single \n (connected, no gap)
-  // - Paragraph → next quote (related content): single \n (connected)
   // - Everything else: \n\n (normal paragraph spacing)
   // - Footer: \n (single newline)
+  //
+  // CRITICAL FIX: removed the "paragraph → quote = \n" rule.
+  // That rule joined headings/paragraphs to following blockquotes with \n
+  // (not \n\n), making them ONE unit in splitParagraphsSafe. This caused:
+  // 1. Heading separated from content during chunking (heading alone in one chunk)
+  // 2. Heading+blockquote appeared "quoted together" (user: "با پاراگرافش quote میشه")
+  // Now ALL non-colon, non-footer joins use \n\n — headings and blockquotes
+  // are separate units that the chunker can properly handle.
   const result: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     result.push(parts[i]);
@@ -343,12 +350,10 @@ export function blocksToTelegramHtml(
       const isFooter = hasFooter && i === parts.length - 2;
       if (currentEndsColonQ && nextIsQuote) {
         result.push("\n"); // colon/question → quote (connected, no gap)
-      } else if (nextIsQuote && !isFooter) {
-        result.push("\n"); // paragraph → quote (related, connected)
       } else if (isFooter) {
         result.push("\n"); // footer: single newline
       } else {
-        result.push("\n\n"); // normal spacing between paragraphs
+        result.push("\n\n"); // normal spacing between ALL parts
       }
     }
   }

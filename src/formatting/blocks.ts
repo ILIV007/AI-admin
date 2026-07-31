@@ -97,15 +97,53 @@ export function markdownToBlocks(md: string): ContentBlock[] {
     }
 
     // --- Heading (only levels 2 and 3) ---
+    // If heading ends with colon (: or ： or ؟ or ?), auto-quote the next
+    // paragraph. This groups heading content visually in a blockquote below.
     const headingMatch = /^(#{2,3})\s+(.+)$/.exec(line);
     if (headingMatch) {
       const level: 2 | 3 = headingMatch[1].length === 2 ? 2 : 3;
+      const headingText = headingMatch[2];
       blocks.push({
         kind: "heading",
         level,
-        spans: parseInlineSpans(headingMatch[2]),
+        spans: parseInlineSpans(headingText),
       });
       i++;
+
+      // Check if heading ends with colon/question → auto-quote next paragraph
+      if (/[:：؟?]\s*$/.test(headingText.trim()) && i < lines.length) {
+        // Skip blank lines between heading and content
+        let peek = i;
+        while (peek < lines.length && lines[peek].trim() === "") peek++;
+        if (peek < lines.length) {
+          const nextTrimmed = lines[peek].trim();
+          // Don't auto-quote if next is another heading, list, code fence, or blockquote
+          const isSpecial = /^(```|~~~|#{2,3}\s|---+\s*$|>\s?|[-*]\s|\d+\.\s)/.test(nextTrimmed);
+          if (!isSpecial && nextTrimmed.length > 0) {
+            i = peek;
+            const quoteLines: string[] = [];
+            while (
+              i < lines.length &&
+              lines[i].trim() !== "" &&
+              !/^```/.test(lines[i]) &&
+              !/^#{2,3}\s+/.test(lines[i]) &&
+              !/^---+\s*$/.test(lines[i]) &&
+              !/^>\s?/.test(lines[i]) &&
+              !/^[-*]\s+/.test(lines[i]) &&
+              !/^\d+\.\s/.test(lines[i])
+            ) {
+              quoteLines.push(lines[i]);
+              i++;
+            }
+            if (quoteLines.length > 0) {
+              blocks.push({
+                kind: "quote",
+                spans: parseInlineSpans(quoteLines.join("\n")),
+              });
+            }
+          }
+        }
+      }
       continue;
     }
 
@@ -190,6 +228,11 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       // If ends with colon, peek ahead: auto-quote the next paragraph ONLY if
       // it's a bare URL or markdown link. Regular text and code fences are
       // NOT auto-quoted — the AI should use explicit > markdown for those.
+      //
+      // EXCEPT: if the current paragraph is a HEADING (rendered as <b>...</b>),
+      // we DO auto-quote the next paragraph (any text, not just URLs). This is
+      // because a heading ending with ":" introduces its content — the content
+      // should be visually grouped in a blockquote below the heading.
       if (endsWithColonOrQuestion && i < lines.length) {
         // Skip blank lines between colon and content
         let peek = i;
@@ -198,8 +241,10 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         const nextTrimmed = nextLine.trim();
         const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
         const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
-        // ONLY quote URLs and markdown links — not regular text, not code fences.
+        // Check if the current paragraph is a heading (starts with ## or ###)
+        const isHeading = /^#{2,3}\s+/.test(paraLines[0] ?? "");
         if (isUrlStart || isMarkdownLink) {
+          // URL/link after colon → always quote
           // Collect the quote paragraph
           i = peek;
           const quoteLines: string[] = [];
@@ -211,7 +256,31 @@ export function markdownToBlocks(md: string): ContentBlock[] {
             !/^---+\s*$/.test(lines[i]) &&
             !/^>\s?/.test(lines[i]) &&
             !/^[-*]\s+/.test(lines[i]) &&
-            !/^\d+\.\s+/.test(lines[i])
+            !/^\d+\.\s/.test(lines[i])
+          ) {
+            quoteLines.push(lines[i]);
+            i++;
+          }
+          if (quoteLines.length > 0) {
+            blocks.push({
+              kind: "quote",
+              spans: parseInlineSpans(quoteLines.join("\n")),
+            });
+          }
+        } else if (isHeading) {
+          // Heading with colon → auto-quote the next paragraph (any text)
+          // This groups the heading's content visually in a blockquote.
+          i = peek;
+          const quoteLines: string[] = [];
+          while (
+            i < lines.length &&
+            lines[i].trim() !== "" &&
+            !/^```/.test(lines[i]) &&
+            !/^#{2,3}\s+/.test(lines[i]) &&
+            !/^---+\s*$/.test(lines[i]) &&
+            !/^>\s?/.test(lines[i]) &&
+            !/^[-*]\s+/.test(lines[i]) &&
+            !/^\d+\.\s/.test(lines[i])
           ) {
             quoteLines.push(lines[i]);
             i++;

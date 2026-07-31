@@ -345,6 +345,21 @@ export async function runPipeline(
   // ── 8. Restore prompt placeholders ──────────────────────────────
   finalText = restorePrompts(finalText, prompts);
 
+  // ── 8a. Re-detect prompts that the AI generated WITHOUT placeholders.
+  //       The AI may strip the placeholder and output the prompt as plain text
+  //       (e.g. "prompt: a beautiful girl, 8k, realistic, ...") without wrapping
+  //       it in a ```prompt fence. This step catches those by running
+  //       protectPrompts again on the AI output, then restoring immediately.
+  //       Without this, prompts between Persian text render as plain paragraphs
+  //       instead of collapsible blockquote+mono.
+  const reProtect = protectPrompts(finalText);
+  if (reProtect.prompts.length > 0) {
+    finalText = restorePrompts(reProtect.text, reProtect.prompts);
+    log("info", scope, "re-detected prompts in AI output", {
+      count: reProtect.prompts.length,
+    });
+  }
+
   // ── 8b. Fix RTL: prepend RLM mark to Persian paragraphs that start with
   //      an English word (P2-5). Defense-in-depth behind the AI instruction.
   finalText = fixRtlParagraphs(finalText);
