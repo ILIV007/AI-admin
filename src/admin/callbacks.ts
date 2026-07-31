@@ -210,7 +210,7 @@ export async function handleCallbackQuery(
       } catch { /* ignore */ }
       return;
     }
-    if (data.startsWith("set:")) {
+    if (data.startsWith("set:") || data.startsWith("view:")) {
       await handleSet(env, cq, data, role);
     } else if (data.startsWith("pick:")) {
       await handlePick(env, cq, data, role);
@@ -299,7 +299,7 @@ async function handleSet(
         `${t(lang, "sched.title")}\n\n` +
         `${cfg.enabled ? t(lang, "sched.enabled") : t(lang, "sched.disabled")}\n` +
         `📊 ${t(lang, "sched.posts_per_day")}: <b>${cfg.perDay}</b>\n` +
-        `🕐 ${t(lang, "sched.start_hour")}: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (${t(lang, "sched.tehran")})\n\n` +
+        `🕐 ${t(lang, "sched.start_hour")}: <b>${String(cfg.startHour).padStart(2, "0")}:00</b>\n\n` +
         `<b>${escapeHtml(today.dayLabel)}:</b> (${today.occupiedCount}/${today.slots.length} ${t(lang, "sched.occupied")})\n` +
         `<blockquote>${slotStr}</blockquote>\n\n` +
         `<i>${t(lang, "sched.distribute_info")}</i>`;
@@ -661,8 +661,8 @@ async function handleSchedUpdate(
       `📅 <b>Schedule</b>\n\n` +
       `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
       `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
-      `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
-      `<b>Today's slots (Tehran):</b>\n${slotStr}\n\n` +
+      `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b>\n\n` +
+      `<b>Today's slots:</b>\n${slotStr}\n\n` +
       `<i>Posts are randomly distributed across available slots. ` +
       `When all of today's slots are taken, the post rolls to tomorrow.</i>`;
     await editText(env, cq, text, scheduleSettingsKeyboard(settings));
@@ -677,7 +677,7 @@ async function handleSchedUpdate(
     await editText(
       env,
       cq,
-      "🕐 <b>Start Hour (Tehran)</b>\nSelect:",
+      "🕐 <b>Start Hour</b>\nSelect:",
       scheduleStartHourKeyboard(cfg.startHour),
     );
   } else {
@@ -689,8 +689,8 @@ async function handleSchedUpdate(
       `📅 <b>Schedule</b>\n\n` +
       `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
       `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
-      `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
-      `<b>Today's slots (Tehran):</b>\n${slotStr}`;
+      `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b>\n\n` +
+      `<b>Today's slots:</b>\n${slotStr}`;
     await editText(env, cq, text, scheduleSettingsKeyboard(settings));
   }
 }
@@ -721,7 +721,7 @@ async function handlePick(
       text = "📊 <b>Messages per day</b>\nSelect a value:";
     } else if (data === "pick:sched:starthour") {
       keyboard = scheduleStartHourKeyboard(cfg.startHour);
-      text = "🕐 <b>Start Hour (Tehran)</b>\nSelect:";
+      text = "🕐 <b>Start Hour</b>\nSelect:";
     } else {
       // pick:sched:interval — backward compat; old keyboards may still send this.
       // Re-render the top-level menu since the interval picker was removed.
@@ -733,8 +733,8 @@ async function handlePick(
         `📅 <b>Schedule</b>\n\n` +
         `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
         `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
-        `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
-        `<b>Today's slots (Tehran):</b>\n${slotStr}`;
+        `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b>\n\n` +
+        `<b>Today's slots:</b>\n${slotStr}`;
     }
     await safeAnswer(env, cq.id, "");
     await editText(env, cq, text, keyboard);

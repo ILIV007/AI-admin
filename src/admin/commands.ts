@@ -76,7 +76,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.12.4";
+const VERSION = "v2.12.5";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -622,7 +622,7 @@ export async function handleSchedule(
     `${t(lang, "sched.title")}\n\n` +
     `${cfg.enabled ? t(lang, "sched.enabled") : t(lang, "sched.disabled")}\n` +
     `📊 ${t(lang, "sched.posts_per_day")}: <b>${cfg.perDay}</b>\n` +
-    `🕐 ${t(lang, "sched.start_hour")}: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (${t(lang, "sched.tehran")})\n\n` +
+    `🕐 ${t(lang, "sched.start_hour")}: <b>${String(cfg.startHour).padStart(2, "0")}:00</b>\n\n` +
     `<b>${today.dayLabel}:</b> (${today.occupiedCount}/${today.slots.length} ${t(lang, "sched.occupied")})\n` +
     `<blockquote>${slotStr}</blockquote>\n\n` +
     `<i>${t(lang, "sched.distribute_info")}</i>`;
@@ -669,7 +669,7 @@ export async function handlePing(
     `🏓 <b>pong</b>\n\n` +
     `Version: <code>${VERSION}</code>\n` +
     `Server time: <code>${now.toISOString()}</code>\n` +
-    `Tehran time: <code>${escapeHtml(tehranNow)}</code>\n` +
+    `Server time: <code>${escapeHtml(tehranNow)}</code>\n` +
     `Webhook queue: <code>${hookPending}</code>\n` +
     `Channel: <code>${escapeHtml(env.TARGET_CHANNEL)}</code>\n` +
     `Owner: <code>${ownerUserId(env)}</code>`;
@@ -693,7 +693,7 @@ export async function handleVersion(
     `<b>Version</b>: <code>${VERSION}</code>\n` +
     `<b>Build date</b>: <code>${BUILD_DATE}</code>\n` +
     `<b>Server time</b>: <code>${now.toISOString()}</code>\n` +
-    `<b>Tehran time</b>: <code>${escapeHtml(tehranNow)}</code>\n\n` +
+    `<b>Server time</b>: <code>${escapeHtml(tehranNow)}</code>\n\n` +
     `<b>📦 Build stats</b>\n` +
     `• TypeScript files: <code>40</code>\n` +
     `• AI models: <code>${ALL_MODELS.length}</code>\n` +

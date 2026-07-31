@@ -170,16 +170,16 @@ function describeEmojiLevel(level: number): string {
   if (level <= 10) return "no emojis — use only structural symbols (→ × | + ▸ ◆ ◇ ▪ ◦ •) and blockquotes for formatting";
 
   if (level <= 30) {
-    // Level 20: VERY RESTRICTIVE. Emojis only on long structured posts (5+ paragraphs).
-    // Most posts should have ZERO emojis.
+    // Level 20: LOW but not zero. Structural symbols are ALWAYS encouraged.
+    // Emojis are optional but allowed when they enhance readability.
     return (
-      "VERY LOW — most posts should have ZERO emojis. Only use emojis on long structured posts (5+ paragraphs).\n" +
-      "When you DO use emojis (max 1-2 total), use ONLY from these sets:\n" +
+      "LOW — use structural symbols freely for formatting. Emojis optional (max 1-2 per post).\n" +
+      "Structural symbols (ALWAYS available, use freely): → × | + ▸ ◆ ◇ ▪ ◦ •\n" +
       "Geometric (for bullets/dividers): " + GEO_EMOJIS + "\n" +
-      "Character (max 1, for a key section start): " + CHAR_EMOJIS + "\n" +
-      "RULES: Short posts (1-4 paragraphs) = NO emojis. Do NOT repeat the same emoji. " +
-      "Do NOT put emojis on every paragraph. Structural symbols (→ × | + ▸ ◆ •) and blockquotes " +
-      "are the PRIMARY formatting tools — emojis are secondary, optional, and rare. " +
+      "Character (max 1, for a key section): " + CHAR_EMOJIS + "\n" +
+      "RULES: Use structural symbols (→ × | ▸ ◆ •) for lists, steps, and visual hierarchy — they make posts MORE readable. " +
+      "Emojis (max 1-2) are welcome when they add meaning (e.g. 🔗 for a link section, 📜 for a guide). " +
+      "Do NOT repeat the same emoji. Do NOT put emojis on every paragraph. " +
       "NEVER at end of sentences."
     );
   }
