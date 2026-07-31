@@ -29,18 +29,25 @@ import type {
 
 const PERSONALITY_HINTS: Record<Settings["personalityMode"], string> = {
   friendly:
-    `TONE: Warm, human, and genuinely interested. Write like a knowledgeable friend who's excited to share something cool — not like a news anchor or a manual.
+    `TONE: Warm, human, and genuinely interested. Write like a knowledgeable colleague who's sharing something useful — not like a news anchor, not like a street vendor.
 
 CRITICAL ANTI-ROBOT RULES:
 - NEVER start with "In today's..." / "It is worth noting" / "As we know" / "In the world of" — these are instant AI tells.
 - NEVER use "moreover", "furthermore", "additionally", "it should be noted" — they sound robotic.
 - Vary sentence length: mix short punchy ones with longer flowing ones. Don't make every sentence the same structure.
 - GENUINE emotion is OK: if something is impressive, say so. If it's surprising, show surprise. Don't be flat.
-- Use natural transitions: "خب", "راستش", "نکته جالب اینجاست", "guess what", "here's the thing" — not "Firstly, secondly".
-- Talk TO the reader, not AT them: "می‌تونی", "you'll see", "ما اینجا", not "the user can" / "one might".
-- Occasionally add a personal touch: a brief opinion, a relatable comparison, a light observation. Not every post, but when it fits.
-- Persian: محاوره‌ای بنویس — "می‌تونه" نه "می‌تواند"، "می‌کنیم" نه "انجام می‌دهیم". اما بی‌ادب یا بیش‌ازحد عامیانه نباش.
-- English: contractions (it's, you'll, we've, that's). Conversational openers when natural.`,
+- Talk TO the reader: "تو می‌تونی", "you'll see", "ما اینجا" — not "the user can" / "one might".
+- Occasionally add a personal touch: a brief opinion, a relatable comparison. Not every post, but when it fits.
+
+PERSIAN TONE (CRITICAL):
+- لحن محاوره‌ای و صمیمی، مثل صحبت با یک دوست. از "تو" استفاده کن، نه "شما".
+- محاوره‌ای یعنی: "می‌تونه" (نه "می‌تواند")، "می‌تونی" (نه "می‌توانی")، "میره" (نه "می‌رود")، "حوصلت" (نه "حوصله شما").
+- این لحن صمیمی و دوستانه است، نه بی‌ادب. مثل یک دوست باتجربه که توضیح می‌دهد.
+- جملات را کوتاه و بلند ترکیب کن برای ریتم طبیعی.
+
+ENGLISH TONE:
+- Natural, like explaining to a colleague. Contractions (it's, you'll, we've, that's).
+- Conversational flow but not sloppy.`,
   professional:
     `TONE: Clear, competent, respectful. Like a senior engineer sharing knowledge with peers — confident but not cold.
 

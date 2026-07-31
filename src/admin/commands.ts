@@ -76,7 +76,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.11.0";
+const VERSION = "v2.12.1";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -598,19 +598,34 @@ export async function handleSchedule(
     startHour,
   };
 
-  // Show today's slot preview (FIX SC-8).
-  const { computeDaySlotsPreview } = await import("../processing/scheduler");
-  const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
-  const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
+  // Show today's calendar view with pending posts mapped to slots.
+  const { t, getUiLanguage } = await import("../i18n");
+  const lang = getUiLanguage(settings);
+  const { buildScheduleCalendarView } = await import("../processing/scheduler");
+  const { listPendingScheduledForUser } = await import("../storage/repositories/jobs");
+  const pending = fromId ? await listPendingScheduledForUser(env, fromId, 100).catch(() => []) : [];
+  const calView = buildScheduleCalendarView(
+    pending.map((j) => ({ id: j.id, scheduledFor: j.scheduledFor, payload: j.payload })),
+    cfg.perDay,
+    cfg.startHour,
+    1, // just today
+    lang,
+  );
+  const today = calView[0];
+  const slotStr = today.slots.map((s) => {
+    const icon = s.occupied ? "✅" : "⬜";
+    const preview = s.postPreview ? ` — ${s.postPreview.slice(0, 40).replace(/</g, "&lt;")}` : "";
+    return `${icon} ${s.time}${preview}`;
+  }).join("\n");
 
   const text =
-    `📅 <b>Schedule</b>\n\n` +
-    `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
-    `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
-    `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
-    `<b>Today's slots (Tehran):</b>\n${slotStr}\n\n` +
-    `<i>Posts are assigned to the next available slot (randomly distributed). ` +
-    `The cron publishes due posts every 30 minutes.</i>`;
+    `${t(lang, "sched.title")}\n\n` +
+    `${cfg.enabled ? t(lang, "sched.enabled") : t(lang, "sched.disabled")}\n` +
+    `📊 ${t(lang, "sched.posts_per_day")}: <b>${cfg.perDay}</b>\n` +
+    `🕐 ${t(lang, "sched.start_hour")}: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (${t(lang, "sched.tehran")})\n\n` +
+    `<b>${today.dayLabel}:</b> (${today.occupiedCount}/${today.slots.length} ${t(lang, "sched.occupied")})\n` +
+    `<blockquote>${slotStr}</blockquote>\n\n` +
+    `<i>${t(lang, "sched.distribute_info")}</i>`;
 
   await safeSend(env, message.chat.id, text, scheduleSettingsKeyboard(settings));
 }

@@ -225,3 +225,143 @@ export function computeDaySlotsPreview(
   }
   return result;
 }
+
+/**
+ * Build a calendar view of scheduled posts for the schedule UI.
+ *
+ * Groups pending scheduled posts by Tehran day, then for each day shows the
+ * slot times and which post (if any) is assigned to each slot.
+ *
+ * @param pendingJobs   Array of pending scheduled_post jobs (from D1).
+ * @param slotsPerDay   Number of daily slots (1-8).
+ * @param startHour     Start hour in Tehran (0-23).
+ * @param maxDays       Max number of days to show (default 7).
+ * @returns Array of day-views, each with date + slots + assigned posts.
+ */
+export interface ScheduleDayView {
+  /** Tehran date label, e.g. "امروز (چهارشنبه)" or "فردا (پنجشنبه)". */
+  dayLabel: string;
+  /** Tehran date in "YYYY-MM-DD" format for sorting/comparison. */
+  dateKey: string;
+  /** Slots for this day, with assigned post (if any). */
+  slots: ScheduleSlotView[];
+  /** Number of occupied slots. */
+  occupiedCount: number;
+}
+
+export interface ScheduleSlotView {
+  /** Slot time in "HH:MM" format (Tehran). */
+  time: string;
+  /** The slot's epoch ms (UTC). */
+  epoch: number;
+  /** True if a post is assigned to this slot. */
+  occupied: boolean;
+  /** If occupied, a short preview of the post text (first 60 chars). */
+  postPreview?: string;
+  /** If occupied, the job ID. */
+  jobId?: string;
+}
+
+export function buildScheduleCalendarView(
+  pendingJobs: { id: string; scheduledFor: number | null; payload: string }[],
+  slotsPerDay: number,
+  startHour: number,
+  maxDays: number = 7,
+  lang: "en" | "fa" = "en",
+): ScheduleDayView[] {
+  const perDay = Math.max(1, Math.min(8, Math.floor(slotsPerDay)));
+  const start = Math.max(0, Math.min(23, Math.floor(startHour)));
+  const now = Date.now();
+  const tn = tehranNow();
+
+  // Build a map: epoch ms (rounded to minute) → job
+  const jobMap = new Map<number, { id: string; preview: string }>();
+  for (const job of pendingJobs) {
+    if (job.scheduledFor == null || !Number.isFinite(job.scheduledFor)) continue;
+    const rounded = Math.round(job.scheduledFor / 60000) * 60000;
+    let preview = "";
+    try {
+      const p = JSON.parse(job.payload) as { html?: string; originalTextPreview?: string };
+      preview = (p.originalTextPreview || p.html || "").slice(0, 60);
+    } catch { /* ignore */ }
+    jobMap.set(rounded, { id: job.id, preview });
+  }
+
+  // Day names — bilingual
+  const enDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const faDays = ["یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه"];
+  const dayNames = lang === "fa" ? faDays : enDays;
+  const todayLabel = lang === "fa" ? "امروز" : "Today";
+  const tomorrowLabel = lang === "fa" ? "فردا" : "Tomorrow";
+
+  const views: ScheduleDayView[] = [];
+  for (let dayOffset = 0; dayOffset < maxDays; dayOffset++) {
+    const date = new Date(Date.UTC(tn.y, tn.mo, tn.d + dayOffset));
+    const slots = computeDaySlots(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      start,
+      perDay,
+    );
+
+    const slotViews: ScheduleSlotView[] = [];
+    let occupiedCount = 0;
+
+    for (const slotEpoch of slots) {
+      const rounded = Math.round(slotEpoch / 60000) * 60000;
+      const job = jobMap.get(rounded);
+      const occupied = !!job && slotEpoch > now;
+      if (occupied) occupiedCount++;
+
+      // Format slot time in Tehran
+      const tehranDate = new Date(slotEpoch);
+      const fmt = new Intl.DateTimeFormat("en-GB", {
+        timeZone: TEHRAN_TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      const timeStr = fmt.format(tehranDate);
+
+      slotViews.push({
+        time: timeStr,
+        epoch: slotEpoch,
+        occupied,
+        postPreview: job?.preview,
+        jobId: job?.id,
+      });
+    }
+
+    // Day label (bilingual)
+    const tehranDate = new Date(Date.UTC(tn.y, tn.mo, tn.d + dayOffset));
+    const dayOfWeek = new Intl.DateTimeFormat("en-GB", {
+      timeZone: TEHRAN_TZ,
+      weekday: "short",
+    }).format(tehranDate);
+    const dayIdx = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(dayOfWeek);
+    const dayName = dayIdx >= 0 ? dayNames[dayIdx] : dayOfWeek;
+
+    let dayLabel: string;
+    if (dayOffset === 0) dayLabel = `📅 ${todayLabel} (${dayName})`;
+    else if (dayOffset === 1) dayLabel = `📅 ${tomorrowLabel} (${dayName})`;
+    else dayLabel = `📅 ${dayName}`;
+
+    // Date key for sorting
+    const dateKey = new Intl.DateTimeFormat("en-CA", {
+      timeZone: TEHRAN_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(tehranDate);
+
+    views.push({
+      dayLabel,
+      dateKey,
+      slots: slotViews,
+      occupiedCount,
+    });
+  }
+
+  return views;
+}

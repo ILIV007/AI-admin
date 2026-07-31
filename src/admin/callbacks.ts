@@ -276,19 +276,68 @@ async function handleSet(
       }
       const settings = await getSettingsFor(env, fromId);
       const cfg = resolveScheduleConfig(settings);
-      // FIX SC-8: show today's slot preview in the schedule menu.
-      const { computeDaySlotsPreview } = await import("../processing/scheduler");
-      const slotTimes = computeDaySlotsPreview(cfg.perDay, cfg.startHour);
-      const slotStr = slotTimes.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      // Show full calendar view with pending posts mapped to slots.
+      const { buildScheduleCalendarView } = await import("../processing/scheduler");
+      const { listPendingScheduledForUser } = await import("../storage/repositories/jobs");
+      const pending = await listPendingScheduledForUser(env, fromId, 100).catch(() => []);
+      const calView = buildScheduleCalendarView(
+        pending.map((j) => ({ id: j.id, scheduledFor: j.scheduledFor, payload: j.payload })),
+        cfg.perDay,
+        cfg.startHour,
+        1, // just today for the top-level menu
+        lang,
+      );
+      const today = calView[0];
+      const slotStr = today.slots.map((s) => {
+        const icon = s.occupied ? "✅" : "⬜";
+        const preview = s.postPreview ? ` — ${escapeHtml(s.postPreview)}` : "";
+        return `${icon} ${s.time}${preview}`;
+      }).join("\n");
       const text =
-        `📅 <b>Schedule</b>\n\n` +
-        `${cfg.enabled ? "🟢 Schedule is <b>ON</b>" : "⚪ Schedule is <b>OFF</b>"}\n` +
-        `📊 Posts per day: <b>${cfg.perDay}</b>\n` +
-        `🕐 Start: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (Tehran)\n\n` +
-        `<b>Today's slots (Tehran):</b>\n${slotStr}\n\n` +
-        `<i>Posts are randomly distributed across available slots. ` +
-        `When all of today's slots are taken, the post rolls to tomorrow.</i>`;
+        `${t(lang, "sched.title")}\n\n` +
+        `${cfg.enabled ? t(lang, "sched.enabled") : t(lang, "sched.disabled")}\n` +
+        `📊 ${t(lang, "sched.posts_per_day")}: <b>${cfg.perDay}</b>\n` +
+        `🕐 ${t(lang, "sched.start_hour")}: <b>${String(cfg.startHour).padStart(2, "0")}:00</b> (${t(lang, "sched.tehran")})\n\n` +
+        `<b>${escapeHtml(today.dayLabel)}:</b> (${today.occupiedCount}/${today.slots.length} ${t(lang, "sched.occupied")})\n` +
+        `<blockquote>${slotStr}</blockquote>\n\n` +
+        `<i>${t(lang, "sched.distribute_info")}</i>`;
       await editText(env, cq, text, scheduleSettingsKeyboard(settings));
+      return;
+    }
+    case "view:schedcal": {
+      // Full calendar view — 7 days with slot-to-post mapping.
+      if (!can(role, "schedule")) {
+        await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
+        return;
+      }
+      const settings = await getSettingsFor(env, fromId);
+      const cfg = resolveScheduleConfig(settings);
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      const { buildScheduleCalendarView } = await import("../processing/scheduler");
+      const { listPendingScheduledForUser } = await import("../storage/repositories/jobs");
+      const pending = await listPendingScheduledForUser(env, fromId, 100).catch(() => []);
+      const calView = buildScheduleCalendarView(
+        pending.map((j) => ({ id: j.id, scheduledFor: j.scheduledFor, payload: j.payload })),
+        cfg.perDay,
+        cfg.startHour,
+        7,
+        lang,
+      );
+      // Build the calendar text (all 7 days, compact)
+      const lines: string[] = [`${t(lang, "sched.weekly_title")}\n`];
+      for (const day of calView) {
+        lines.push(`<b>${escapeHtml(day.dayLabel)}</b> — ${day.occupiedCount}/${day.slots.length} ${t(lang, "sched.occupied")}`);
+        for (const s of day.slots) {
+          const icon = s.occupied ? "✅" : "⬜";
+          const preview = s.postPreview ? ` ${escapeHtml(s.postPreview.slice(0, 40))}` : "";
+          lines.push(`  ${icon} ${s.time}${preview}`);
+        }
+        lines.push("");
+      }
+      await editText(env, cq, lines.join("\n"), scheduleSettingsKeyboard(settings));
       return;
     }
     case "set:status": {

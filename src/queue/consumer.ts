@@ -898,7 +898,12 @@ async function handleFinalizeMediaGroup(
     messageId: firstItem.messageId,
     text: combinedText,
     entities: [],
-    media: primaryMedia,
+    // CRITICAL FIX: set media to UNDEFINED so the pipeline does NOT publish
+    // a single-photo post. The media group consumer handles ALL publishing
+    // (album via sendMediaGroup). Previously, pipeline received primaryMedia
+    // and published it as a single-photo post, then the consumer ALSO sent
+    // the album → double post.
+    media: undefined,
     mediaGroupId: undefined,
     isChannelPost: false,
     isEdit: false,

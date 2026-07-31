@@ -349,6 +349,12 @@ export function scheduleSettingsKeyboard(settings: Settings): string {
         callback_data: "pick:sched:starthour",
       },
     ],
+    [
+      {
+        text: "📅 Weekly Calendar",
+        callback_data: "view:schedcal",
+      },
+    ],
     [{ text: "🔙 Back", callback_data: "back:menu" }],
   ];
 

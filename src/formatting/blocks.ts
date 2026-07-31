@@ -178,7 +178,7 @@ export function markdownToBlocks(md: string): ContentBlock[] {
       // P1-4 fix: the colon→blockquote heuristic was too aggressive — ANY
       // paragraph ending with ":" turned the next paragraph into a quote.
       // Now we only auto-quote when the following content is a bare URL or a
-      // code block (cases where a quote genuinely improves readability).
+      // markdown link (cases where a quote genuinely improves readability).
       // For normal prose after a colon, the AI should use explicit > markdown.
       const endsWithColonOrQuestion = /[:：؟?]\s*$/.test(paraText.trim());
 
@@ -187,10 +187,9 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         spans: parseInlineSpans(paraText),
       });
 
-      // If ends with colon, peek ahead: auto-quote the next paragraph.
-      // This applies to: bare URLs, markdown links, code fences, AND regular
-      // text paragraphs that follow a colon. The colon signals "here is what
-      // I'm introducing" — the content after it should be quoted.
+      // If ends with colon, peek ahead: auto-quote the next paragraph ONLY if
+      // it's a bare URL or markdown link. Regular text and code fences are
+      // NOT auto-quoted — the AI should use explicit > markdown for those.
       if (endsWithColonOrQuestion && i < lines.length) {
         // Skip blank lines between colon and content
         let peek = i;
@@ -199,9 +198,8 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         const nextTrimmed = nextLine.trim();
         const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
         const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
-        const isCodeFence = /^(```|~~~)/.test(nextTrimmed);
-        const isRegularText = nextTrimmed.length > 0 && !nextTrimmed.startsWith("#") && !nextTrimmed.startsWith(">") && !nextTrimmed.startsWith("-") && !nextTrimmed.startsWith("*") && !/^\d+\.\s/.test(nextTrimmed);
-        if (isUrlStart || isMarkdownLink || isCodeFence || isRegularText) {
+        // ONLY quote URLs and markdown links — not regular text, not code fences.
+        if (isUrlStart || isMarkdownLink) {
           // Collect the quote paragraph
           i = peek;
           const quoteLines: string[] = [];
