@@ -213,63 +213,22 @@ export function markdownToBlocks(md: string): ContentBlock[] {
     }
     if (paraLines.length > 0) {
       const paraText = paraLines.join("\n");
-      // P1-4 fix: the colon→blockquote heuristic was too aggressive — ANY
-      // paragraph ending with ":" turned the next paragraph into a quote.
-      // Now we only auto-quote when the following content is a bare URL or a
-      // markdown link (cases where a quote genuinely improves readability).
-      // For normal prose after a colon, the AI should use explicit > markdown.
-      const endsWithColonOrQuestion = /[:：؟?]\s*$/.test(paraText.trim());
 
       blocks.push({
         kind: "paragraph",
         spans: parseInlineSpans(paraText),
       });
 
-      // If ends with colon, peek ahead: auto-quote the next paragraph ONLY if
-      // it's a bare URL or markdown link. Regular text and code fences are
-      // NOT auto-quoted — the AI should use explicit > markdown for those.
-      //
-      // EXCEPT: if the current paragraph is a HEADING (rendered as <b>...</b>),
-      // we DO auto-quote the next paragraph (any text, not just URLs). This is
-      // because a heading ending with ":" introduces its content — the content
-      // should be visually grouped in a blockquote below the heading.
-      if (endsWithColonOrQuestion && i < lines.length) {
-        // Skip blank lines between colon and content
+      // If paragraph ends with colon/question and next is a URL/link → auto-quote.
+      // Heading+colon auto-quoting is handled in the heading parser above (line 114).
+      // Regular paragraphs with colon do NOT auto-quote text (only URLs/links).
+      if (/[:：؟?]\s*$/.test(paraText.trim()) && i < lines.length) {
         let peek = i;
         while (peek < lines.length && lines[peek].trim() === "") peek++;
-        const nextLine = lines[peek] ?? "";
-        const nextTrimmed = nextLine.trim();
+        const nextTrimmed = (lines[peek] ?? "").trim();
         const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
         const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
-        // Check if the current paragraph is a heading (starts with ## or ###)
-        const isHeading = /^#{2,3}\s+/.test(paraLines[0] ?? "");
         if (isUrlStart || isMarkdownLink) {
-          // URL/link after colon → always quote
-          // Collect the quote paragraph
-          i = peek;
-          const quoteLines: string[] = [];
-          while (
-            i < lines.length &&
-            lines[i].trim() !== "" &&
-            !/^```/.test(lines[i]) &&
-            !/^#{2,3}\s+/.test(lines[i]) &&
-            !/^---+\s*$/.test(lines[i]) &&
-            !/^>\s?/.test(lines[i]) &&
-            !/^[-*]\s+/.test(lines[i]) &&
-            !/^\d+\.\s/.test(lines[i])
-          ) {
-            quoteLines.push(lines[i]);
-            i++;
-          }
-          if (quoteLines.length > 0) {
-            blocks.push({
-              kind: "quote",
-              spans: parseInlineSpans(quoteLines.join("\n")),
-            });
-          }
-        } else if (isHeading) {
-          // Heading with colon → auto-quote the next paragraph (any text)
-          // This groups the heading's content visually in a blockquote.
           i = peek;
           const quoteLines: string[] = [];
           while (

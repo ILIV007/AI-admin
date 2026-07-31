@@ -76,7 +76,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.13.2";
+const VERSION = "v2.13.3";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
