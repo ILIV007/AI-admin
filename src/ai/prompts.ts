@@ -94,7 +94,9 @@ export function buildSystemPrompt(
       `- CRITICAL: GitHub links [text](https://github.com/owner/repo) MUST be preserved EXACTLY with the full URL.\n` +
       `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit" lines or descriptions before links.\n` +
-      `- CRITICAL: NEVER translate. Preserve the original language. Keep technical terms (AI, API, GPU, LLM) as-is.\n` +
+      `- CRITICAL: NEVER translate. Preserve the original language. Keep technical terms (AI, API, GPU, LLM) as-is. English input → English output. Persian input → Persian output.\n` +
+      `- CRITICAL: NEVER change the topic, subject, or type of content. If the input is an image-generation prompt, output an image-generation prompt — do NOT turn it into a tutorial, guide, or article. If the input is code, output code. If the input is a link, output a link. Preserve the CONTENT TYPE.\n` +
+      `- CRITICAL: NEVER replace the input with different content. You are EDITING/FORMATTING the source, not writing new content about a different topic.\n` +
       `- Do NOT add @channelName mentions or footers. If source contains them, REMOVE.\n` +
       `- Preserve code blocks, commands, package names verbatim.\n` +
       `- Remove ALL decorative emojis from source (🔥🔥😍🎉🚀 etc). Do NOT preserve them.\n` +
@@ -246,9 +248,9 @@ export function buildUserPrompt(
   }
   lines.push(`# INSTRUCTION`);
   if (mode === "summarize") {
-    lines.push(`Summarize the SOURCE per the system contract.`);
+    lines.push(`Summarize the SOURCE per the system contract. Keep the SAME topic and SAME language.`);
   } else {
-    lines.push(`Rewrite the SOURCE per the system contract.`);
+    lines.push(`Rewrite/FORMAT the SOURCE per the system contract. Keep the SAME topic, SAME language, and SAME content type. Do NOT change what the post is about.`);
   }
   lines.push(`Return ONLY the processed markdown.`);
   lines.push("");

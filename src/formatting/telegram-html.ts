@@ -330,27 +330,22 @@ export function blocksToTelegramHtml(
   }
 
   // Join parts:
-  // - Colon/question → next quote: single \n (connected, no gap)
-  // - Everything else: \n\n (normal paragraph spacing)
   // - Footer: \n (single newline)
+  // - Everything else: \n\n (normal paragraph spacing)
   //
-  // CRITICAL FIX: removed the "paragraph → quote = \n" rule.
-  // That rule joined headings/paragraphs to following blockquotes with \n
-  // (not \n\n), making them ONE unit in splitParagraphsSafe. This caused:
-  // 1. Heading separated from content during chunking (heading alone in one chunk)
-  // 2. Heading+blockquote appeared "quoted together" (user: "با پاراگرافش quote میشه")
-  // Now ALL non-colon, non-footer joins use \n\n — headings and blockquotes
-  // are separate units that the chunker can properly handle.
+  // CRITICAL FIX: removed the "colon → quote = \n" rule.
+  // That rule joined heading+blockquote with \n (no blank line), making them
+  // appear as ONE connected unit in Telegram. The user reported:
+  // "هدلاین همراه با پاراگراف quote میشه" — heading appears quoted WITH
+  // the paragraph because they're on consecutive lines with no gap.
+  // Now ALL joins use \n\n (normal paragraph spacing) — heading and
+  // blockquote are visually separate (blank line between them).
   const result: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     result.push(parts[i]);
     if (i < parts.length - 1) {
-      const currentEndsColonQ = /[:：؟?]\s*$/.test(parts[i].replace(/<[^>]+>$/g, "").trim());
-      const nextIsQuote = parts[i + 1].startsWith("<blockquote");
       const isFooter = hasFooter && i === parts.length - 2;
-      if (currentEndsColonQ && nextIsQuote) {
-        result.push("\n"); // colon/question → quote (connected, no gap)
-      } else if (isFooter) {
+      if (isFooter) {
         result.push("\n"); // footer: single newline
       } else {
         result.push("\n\n"); // normal spacing between ALL parts
