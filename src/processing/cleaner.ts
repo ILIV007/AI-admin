@@ -75,8 +75,10 @@ const JOIN_LINE_RE =
   /^[ \t]*(?:please\s+)?(?:join|follow|subscribe|دنبال\s+کنید?|عضو\s+شوید?|عضویت)\b[^\n]*$/gim;
 
 // Whole-line "for more: @chan" / "اطلاعات بیشتر: @chan"
+// FIX: only remove the @mention part, NOT URLs on the same line.
+// If the line contains a URL, preserve the URL and only strip the @mention.
 const FOR_MORE_LINE_RE =
-  /^[ \t]*(?:for\s+more|بیشتر|اطلاعات\s+بیشتر|more\s+info|see\s+more|more\s+at)\s*[:：]?\s*@[A-Za-z0-9_]+[^\n]*$/gim;
+  /^[ \t]*(?:for\s+more|بیشتر|اطلاعات\s+بیشتر|more\s+info|see\s+more|more\s+at)\s*[:：]?\s*@[A-Za-z0-9_]+[ \t]*$/gim;
 
 // Spam hashtag blocks: 5+ consecutive "#tag " tokens
 const HASHTAG_SPAM_RE = /(?:#[A-Za-z0-9_]+\s*){5,}/g;
