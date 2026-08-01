@@ -411,10 +411,17 @@ function parseInlineInner(text: string): Span[] {
         const closeParen = text.indexOf(")", closeBracket + 2);
         if (closeParen > closeBracket + 1) {
           flush();
+          let linkUrl = text.slice(closeBracket + 2, closeParen);
+          // FIX: if URL has no protocol, prepend https://
+          // Telegram requires absolute URLs in href — relative URLs like
+          // "example.com" render as plain text, not clickable links.
+          if (linkUrl && !/^https?:\/\//i.test(linkUrl) && !/^tg:\/\//i.test(linkUrl)) {
+            linkUrl = `https://${linkUrl}`;
+          }
           spans.push({
             kind: "link",
             text: text.slice(i + 1, closeBracket),
-            url: text.slice(closeBracket + 2, closeParen),
+            url: linkUrl,
           });
           i = closeParen + 1;
           continue;
