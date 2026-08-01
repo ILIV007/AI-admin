@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.13.5";
+const VERSION = "2.13.7";
 
 // ============================================================
 // MAIN EXPORT
@@ -158,7 +158,7 @@ async function handleWebhook(
   ctx: ExecutionContext,
 ): Promise<Response> {
   // 1. Secret check (OPTIONAL — if WEBHOOK_SECRET is set, validate it)
-  // If WEBHOOK_SECRET is unset, accept all requests (less secure but works).
+  // If WEBHOOK_SECRET is unset, accept all requests (works for local/testing).
   if (env.WEBHOOK_SECRET) {
     const secret = request.headers.get("x-telegram-bot-api-secret-token");
     if (secret !== env.WEBHOOK_SECRET) {

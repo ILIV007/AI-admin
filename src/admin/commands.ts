@@ -76,7 +76,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.13.5";
+const VERSION = "v2.13.7";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -1201,6 +1201,13 @@ export async function handleResetAll(
     results.push("✅ Media groups: wiped");
   } catch (e) {
     results.push("❌ Media groups: " + String(e));
+  }
+  try {
+    // 7b. Delete published_posts mappings (P1-4 FIX: was missing)
+    await env.DB.prepare("DELETE FROM published_posts").run();
+    results.push("✅ Published posts mappings: wiped");
+  } catch (e) {
+    results.push("❌ Published posts: " + String(e));
   }
   try {
     // 8. Clear all KV cache keys (FIX-2: paginate — KV.list returns max 1000

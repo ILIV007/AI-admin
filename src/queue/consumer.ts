@@ -78,13 +78,13 @@ export default {
     // Process each message independently; one failure must not abort the batch.
     await Promise.all(
       batch.messages.map((m) => handleMessage(m, env, ctx).catch((e) => {
-        // handleMessage is supposed to never throw (it acks/retries internally),
-        // but defend against bugs in the handler itself.
-        log("error", "queue.consumer", "handler threw unexpectedly", {
+        // P0-3 FIX: if handleMessage throws unexpectedly, RETRY (not ack).
+        // Previously acked which silently lost the message.
+        log("error", "queue.consumer", "handler threw unexpectedly — retrying", {
           err: String(e),
           kind: (m.body as { kind?: string }).kind,
         });
-        try { m.ack(); } catch { /* ignore */ }
+        try { m.retry(); } catch { /* ignore */ }
       })),
     );
   },
@@ -178,7 +178,12 @@ async function handleMessage(
  */
 function isTransient(err: unknown): boolean {
   const msg = ((err as Error)?.message ?? String(err)).toLowerCase();
-  return /network|timeout|temporarily|service unavailable|connection|econnreset|429|5\d{2}\b/.test(msg);
+  // P0-3 FIX: default to TRANSIENT (retry) for unknown errors.
+  // Previously defaulted to ack (drop) which silently lost posts.
+  // Only ack for explicitly permanent errors.
+  const permanentPatterns = /syntax error|invalid json|parse fail|schema mismatch|not found|validation failed|bad request|400\b/;
+  if (permanentPatterns.test(msg)) return false;
+  return true; // default: retry (safe — max_retries will eventually DLQ)
 }
 
 // ============================================================
@@ -1160,13 +1165,13 @@ async function handlePublishScheduled(
 
   // Stale 'publishing' recovery: if a previous attempt crashed after claiming
   // the job (pending → publishing) but before completing the publish, the job
-  // is stuck in 'publishing'. Reset it to 'pending' and re-throw so the queue
-  // retries from a clean state. (Only applies to databases with the
-  // 'publishing' status; legacy DBs use 'published' as the claim state.)
+  // is stuck in 'publishing'. Instead of resetting immediately (which can
+  // cause double-publish if another consumer is actively publishing), just
+  // SKIP this job — the cron's stale recovery (step 2b) will reset it after
+  // 5 minutes if it's truly stale.
   if (job.status === "publishing") {
-    log("warn", "queue.consumer.handlePublishScheduled", "resetting stale 'publishing' job to pending", { jobId });
-    await updateJobStatus(env, jobId, "pending");
-    throw new Error("stale publishing state; reset to pending for retry");
+    log("info", "queue.consumer.handlePublishScheduled", "job is already being published; skipping (cron will recover if stale)", { jobId });
+    return;
   }
 
   // Atomically claim the job (pending → publishing on new DBs, or
