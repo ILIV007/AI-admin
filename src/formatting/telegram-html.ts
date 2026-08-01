@@ -208,25 +208,26 @@ export function blocksToTelegramHtml(
         const textLen = spanTextLength(block.spans);
         paragraphIndex++;
 
-        // RULE: First paragraph is NEVER quoted
-        if (paragraphIndex === 1) {
-          parts.push(rendered);
-          break;
-        }
-
-        // RULE: Only quote SOME paragraphs, not all
-        // - Paragraphs that are JUST a link → always quote
-        // - Paragraphs that contain ONLY a link (with optional whitespace) → quote
-        // - Very long (>400 chars) → collapsible blockquote
-        // - Long (>200 chars) → regular blockquote
-        // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
-        // - Short → no quote (just text)
+        // RULE: First paragraph is NEVER quoted — EXCEPT if it's a link.
+        // Links should ALWAYS be quoted (even as first paragraph) because
+        // they look better in a blockquote and the user expects it.
         const hasLink = block.spans.some((s) => s.kind === "link");
         const isJustLink =
           hasLink &&
           block.spans.every(
             (s) => s.kind === "link" || (s.kind === "text" && s.text.trim() === ""),
           );
+        if (paragraphIndex === 1 && !isJustLink) {
+          parts.push(rendered);
+          break;
+        }
+
+        // RULE: Only quote SOME paragraphs, not all
+        // - Paragraphs that are JUST a link → always quote (even first)
+        // - Very long (>400 chars) → collapsible blockquote
+        // - Long (>200 chars) → regular blockquote
+        // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
+        // - Short → no quote (just text)
         if (isJustLink) {
           if (textLen > 200) {
             parts.push(`<blockquote expandable>${rendered}</blockquote>`);
