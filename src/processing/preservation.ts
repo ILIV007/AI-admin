@@ -30,7 +30,9 @@ export interface PreservationResult {
 // Regexes
 // ---------------------------------------------------------------------------
 
-const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
+// FIX: also detect bare URLs without protocol (example.com, github.com/owner/repo)
+// These are common in user input and AI output — must be preserved.
+const URL_RE = /(?:https?:\/\/)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s<>"')]*)?/gi;
 
 const GITHUB_REPO_RE =
   /(?:github\.com|gist\.github\.com|raw\.githubusercontent\.com)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+)/gi;
