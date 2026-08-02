@@ -74,7 +74,6 @@ export function shortenUrl(url: string): string {
     if (domain === "github.com" && pathParts.length >= 2) {
       const owner = pathParts[0];
       const repo = pathParts[1];
-      // If it's just owner/repo or owner/repo/tree/... → show owner/repo
       return `🐙 ${owner}/${repo}`;
     }
 

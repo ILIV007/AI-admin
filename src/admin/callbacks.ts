@@ -269,6 +269,39 @@ async function handleSet(
       await editText(env, cq, text);
       return;
     }
+    case "set:schedclear:confirm": {
+      // Actually delete all scheduled posts
+      if (!can(role, "schedule")) {
+        await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
+        return;
+      }
+      const settings = await getSettingsFor(env, fromId);
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      try {
+        // Count pending scheduled posts for this user
+        const { execAll, exec } = await import("../storage/d1");
+        const rows = await execAll<{ c: number }>(env.DB, "SELECT COUNT(*) as c FROM jobs WHERE type = 'scheduled_post' AND status = 'pending' AND user_id = ?", fromId);
+        const postCount = rows.length > 0 ? (rows[0].c ?? 0) : 0;
+
+        if (postCount === 0) {
+          await safeAnswer(env, cq.id, t(lang, "sched.clear_empty"), true);
+        } else {
+          // exec imported above
+          await exec(env.DB, "DELETE FROM jobs WHERE type = 'scheduled_post' AND status = 'pending' AND user_id = ?", fromId);
+          await safeAnswer(env, cq.id, "✅");
+        }
+
+        const resultText = postCount === 0
+          ? t(lang, "sched.clear_empty")
+          : t(lang, "sched.clear_done") + "\n" + t(lang, "sched.clear_count").replace("{count}", String(postCount));
+        await editText(env, cq, resultText, scheduleSettingsKeyboard(settings));
+      } catch (e) {
+        log("error", SCOPE, "clear scheduled posts failed", { error: String(e) });
+        await safeAnswer(env, cq.id, "❌ Failed", true);
+      }
+      return;
+    }
     case "set:schedule": {
       if (!can(role, "schedule")) {
         await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
@@ -338,6 +371,27 @@ async function handleSet(
         lines.push("");
       }
       await editText(env, cq, lines.join("\n"), scheduleSettingsKeyboard(settings));
+      return;
+    }
+    case "view:schedclear": {
+      // Show confirmation page with YES/NO buttons
+      if (!can(role, "schedule")) {
+        await safeAnswer(env, cq.id, "⛔ Unauthorized", true);
+        return;
+      }
+      const settings = await getSettingsFor(env, fromId);
+      const { t, getUiLanguage } = await import("../i18n");
+      const lang = getUiLanguage(settings);
+      const { buildInlineKeyboard } = await import("../telegram/entities");
+      const text = t(lang, "sched.clear_confirm");
+      const kb = buildInlineKeyboard([
+        [
+          { text: t(lang, "sched.clear_confirm_yes"), callback_data: "set:schedclear:confirm" },
+          { text: t(lang, "sched.clear_confirm_no"), callback_data: "set:schedule" },
+        ],
+      ]);
+      await safeAnswer(env, cq.id, "");
+      await editText(env, cq, text, kb);
       return;
     }
     case "set:status": {

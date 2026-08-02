@@ -355,6 +355,12 @@ export function scheduleSettingsKeyboard(settings: Settings): string {
         callback_data: "view:schedcal",
       },
     ],
+    [
+      {
+        text: "🗑️ Clear All Scheduled",
+        callback_data: "view:schedclear",
+      },
+    ],
     [{ text: "🔙 Back", callback_data: "back:menu" }],
   ];
 
