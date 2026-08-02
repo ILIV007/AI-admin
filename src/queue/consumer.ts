@@ -960,19 +960,7 @@ async function handleFinalizeMediaGroup(
   // Not used directly anymore — allMedia is used for album sending.
 
   const firstItem = items[0];
-  const content: ExtractedContent = {
-    fromId: firstItem.fromId,
-    fromName: "",
-    chatId: firstItem.chatId,
-    chatType: firstItem.chatType ?? "channel",
-    messageId: firstItem.messageId,
-    text: combinedText,
-    entities: [],
-    media: undefined,
-    mediaGroupId: undefined,
-    isChannelPost: false,
-    isEdit: false,
-  };
+  // content is no longer needed — we format inline without runPipeline
 
   // CRITICAL: for media groups, we must NOT let the pipeline publish.
   // The pipeline would send the text as a standalone message (since media=undefined).
@@ -981,10 +969,108 @@ async function handleFinalizeMediaGroup(
   // instead of "published". Then we handle ALL publishing here.
   const settings = await getSettings(env, firstItem.fromId);
 
-  // For media groups: force approvalMode=true so pipeline returns "preview"
-  // (sends formatted text to admin PV, NOT to channel). We handle channel
-  // publishing ourselves via sendMediaGroup.
-  const mediaGroupSettings = { ...settings, approvalMode: true, scheduleEnabled: false };
+  // CRITICAL FIX: Don't use runPipeline at all for media groups.
+  // runPipeline either publishes (sends text to channel = double post) or
+  // sends preview (sends text to admin PV with buttons = confusing).
+  // Instead, we run the FORMATTING steps directly and handle publishing
+  // ourselves. This gives us full control: one album post with caption.
+  //
+  // Steps we replicate from pipeline:
+  // 1. cleanContent + protectPrompts
+  // 2. (skip AI — or run it if needed)
+  // 3. sanitizeAiOutput
+  // 4. restorePrompts
+  // 5. fixRtlParagraphs
+  // 6. normalizePersianHalfSpaces
+  // 7. markdownToBlocks
+  // 8. blocksToTelegramHtml
+  // 9. chunkHtml
+
+  // Step 1: clean
+  const { cleanContent, protectPrompts, restorePrompts } = await import("../processing/cleaner");
+  let inputText = combinedText;
+  if (settings.footerText) {
+    const chMatch = settings.footerText.match(/@([A-Za-z0-9_]+)/);
+    if (chMatch) {
+      const chName = chMatch[1];
+      const chRegex = new RegExp(
+        `(^|\\n)[\\s\\p{Extended_Pictographic}]*@${chName}\\s*(?:[|｜\\-—–]\\s*.*)?[ \\t]*(?=\\n|$)`,
+        "gu",
+      );
+      inputText = inputText.replace(chRegex, "").trim();
+      inputText = inputText.replace(new RegExp(`\\s*@${chName}\\b`, "g"), "").trim();
+    }
+    const fEsc = settings.footerText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    inputText = inputText.replace(new RegExp(fEsc, "gi"), "").trim();
+    inputText = inputText.replace(/\n{3,}/g, "\n\n").trim();
+  }
+  const ownHandle = settings.footerText?.match(/@([A-Za-z0-9_]+)/)?.[1];
+  const cleaned = cleanContent(inputText, { ownHandle });
+  const { text: protectedText, prompts } = protectPrompts(cleaned);
+  let workingText = protectedText;
+
+  // Step 2: AI rewrite (if enabled)
+  let aiUsed = false;
+  let aiModel: string | undefined;
+  if (settings.rewriteMode !== "none") {
+    try {
+      const { rewriteWithFallback } = await import("../ai/fallback");
+      const { classify } = await import("../processing/classifier");
+      const { getProfile } = await import("../config/defaults");
+      const classification = classify(workingText);
+      if (settings.rewriteMode !== "normal" || classification.recommendedNeedsRewrite || settings.editIntensity > 0) {
+        const profile = getProfile(settings.profile);
+        const aiReq = {
+          text: workingText,
+          classification,
+          settings,
+          profile,
+          mode: "rewrite" as const,
+        };
+        const ai = await rewriteWithFallback(env, aiReq);
+        if (ai?.ok && ai?.text) {
+          workingText = ai.text;
+          aiUsed = true;
+          aiModel = ai.model;
+        }
+      }
+    } catch (e) {
+      log("warn", "queue.finalizeMediaGroup", "AI failed", { error: String(e) });
+    }
+  }
+
+  // Step 3-6: sanitize, restore, RTL, normalize
+  const { sanitizeAiOutput } = await import("../formatting/sanitizer");
+  workingText = sanitizeAiOutput(workingText);
+  workingText = restorePrompts(workingText, prompts);
+  const reProtect = protectPrompts(workingText);
+  if (reProtect.prompts.length > 0) {
+    workingText = restorePrompts(reProtect.text, reProtect.prompts);
+  }
+  const { fixRtlParagraphs } = await import("../ai/prompts");
+  workingText = fixRtlParagraphs(workingText);
+  const { normalizePersianHalfSpaces } = await import("../formatting/persian-normalizer");
+  workingText = normalizePersianHalfSpaces(workingText);
+
+  // Step 7-9: blocks → html → chunk
+  const { markdownToBlocks } = await import("../formatting/blocks");
+  const { blocksToTelegramHtml } = await import("../formatting/telegram-html");
+  const { chunkHtml } = await import("../formatting/chunker");
+  const blocks = markdownToBlocks(workingText);
+  const html = blocksToTelegramHtml(blocks, settings.footerText);
+  const parts = chunkHtml(html, 4000, settings.footerText);
+
+  // NOW: publish ourselves — single album post with text as caption + reply
+  const result = {
+    ok: true,
+    action: "published" as const,
+    html,
+    parts,
+    media: undefined,
+    classification: { category: "general" as const, language: "auto" as const, hasCode: false, hasGithubLink: false, hasLongText: false, wordCount: 0, recommendedRewrite: "none" as const, recommendedNeedsRewrite: false },
+    aiUsed,
+    aiModel,
+  };
 
   // Send typing indicator + loading message for admin
   const isAdmin = await isAuthorized(env, firstItem.fromId).catch(() => false);
@@ -1012,15 +1098,7 @@ async function handleFinalizeMediaGroup(
     } catch { /* ignore */ }
   }
 
-  const pipelineMod: {
-    runPipeline: (
-      env: Env,
-      content: ExtractedContent,
-      settings: Settings,
-    ) => Promise<import("../types").PipelineResult>;
-  } = await import("../processing/pipeline");
-
-  const result = await pipelineMod.runPipeline(env, content, mediaGroupSettings);
+  // (Pipeline was already run above — result is set from inline formatting)
 
   // For media groups, pipeline returns "preview" (approvalMode=true).
   // Pipeline sends formatted text to admin PV (not channel).
