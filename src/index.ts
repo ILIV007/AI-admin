@@ -30,7 +30,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.14.6";
+const VERSION = "2.14.7";
 
 // ============================================================
 // MAIN EXPORT

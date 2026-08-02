@@ -964,25 +964,26 @@ async function handleFinalizeMediaGroup(
     fromId: firstItem.fromId,
     fromName: "",
     chatId: firstItem.chatId,
-    // Use the stored chatType from the first item instead of hardcoding
-    // "channel". Falls back to "channel" for legacy DB rows that don't have
-    // the chat_type column (chatType will be undefined).
     chatType: firstItem.chatType ?? "channel",
     messageId: firstItem.messageId,
     text: combinedText,
     entities: [],
-    // CRITICAL FIX: set media to UNDEFINED so the pipeline does NOT publish
-    // a single-photo post. The media group consumer handles ALL publishing
-    // (album via sendMediaGroup). Previously, pipeline received primaryMedia
-    // and published it as a single-photo post, then the consumer ALSO sent
-    // the album → double post.
     media: undefined,
     mediaGroupId: undefined,
     isChannelPost: false,
     isEdit: false,
   };
 
+  // CRITICAL: for media groups, we must NOT let the pipeline publish.
+  // The pipeline would send the text as a standalone message (since media=undefined).
+  // Then the consumer would ALSO send the album via sendMediaGroup → double post.
+  // Instead, we use approvalMode trick: set it to true so pipeline returns "preview"
+  // instead of "published". Then we handle ALL publishing here.
   const settings = await getSettings(env, firstItem.fromId);
+
+  // CRITICAL: for media groups, force approvalMode so pipeline returns
+  // "preview" (not "published"). We handle ALL publishing ourselves.
+  const mediaGroupSettings = { ...settings, approvalMode: true };
 
   // Send typing indicator + loading message for admin
   const isAdmin = await isAuthorized(env, firstItem.fromId).catch(() => false);
@@ -1018,11 +1019,12 @@ async function handleFinalizeMediaGroup(
     ) => Promise<import("../types").PipelineResult>;
   } = await import("../processing/pipeline");
 
-  const result = await pipelineMod.runPipeline(env, content, settings);
+  const result = await pipelineMod.runPipeline(env, content, mediaGroupSettings);
   // elapsedMs not needed for media groups // timing not critical for media groups
 
-  // If published, send ALL media as album + text as separate message
-  if (result.action === "published" && result.parts.length > 0) {
+  // For media groups, pipeline returns "preview" (because we forced approvalMode).
+  // We handle ALL publishing here: send album with caption + remaining text parts.
+  if (result.parts.length > 0) {
     try {
       // Send album with first part as caption (truncated to 1024-char caption limit)
       if (allMedia.length > 1) {
