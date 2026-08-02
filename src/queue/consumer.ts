@@ -59,7 +59,7 @@ import { sendMessage, sendChatAction, editMessageText, sendPhoto, sendVideo, sen
 import { isAuthorized } from "../storage/repositories/admins";
 import { enqueueMediaGroupFinalize } from "./producer";
 import { MEDIA_GROUP_WINDOW_MS, TELEGRAM_LIMITS } from "../config/defaults";
-import { truncateVisible, visibleLength } from "../telegram/entities";
+import { truncateVisible } from "../telegram/entities";
 
 // Hard cap on publish attempts. Matches the `max_retries` we'll set on the
 // queue in wrangler.toml.
@@ -1100,27 +1100,108 @@ async function handleFinalizeMediaGroup(
 
   // (Pipeline was already run above — result is set from inline formatting)
 
-  // For media groups, pipeline returns "preview" (approvalMode=true).
-  // Pipeline sends formatted text to admin PV (not channel).
-  // WE handle ALL channel publishing here.
+  // Combine ALL text parts into one
+  const fullText = result.parts.join("\n\n");
+  const textHasContent = fullText && fullText.replace(/<[^>]+>/g, "").trim().length > 0;
+
+  // Handle approval mode for media groups
+  if (settings.approvalMode && firstItem.fromId) {
+    // Create approval job in D1
+    let approvalJobId: string | undefined;
+    try {
+      const approvalMod = await import("../storage/repositories/approval-repo");
+      if (approvalMod.createApprovalJob) {
+        approvalJobId = await approvalMod.createApprovalJob(env, {
+          userId: firstItem.fromId,
+          chatId: firstItem.chatId,
+          messageId: firstItem.messageId,
+          html: result.html,
+          parts: result.parts,
+          media: undefined,
+          footer: settings.footerText,
+        });
+      }
+    } catch (e) {
+      log("error", "queue.finalizeMediaGroup", "approval job creation failed", { error: String(e) });
+    }
+
+    // Send preview to admin: album + text as caption on LAST file + approval buttons
+    try {
+      const { sendMediaGroup } = await import("../telegram/client");
+      const { approvalKeyboard } = await import("../admin/keyboards");
+
+      // Caption on LAST file (index = length - 1)
+      const lastIdx = allMedia.length - 1;
+      const captionText = truncateVisible(fullText, TELEGRAM_LIMITS.CAPTION_MAX_LEN);
+      const adminMediaItems = allMedia.map((m, i) => ({
+        type: m.type,
+        media: m.fileId,
+        caption: i === lastIdx && textHasContent ? captionText : undefined,
+        parse_mode: i === lastIdx && textHasContent ? ("HTML" as const) : undefined,
+      }));
+
+      const adminAlbum = await sendMediaGroup(env.BOT_TOKEN, {
+        chat_id: firstItem.fromId,
+        media: adminMediaItems,
+      }).catch(() => null);
+
+      // Send approval keyboard as a reply to the last media
+      if (Array.isArray(adminAlbum) && adminAlbum.length > 0) {
+        const lastMsgId = adminAlbum[adminAlbum.length - 1].message_id;
+        if (approvalJobId) {
+          const kb = approvalKeyboard(approvalJobId);
+          await sendMessage(env.BOT_TOKEN, {
+            chat_id: firstItem.fromId,
+            text: "👇",
+            reply_markup: kb,
+            reply_to_message_id: lastMsgId,
+          }).catch(() => undefined);
+        }
+      }
+
+      // If text too long for caption, send full text as reply
+      if (textHasContent && truncateVisible(fullText, TELEGRAM_LIMITS.CAPTION_MAX_LEN).length < fullText.length) {
+        // Already handled — caption has truncated version
+      }
+    } catch (e) {
+      log("error", "queue.finalizeMediaGroup", "approval preview failed", { error: String(e) });
+    }
+
+    // Edit loading → "preview sent"
+    if (loadingMsgId && firstItem.fromId) {
+      try {
+        const { t, getUiLanguage } = await import("../i18n");
+        const lang = getUiLanguage(settings);
+        await editMessageText(env.BOT_TOKEN, {
+          chat_id: firstItem.fromId,
+          message_id: loadingMsgId,
+          text: `<blockquote><b>${t(lang, "report.preview_sent")}</b></blockquote>`,
+          parse_mode: "HTML",
+        }).catch(() => undefined);
+      } catch { /* ignore */ }
+    }
+
+    // Record approval stat
+    ctx.waitUntil(safe(recordApproval(env, firstItem.fromId)));
+    return; // Don't publish to channel — wait for admin approval
+  }
+
+  // Normal publish (no approval mode)
   if (result.parts.length > 0) {
     try {
-      // Combine ALL text parts into one (we want text BELOW the album, not split)
-      const fullText = result.parts.join("\n\n");
-
-      // Send album to channel with caption on FIRST photo
-      // Caption limit is 1024 chars — put as much as we can in caption,
-      // rest goes as a reply message BELOW the album.
-      const captionText = truncateVisible(fullText, TELEGRAM_LIMITS.CAPTION_MAX_LEN);
-      const captionHasContent = captionText && captionText.replace(/<[^>]+>/g, "").trim().length > 0;
-
       if (allMedia.length > 0) {
         const { sendMediaGroup } = await import("../telegram/client");
+
+        // Caption on LAST file (index = length - 1)
+        const lastIdx = allMedia.length - 1;
+        const captionText = truncateVisible(fullText, TELEGRAM_LIMITS.CAPTION_MAX_LEN);
+        const captionHasContent = captionText && captionText.replace(/<[^>]+>/g, "").trim().length > 0;
+
         const mediaItems = allMedia.map((m, i) => ({
           type: m.type,
           media: m.fileId,
-          caption: i === 0 && captionHasContent ? captionText : undefined,
-          parse_mode: i === 0 && captionHasContent ? ("HTML" as const) : undefined,
+          caption: i === lastIdx && captionHasContent ? captionText : undefined,
+          parse_mode: i === lastIdx && captionHasContent ? ("HTML" as const) : undefined,
         }));
 
         // Send album to channel
@@ -1132,15 +1213,14 @@ async function handleFinalizeMediaGroup(
           return null;
         });
 
-        // Get the last message_id from the album for reply
+        // Get the last message_id for reply (if text overflows caption)
         let replyToId: number | undefined;
         if (Array.isArray(albumResult) && albumResult.length > 0) {
           replyToId = albumResult[albumResult.length - 1].message_id;
         }
 
-        // If text was too long for caption, send the FULL text as a reply
-        // message below the album
-        if (visibleLength(fullText) > TELEGRAM_LIMITS.CAPTION_MAX_LEN) {
+        // If text was too long for caption, send FULL text as reply
+        if (textHasContent && fullText.length > TELEGRAM_LIMITS.CAPTION_MAX_LEN) {
           await sendMessage(env.BOT_TOKEN, {
             chat_id: env.TARGET_CHANNEL,
             text: fullText,
@@ -1150,42 +1230,43 @@ async function handleFinalizeMediaGroup(
         }
       }
 
-      // Send copy to admin PV (same structure)
-      if (firstItem.fromId) {
-        if (allMedia.length > 0) {
-          const { sendMediaGroup } = await import("../telegram/client");
-          const adminMediaItems = allMedia.map((m, i) => ({
-            type: m.type,
-            media: m.fileId,
-            caption: i === 0 && captionHasContent ? captionText : undefined,
-            parse_mode: i === 0 && captionHasContent ? ("HTML" as const) : undefined,
-          }));
-          const adminAlbum = await sendMediaGroup(env.BOT_TOKEN, {
-            chat_id: firstItem.fromId,
-            media: adminMediaItems,
-          }).catch(() => null);
+      // Send copy to admin PV (same structure — caption on LAST file)
+      if (firstItem.fromId && allMedia.length > 0) {
+        const { sendMediaGroup } = await import("../telegram/client");
+        const lastIdx = allMedia.length - 1;
+        const adminCaption = truncateVisible(fullText, TELEGRAM_LIMITS.CAPTION_MAX_LEN);
+        const adminCaptionHasContent = adminCaption && adminCaption.replace(/<[^>]+>/g, "").trim().length > 0;
+        const adminMediaItems = allMedia.map((m, i) => ({
+          type: m.type,
+          media: m.fileId,
+          caption: i === lastIdx && adminCaptionHasContent ? adminCaption : undefined,
+          parse_mode: i === lastIdx && adminCaptionHasContent ? ("HTML" as const) : undefined,
+        }));
+        const adminAlbum = await sendMediaGroup(env.BOT_TOKEN, {
+          chat_id: firstItem.fromId,
+          media: adminMediaItems,
+        }).catch(() => null);
 
-          let adminReplyId: number | undefined;
-          if (Array.isArray(adminAlbum) && adminAlbum.length > 0) {
-            adminReplyId = adminAlbum[adminAlbum.length - 1].message_id;
-          }
+        let adminReplyId: number | undefined;
+        if (Array.isArray(adminAlbum) && adminAlbum.length > 0) {
+          adminReplyId = adminAlbum[adminAlbum.length - 1].message_id;
+        }
 
-          if (visibleLength(fullText) > TELEGRAM_LIMITS.CAPTION_MAX_LEN) {
-            await sendMessage(env.BOT_TOKEN, {
-              chat_id: firstItem.fromId,
-              text: fullText,
-              parse_mode: "HTML",
-              reply_to_message_id: adminReplyId,
-            }).catch(() => undefined);
-          }
-        } else {
-          // No media → text only to admin
+        if (textHasContent && fullText.length > TELEGRAM_LIMITS.CAPTION_MAX_LEN) {
           await sendMessage(env.BOT_TOKEN, {
             chat_id: firstItem.fromId,
             text: fullText,
             parse_mode: "HTML",
+            reply_to_message_id: adminReplyId,
           }).catch(() => undefined);
         }
+      } else if (firstItem.fromId) {
+        // No media → text only to admin
+        await sendMessage(env.BOT_TOKEN, {
+          chat_id: firstItem.fromId,
+          text: fullText,
+          parse_mode: "HTML",
+        }).catch(() => undefined);
       }
 
       // Record stats
