@@ -181,7 +181,8 @@ function describeEmojiLevel(level: number): string {
       "Geometric (for bullets/dividers): " + GEO_EMOJIS + "\n" +
       "Character (max 1, for a key section): " + CHAR_EMOJIS + "\n" +
       "RULES: Use structural symbols (→ × | ▸ ◆ •) for lists, steps, and visual hierarchy — they make posts MORE readable. " +
-      "Emojis (max 1-2) are welcome when they add meaning (e.g. 🔗 for a link section, 📜 for a guide). " +
+      "Emojis (max 1-2) are welcome when they add meaning to a SECTION (e.g. 📜 for a guide, 🛸 for a futuristic topic). " +
+      "NEVER add emojis before individual links — links stand on their own. " +
       "Do NOT repeat the same emoji. Do NOT put emojis on every paragraph. " +
       "NEVER at end of sentences."
     );
