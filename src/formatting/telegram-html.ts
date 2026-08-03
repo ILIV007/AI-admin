@@ -241,26 +241,28 @@ export function blocksToTelegramHtml(
         const textLen = spanTextLength(block.spans);
         paragraphIndex++;
 
-        // RULE: First paragraph is NEVER quoted — EXCEPT if it's a link.
-        // Links should ALWAYS be quoted (even as first paragraph) because
-        // they look better in a blockquote and the user expects it.
+        // Detect if this paragraph is JUST a link (bare URL or markdown
+        // link on its own line with no other text).
         const hasLink = block.spans.some((s) => s.kind === "link");
         const isJustLink =
           hasLink &&
           block.spans.every(
             (s) => s.kind === "link" || (s.kind === "text" && s.text.trim() === ""),
           );
-        if (paragraphIndex === 1 && !isJustLink) {
+
+        // RULE: First paragraph is NEVER quoted — keep it as plain text
+        // so the post opens with visible content (not a collapsed quote).
+        if (paragraphIndex === 1) {
           parts.push(rendered);
           break;
         }
 
-        // RULE: Only quote SOME paragraphs, not all
-        // - Paragraphs that are JUST a link → always quote (even first)
-        // - Very long (>400 chars) → collapsible blockquote
-        // - Long (>200 chars) → regular blockquote
-        // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
-        // - Short → no quote (just text)
+        // RULE: Paragraphs that are JUST a link (standalone URL on its own
+        // line) ARE wrapped in <blockquote>. The user explicitly requested:
+        // "لینک‌ها باید همیشه quote باشن" (links must always be quoted).
+        // A standalone link in a blockquote looks clean and distinct.
+        // INLINE links (link + other text in same paragraph) are NOT
+        // quoted — they stay in the text flow.
         if (isJustLink) {
           if (textLen > 200) {
             parts.push(`<blockquote expandable>${rendered}</blockquote>`);
@@ -268,7 +270,15 @@ export function blocksToTelegramHtml(
             parts.push(`<blockquote>${rendered}</blockquote>`);
           }
           hasBlockquote = true;
-        } else if (textLen > 300) {
+          break;
+        }
+
+        // RULE: Quote regular paragraphs based on length:
+        // - Very long (>300 chars) → collapsible blockquote
+        // - Long (>150 chars) → regular blockquote
+        // - Medium (>80 chars) → regular blockquote ONLY if we don't have one yet
+        // - Short → no quote (just text)
+        if (textLen > 300) {
           parts.push(`<blockquote expandable>${rendered}</blockquote>`);
           hasBlockquote = true;
         } else if (textLen > 150) {

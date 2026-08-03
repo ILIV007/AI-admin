@@ -254,39 +254,14 @@ export function markdownToBlocks(md: string): ContentBlock[] {
         spans: parseInlineSpans(paraText),
       });
 
-      // If paragraph ends with colon/question and next is a URL/link → auto-quote.
-      // Heading+colon auto-quoting is handled in the heading parser above (line 114).
-      // Regular paragraphs with colon do NOT auto-quote text (only URLs/links).
-      if (/[:：؟?]\s*$/.test(paraText.trim()) && i < lines.length) {
-        let peek = i;
-        while (peek < lines.length && lines[peek].trim() === "") peek++;
-        const nextTrimmed = (lines[peek] ?? "").trim();
-        const isUrlStart = /^https?:\/\//i.test(nextTrimmed);
-        const isMarkdownLink = /^\[.+\]\(https?:\/\/.+\)/.test(nextTrimmed);
-        if (isUrlStart || isMarkdownLink) {
-          i = peek;
-          const quoteLines: string[] = [];
-          while (
-            i < lines.length &&
-            lines[i].trim() !== "" &&
-            !/^```/.test(lines[i]) &&
-            !/^#{2,3}\s+/.test(lines[i]) &&
-            !/^---+\s*$/.test(lines[i]) &&
-            !/^>\s?/.test(lines[i]) &&
-            !/^[-*]\s+/.test(lines[i]) &&
-            !/^\d+\.\s/.test(lines[i])
-          ) {
-            quoteLines.push(lines[i]);
-            i++;
-          }
-          if (quoteLines.length > 0) {
-            blocks.push({
-              kind: "quote",
-              spans: parseInlineSpans(quoteLines.join("\n")),
-            });
-          }
-        }
-      }
+      // NOTE: auto-quote of URL after colon-paragraph was REMOVED (v2.16.4).
+      // Previously, when a paragraph ended with ":" and the next line was a
+      // URL, the URL was extracted into a separate "quote" block. This
+      // SEPARATED the link from its context — the user complained that
+      // "لینک‌ها از متن جدا می‌شن" (links get separated from text).
+      // Now the URL stays as a regular paragraph. The renderer
+      // (blocksToTelegramHtml) will quote standalone-link paragraphs
+      // appropriately, keeping the link in its original position.
     }
   }
 
@@ -443,10 +418,27 @@ function parseInlineInner(text: string): Span[] {
         closeBracket + 1 < text.length &&
         text[closeBracket + 1] === "("
       ) {
-        // Find the LAST ) on this line (URLs can contain parens like Wikipedia)
-        const lineEnd = text.indexOf("\n", closeBracket + 2);
-        const searchEnd = lineEnd === -1 ? text.length : lineEnd;
-        const closeParen = text.lastIndexOf(")", searchEnd);
+        // Find the closing ) for the URL. We use indexOf (FIRST occurrence)
+        // not lastIndexOf — using lastIndexOf was a bug that caused
+        // "[A](url1) text [B](url2)" to be parsed as a single link with
+        // URL "url1) text [B](url2". The first ) correctly closes the URL.
+        // Exception: Wikipedia-style URLs with balanced parens like
+        // "/wiki/Foo_(bar)" — we handle this by scanning for ) while
+        // tracking paren depth.
+        let closeParen = -1;
+        let depth = 1;
+        for (let k = closeBracket + 2; k < text.length; k++) {
+          if (text[k] === "(") depth++;
+          else if (text[k] === ")") {
+            depth--;
+            if (depth === 0) {
+              closeParen = k;
+              break;
+            }
+          }
+          // Don't cross a newline — URLs don't span lines
+          if (text[k] === "\n") break;
+        }
         if (closeParen > closeBracket + 1) {
           flush();
           let linkUrl = text.slice(closeBracket + 2, closeParen);
