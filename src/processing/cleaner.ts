@@ -33,7 +33,11 @@ const NUL = "\u0000";
 // URL / link patterns
 // ---------------------------------------------------------------------------
 
-const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
+// URL regex: matches both protocol URLs (https://...) and bare URLs
+// (example.com/path, twitter.com/user, etc.). Bare URLs are common in
+// social-media signature blocks. We extract them to placeholders so they
+// can be protected or removed as a block.
+const URL_RE = /(?:https?:\/\/)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s<>"')]*)?/gi;
 
 // Telegram promo URLs (t.me/username without post number) — REMOVED
 // Also matches bare t.me/username (without https://)
@@ -69,6 +73,19 @@ const STANDALONE_MENTION_LINE_RE =
 // Lines with emoji + @username + optional description (e.g. "🌀 @ILIVIR3", "🆔 @ShahrSakhtAfzar")
 const EMOJI_MENTION_LINE_RE =
   /^[ \t]*[\p{Extended_Pictographic}]+\s*@[A-Za-z0-9_]+(?:\s*[|｜\-—–]\s*.*)?[ \t]*$/gmu;
+
+// Channel signature BLOCK: a multi-line block at the END of a post that
+// contains a @channel mention followed by social/website links. These are
+// promo "contact us" blocks that should be removed entirely. Example:
+//   @some_channel
+//   website: example.com/channel
+//   twitter: twitter.com/some
+// The block starts with a @mention line and includes subsequent lines that
+// are ONLY links/social references (no real content).
+// NOTE: URLs are already extracted to \u0000URL{n}\u0000 placeholders by
+// the time this regex runs. So we match the placeholder form.
+const CHANNEL_SIGNATURE_BLOCK_PLACEHOLDER_RE =
+  /(?:\n\s*\n|\n)\s*@[A-Za-z0-9_]+[ \t]*\n(?:(?:[ \t]*(?:website|site|web|twitter|instagram|facebook|telegram|telegram\s+channel|کانال|سایت|وب‌سایت|وبسایت|توییتر|اینستاگرام|تلگرام|🌐|🐦|📷|📘|💬)\s*[:：]?\s*)?[ \t]*\u0000URL\d+\u0000[ \t]*\n?)+/gi;
 
 // Whole-line "Join / Follow / Subscribe" prompts (English + Persian).
 // NOTE: "channel" alone is too broad (matches "Channel 7 news" etc.) —
@@ -192,6 +209,14 @@ export function cleanContent(
   text = u.text;
 
   // --- text-level cleaning passes ---
+
+  // CRITICAL FIX (v2.16.7): remove "channel signature blocks" — a @channel
+  // mention followed by social/website links at the end of a post. These
+  // are promo "contact us" blocks. The URLs are already placeholders now
+  // (\u0000URL{n}\u0000), so the regex matches the placeholder form.
+  // This runs BEFORE the hasUrlPlaceholder guard so the entire block
+  // (including the links) is removed together.
+  text = text.replace(CHANNEL_SIGNATURE_BLOCK_PLACEHOLDER_RE, "\n");
 
   // CRITICAL FIX (v2.15.9): line-removal regexes must NOT delete lines that
   // contain a URL placeholder. extractUrls already converted URLs to
