@@ -100,8 +100,16 @@ function extractFromMessage(
   }
 
   // ---- Text + entities ---------------------------------------------------
-  const text = msg.text ?? msg.caption ?? "";
+  // CRITICAL FIX (v2.16.2): when a user creates a link via Telegram's built-in
+  // link editor (Ctrl+K / long-press → Link), the URL is stored in entities
+  // (type="text_link"), NOT in the text itself. The text only contains the
+  // visible link text. Without reconstructing the markdown, the URL would be
+  // LOST — the user-reported "لینک ابل پاک میشه" (linkable links are deleted).
+  // We now convert text_link entities back to markdown [text](url) syntax so
+  // the downstream pipeline can parse them as proper links.
+  const rawText = msg.text ?? msg.caption ?? "";
   const entities: TelegramEntity[] = msg.entities ?? msg.caption_entities ?? [];
+  const text = reconstructMarkdownFromEntities(rawText, entities);
 
   // ---- Media (single item; media GROUPS are aggregated separately) -------
   let media: ExtractedContent["media"] = undefined;
@@ -152,6 +160,60 @@ function extractFromMessage(
     // time (no 48h limit), so this is informational only.
     editDate: msg.edit_date,
   };
+}
+
+// ============================================================
+// reconstructMarkdownFromEntities — rebuild markdown links from entities
+// ============================================================
+
+/**
+ * Convert Telegram entities (text_link, url, mention, etc.) back into
+ * markdown syntax so the pipeline can parse them.
+ *
+ * CRITICAL: when a user creates a "linkable" link via Telegram's UI (Ctrl+K
+ * or long-press → Link), the URL is stored in `entities` with type
+ * "text_link", NOT in the visible text. The text only has the link's display
+ * text. Without this reconstruction, the URL is COMPLETELY LOST — the user
+ * sees their link turn into plain text.
+ *
+ * Entity types handled:
+ *   - text_link: [visible_text](url) — the main fix
+ *   - url: leave as-is (the URL is already in the text)
+ *   - mention: leave as-is (@username is already in the text)
+ *   - bold/italic/etc.: leave as-is (formatting is reapplied by our formatter)
+ *
+ * Entities are sorted by offset DESC so we can insert from end to start
+ * without shifting subsequent offsets.
+ */
+function reconstructMarkdownFromEntities(
+  text: string,
+  entities: TelegramEntity[],
+): string {
+  if (!text || !entities || entities.length === 0) return text;
+
+  // Only text_link entities need reconstruction (they carry a URL not in text)
+  const textLinks = entities.filter((e) => e.type === "text_link" && e.url);
+  if (textLinks.length === 0) return text;
+
+  // Sort by offset DESCENDING so insertions don't shift earlier offsets.
+  const sorted = [...textLinks].sort((a, b) => b.offset - a.offset);
+
+  let result = text;
+  for (const ent of sorted) {
+    const start = ent.offset;
+    const end = ent.offset + ent.length;
+    // Bounds check: Telegram offsets are in UTF-16 code units. JavaScript
+    // string indexing is also UTF-16, so this is safe.
+    if (start < 0 || end > result.length || start >= end) continue;
+    const visibleText = result.slice(start, end);
+    // Skip if the visible text is already a markdown link (shouldn't happen,
+    // but be defensive).
+    if (visibleText.startsWith("[") && visibleText.endsWith("]")) continue;
+    const replacement = `[${visibleText}](${ent.url})`;
+    result = result.slice(0, start) + replacement + result.slice(end);
+  }
+
+  return result;
 }
 
 // ============================================================
