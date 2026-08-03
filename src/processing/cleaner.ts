@@ -183,21 +183,36 @@ export function cleanContent(
 
   // --- text-level cleaning passes ---
 
+  // CRITICAL FIX (v2.15.9): line-removal regexes must NOT delete lines that
+  // contain a URL placeholder. extractUrls already converted URLs to
+  // \u0000URL{n}\u0000 placeholders. If a regex like SIGNATURE_LINE_RE
+  // matches "@user | desc \u0000URL0\u0000" and deletes the whole line,
+  // the URL is LOST. We guard every line-removal regex with a check: if
+  // the matched line contains a URL placeholder, keep it unchanged.
+  const hasUrlPlaceholder = (line: string): boolean =>
+    /\u0000URL\d+\u0000/.test(line);
+
   // "via @user" attribution
   text = text.replace(VIA_ATTR_RE, " ");
 
   // "source: @user" attribution — only removes @username, NOT URLs
   text = text.replace(SOURCE_ATTR_RE, " ");
 
-  // "@user | desc" signature lines
-  text = text.replace(SIGNATURE_LINE_RE, "");
+  // "@user | desc" signature lines — but NOT if the line contains a URL
+  text = text.replace(SIGNATURE_LINE_RE, (match) =>
+    hasUrlPlaceholder(match) ? match : "",
+  );
 
   // Emoji + @username lines (e.g. "🌀 @ILIVIR3", "🆔 @ShahrSakhtAfzar")
-  text = text.replace(EMOJI_MENTION_LINE_RE, "");
+  // — but NOT if the line contains a URL
+  text = text.replace(EMOJI_MENTION_LINE_RE, (match) =>
+    hasUrlPlaceholder(match) ? match : "",
+  );
 
   // Standalone promo @mention lines — but never the channel's own handle.
   const ownHandle = opts?.ownHandle?.replace(/^@/, "");
   text = text.replace(STANDALONE_MENTION_LINE_RE, (match) => {
+    if (hasUrlPlaceholder(match)) return match; // preserve lines with URLs
     if (ownHandle) {
       const mentions = match.trim().split(/\s+/);
       const allOwn = mentions.every(
@@ -208,11 +223,15 @@ export function cleanContent(
     return "";
   });
 
-  // "Join / Follow / Subscribe" lines
-  text = text.replace(JOIN_LINE_RE, "");
+  // "Join / Follow / Subscribe" lines — but NOT if the line contains a URL
+  text = text.replace(JOIN_LINE_RE, (match) =>
+    hasUrlPlaceholder(match) ? match : "",
+  );
 
-  // "for more: @chan" lines
-  text = text.replace(FOR_MORE_LINE_RE, "");
+  // "for more: @chan" lines — but NOT if the line contains a URL
+  text = text.replace(FOR_MORE_LINE_RE, (match) =>
+    hasUrlPlaceholder(match) ? match : "",
+  );
 
   // Collapse spam hashtag blocks (5+ → first 2)
   text = text.replace(HASHTAG_SPAM_RE, (match) => {
