@@ -93,6 +93,10 @@ interface ApprovalPayload {
   html: string;
   parts: string[];
   media?: ExtractedContent["media"];
+  mediaItems?: Array<{
+    type: "photo" | "video" | "document" | "animation";
+    fileId: string;
+  }>;
   footer?: string;
 }
 
@@ -106,6 +110,7 @@ function parsePayload(raw: string): ApprovalPayload | null {
       html: obj.html,
       parts: obj.parts as string[],
       media: obj.media,
+      mediaItems: obj.mediaItems,
       footer: obj.footer,
     };
   } catch {
@@ -226,30 +231,87 @@ async function handlePublish(
   let publishError: string | undefined;
 
   try {
-    const publisherMod: {
-      publishPost?: (
-        env: Env,
-        html: string,
-        parts: string[],
-        media?: ExtractedContent["media"],
-      ) => Promise<{ ok: boolean; messageIds: number[]; error?: string }>;
-    } = await import("../telegram/publisher");
-    if (!publisherMod.publishPost) {
-      throw new Error("publisher.publishPost not available");
+    // CRITICAL FIX (v2.16.5): if the job has mediaItems (a media group /
+    // album), send the album via sendMediaGroup instead of publishPost.
+    // Previously, mediaItems was not stored in the approval payload, so
+    // albums were published as text-only — the user saw "albums sent
+    // without photos in approval mode".
+    if (payload.mediaItems && payload.mediaItems.length > 0) {
+      const { sendMediaGroup } = await import("../telegram/client");
+      const { truncateVisible } = await import("../telegram/entities");
+      const { TELEGRAM_LIMITS } = await import("../config/defaults");
+
+      const lastIdx = payload.mediaItems.length - 1;
+      const captionText = payload.parts.length > 0
+        ? truncateVisible(payload.parts[0], TELEGRAM_LIMITS.CAPTION_MAX_LEN)
+        : "";
+      const captionHasContent = captionText &&
+        captionText.replace(/<[^>]+>/g, "").trim().length > 0;
+
+      const mediaItems = payload.mediaItems.map((m, i) => ({
+        type: m.type,
+        media: m.fileId,
+        caption: i === lastIdx && captionHasContent ? captionText : undefined,
+        parse_mode: i === lastIdx && captionHasContent ? ("HTML" as const) : undefined,
+      }));
+
+      const albumResult = await sendMediaGroup(env.BOT_TOKEN, {
+        chat_id: env.TARGET_CHANNEL,
+        media: mediaItems,
+      }).catch((e: unknown) => {
+        log("error", SCOPE, "sendMediaGroup failed", { error: String(e), jobId });
+        return null;
+      });
+
+      if (Array.isArray(albumResult) && albumResult.length > 0) {
+        publishOk = true;
+        publishedMessageId = albumResult[0].message_id;
+
+        // If there are additional text parts beyond the caption, send them
+        // as reply messages.
+        if (payload.parts.length > 1) {
+          const { sendMessage } = await import("../telegram/client");
+          const replyToId = albumResult[albumResult.length - 1].message_id;
+          for (let i = 1; i < payload.parts.length; i++) {
+            await sendMessage(env.BOT_TOKEN, {
+              chat_id: env.TARGET_CHANNEL,
+              text: payload.parts[i],
+              parse_mode: "HTML",
+              reply_to_message_id: replyToId,
+            }).catch(() => undefined);
+          }
+        }
+      } else {
+        publishOk = false;
+        publishError = "sendMediaGroup returned empty result";
+      }
+    } else {
+      // Single media or text-only: use the standard publisher.
+      const publisherMod: {
+        publishPost?: (
+          env: Env,
+          html: string,
+          parts: string[],
+          media?: ExtractedContent["media"],
+        ) => Promise<{ ok: boolean; messageIds: number[]; error?: string }>;
+      } = await import("../telegram/publisher");
+      if (!publisherMod.publishPost) {
+        throw new Error("publisher.publishPost not available");
+      }
+      const r = await publisherMod.publishPost(
+        env,
+        payload.html,
+        payload.parts,
+        payload.media,
+      );
+      publishOk = r.ok;
+      publishedMessageId =
+        r.ok && r.messageIds.length > 0 ? r.messageIds[0] : null;
+      publishError = r.error;
     }
-    const r = await publisherMod.publishPost(
-      env,
-      payload.html,
-      payload.parts,
-      payload.media,
-    );
-    publishOk = r.ok;
-    publishedMessageId =
-      r.ok && r.messageIds.length > 0 ? r.messageIds[0] : null;
-    publishError = r.error;
   } catch (e) {
     publishError = String(e);
-    log("error", SCOPE, "publishPost threw", { error: publishError, jobId });
+    log("error", SCOPE, "publish threw", { error: publishError, jobId });
   }
 
   // Conditional UPDATE — idempotent. If a parallel callback already moved

@@ -70,9 +70,19 @@ const STANDALONE_MENTION_LINE_RE =
 const EMOJI_MENTION_LINE_RE =
   /^[ \t]*[\p{Extended_Pictographic}]+\s*@[A-Za-z0-9_]+(?:\s*[|｜\-—–]\s*.*)?[ \t]*$/gmu;
 
-// Whole-line "Join / Follow / Subscribe" prompts (English + Persian)
+// Whole-line "Join / Follow / Subscribe" prompts (English + Persian).
+// NOTE: "channel" alone is too broad (matches "Channel 7 news" etc.) —
+// only match promo patterns: "our channel", "join channel", "channel: @x".
+// NOTE: "عضویت" alone means "membership" (common word) — only match the
+// full phrase "عضویت در کانال" (membership in channel).
 const JOIN_LINE_RE =
-  /^[ \t]*(?:please\s+)?(?:join|follow|subscribe|دنبال\s+کنید?|عضو\s+شوید?|عضویت)\b[^\n]*$/gim;
+  /^[ \t]*(?:please\s+)?(?:join|follow|subscribe|دنبال\s+کنید?|عضو\s+شوید?|عضویت\s+در\s+کانال|کانال\s+ما|join\s+our\s+channel|our\s+channel)[^\n]*$/gim;
+
+// Forwarded message header: "--- forward from @channel ---" or similar.
+// Telegram doesn't add these, but users paste forwarded content with these
+// headers. Remove them entirely.
+const FORWARD_HEADER_RE =
+  /^[ \t]*[-—–=*]{2,}\s*(?:forward(?:ed)?\s+from|فوروارد\s+از|از\s+کانال)\s+@?[A-Za-z0-9_]+\s*[-—–=*]{0,}[ \t]*$/gim;
 
 // Whole-line "for more: @chan" / "اطلاعات بیشتر: @chan"
 // FIX: only remove the @mention part, NOT URLs on the same line.
@@ -227,6 +237,10 @@ export function cleanContent(
   text = text.replace(JOIN_LINE_RE, (match) =>
     hasUrlPlaceholder(match) ? match : "",
   );
+
+  // Forwarded message headers ("--- forward from @channel ---")
+  // These are always removed (they're never legitimate content).
+  text = text.replace(FORWARD_HEADER_RE, "");
 
   // "for more: @chan" lines — but NOT if the line contains a URL
   text = text.replace(FOR_MORE_LINE_RE, (match) =>

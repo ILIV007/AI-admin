@@ -754,17 +754,22 @@ async function runChannelEditPipeline(
 
     // FIX CE-2: Add missing pipeline steps (same as main pipeline.ts):
     // 4c. Validate preservation (URLs, repos, code blocks)
+    // FIX (v2.16.6): use the CLEANED text as baseline, NOT content.text.
+    // The cleaner intentionally removes invite links (t.me/joinchat/...) and
+    // promo @mentions. Using content.text (raw original) as the baseline
+    // caused validatePreservation to flag those removed items as "missing"
+    // → false-positive fallback → re-added the invite links we just removed.
     const { validatePreservation } = await import("../processing/preservation");
-    const validation = validatePreservation(content.text, workingText);
+    const validation = validatePreservation(cleaned, workingText);
     if (!validation.ok) {
       const criticalMissing = validation.missing.filter(
         (m) => m.startsWith("url:") || m.startsWith("repo:"),
       );
       if (criticalMissing.length > 0) {
-        log("warn", scope, "channel edit: critical content missing, using original", {
+        log("warn", scope, "channel edit: critical content missing, using cleaned original", {
           criticalMissing,
         });
-        workingText = content.text; // fall back to original
+        workingText = cleaned; // fall back to CLEANED original (not raw)
       }
     }
 
@@ -1079,7 +1084,21 @@ async function handleFinalizeMediaGroup(
   const { chunkHtml } = await import("../formatting/chunker");
   const blocks = markdownToBlocks(workingText);
   const html = blocksToTelegramHtml(blocks, settings.footerText);
-  const parts = chunkHtml(html, 4000, settings.footerText);
+  // FIX (v2.16.6): use caption-aware chunking so parts[0] fits in the
+  // 1024-char caption limit. Previously used chunkHtml(html, 4000, footer)
+  // which could produce a parts[0] of up to 4000 chars — way over the
+  // caption limit — causing text loss when truncated to 1024 for the album.
+  const CAPTION_MAX_VISIBLE = 1000;
+  const CHUNK_MAX_VISIBLE = 4000;
+  const parts: string[] = (() => {
+    const captionParts = chunkHtml(html, CAPTION_MAX_VISIBLE, "");
+    if (captionParts.length <= 1) {
+      return chunkHtml(html, CAPTION_MAX_VISIBLE, settings.footerText);
+    }
+    const remaining = captionParts.slice(1).join("\n\n");
+    const textParts = chunkHtml(remaining, CHUNK_MAX_VISIBLE, settings.footerText);
+    return [captionParts[0], ...textParts];
+  })();
 
   // NOW: publish ourselves — single album post with text as caption + reply
   const result = {
@@ -1132,6 +1151,9 @@ async function handleFinalizeMediaGroup(
     try {
       const approvalMod = await import("../storage/repositories/approval-repo");
       if (approvalMod.createApprovalJob) {
+        // CRITICAL FIX (v2.16.5): pass mediaItems so the approval publish
+        // handler can re-send the album. Previously media was set to
+        // undefined, which caused albums to be published as text-only.
         approvalJobId = await approvalMod.createApprovalJob(env, {
           userId: firstItem.fromId,
           chatId: firstItem.chatId,
@@ -1139,6 +1161,7 @@ async function handleFinalizeMediaGroup(
           html: result.html,
           parts: result.parts,
           media: undefined,
+          mediaItems: allMedia.map((m) => ({ type: m.type, fileId: m.fileId })),
           footer: settings.footerText,
         });
       }
@@ -1240,14 +1263,24 @@ async function handleFinalizeMediaGroup(
           replyToId = albumResult[albumResult.length - 1].message_id;
         }
 
-        // If text was too long for caption, send FULL text as reply
-        if (textHasContent && fullText.length > TELEGRAM_LIMITS.CAPTION_MAX_LEN) {
-          await sendMessage(env.BOT_TOKEN, {
-            chat_id: env.TARGET_CHANNEL,
-            text: fullText,
-            parse_mode: "HTML",
-            reply_to_message_id: replyToId,
-          }).catch(() => undefined);
+        // If text was too long for caption, send remaining parts as reply chain.
+        // FIX (v2.16.6): previously sent fullText (which could be >4096 chars)
+        // as a SINGLE message — Telegram would reject it with 400 and the
+        // .catch(() => undefined) silently swallowed the error, causing text
+        // loss. Now we send result.parts[1+] individually (each ≤4000 chars).
+        if (textHasContent && result.parts.length > 1) {
+          for (let i = 1; i < result.parts.length; i++) {
+            try {
+              await sendMessage(env.BOT_TOKEN, {
+                chat_id: env.TARGET_CHANNEL,
+                text: result.parts[i],
+                parse_mode: "HTML",
+                reply_to_message_id: replyToId,
+              }).catch((e: unknown) => {
+                log("warn", "queue.finalizeMediaGroup", "reply text send failed", { error: String(e), partIndex: i });
+              });
+            } catch { /* best effort */ }
+          }
         }
       }
 
@@ -1273,21 +1306,29 @@ async function handleFinalizeMediaGroup(
           adminReplyId = adminAlbum[adminAlbum.length - 1].message_id;
         }
 
-        if (textHasContent && fullText.length > TELEGRAM_LIMITS.CAPTION_MAX_LEN) {
-          await sendMessage(env.BOT_TOKEN, {
-            chat_id: firstItem.fromId,
-            text: fullText,
-            parse_mode: "HTML",
-            reply_to_message_id: adminReplyId,
-          }).catch(() => undefined);
+        // FIX (v2.16.6): send parts[1+] individually instead of fullText
+        // (which could exceed 4096 chars and get rejected by Telegram).
+        if (textHasContent && result.parts.length > 1) {
+          for (let i = 1; i < result.parts.length; i++) {
+            try {
+              await sendMessage(env.BOT_TOKEN, {
+                chat_id: firstItem.fromId,
+                text: result.parts[i],
+                parse_mode: "HTML",
+                reply_to_message_id: adminReplyId,
+              }).catch(() => undefined);
+            } catch { /* best effort */ }
+          }
         }
       } else if (firstItem.fromId) {
         // No media → text only to admin
-        await sendMessage(env.BOT_TOKEN, {
-          chat_id: firstItem.fromId,
-          text: fullText,
-          parse_mode: "HTML",
-        }).catch(() => undefined);
+        for (const part of result.parts) {
+          await sendMessage(env.BOT_TOKEN, {
+            chat_id: firstItem.fromId,
+            text: part,
+            parse_mode: "HTML",
+          }).catch(() => undefined);
+        }
       }
 
       // NOTE: stats recording is handled by the unified block below

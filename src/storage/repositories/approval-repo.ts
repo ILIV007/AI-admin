@@ -32,6 +32,12 @@ export interface ApprovalPayload {
   html: string;
   parts: string[];
   media?: ExtractedContent["media"];
+  /** Media group items (for albums). When present, the publisher sends an
+   * album via sendMediaGroup instead of a single media + caption. */
+  mediaItems?: Array<{
+    type: "photo" | "video" | "document" | "animation";
+    fileId: string;
+  }>;
   footer: string;
 }
 
@@ -56,6 +62,10 @@ export async function createApprovalJob(
     html: string;
     parts: string[];
     media?: ExtractedContent["media"];
+    mediaItems?: Array<{
+      type: "photo" | "video" | "document" | "animation";
+      fileId: string;
+    }>;
     footer: string;
   },
 ): Promise<string> {
@@ -63,6 +73,7 @@ export async function createApprovalJob(
     html: opts.html,
     parts: opts.parts,
     media: opts.media,
+    mediaItems: opts.mediaItems,
     footer: opts.footer,
   };
   return createJob(env, {
