@@ -408,7 +408,10 @@ function parseInlineInner(text: string): Span[] {
         closeBracket + 1 < text.length &&
         text[closeBracket + 1] === "("
       ) {
-        const closeParen = text.indexOf(")", closeBracket + 2);
+        // Find the LAST ) on this line (URLs can contain parens like Wikipedia)
+        const lineEnd = text.indexOf("\n", closeBracket + 2);
+        const searchEnd = lineEnd === -1 ? text.length : lineEnd;
+        const closeParen = text.lastIndexOf(")", searchEnd);
         if (closeParen > closeBracket + 1) {
           flush();
           let linkUrl = text.slice(closeBracket + 2, closeParen);
