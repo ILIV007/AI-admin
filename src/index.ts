@@ -8,9 +8,10 @@
  *   - scheduled: the ONE cron trigger → runCron
  *
  * Design (fixes V1 critical bugs):
- *   - Webhook validates secret (REQUIRED), dedupes update_id, enqueues, returns
- *     200 in <50ms. Heavy work happens in the queue consumer (fixes V1 #2:
- *     ctx.waitUntil running a 90s pipeline).
+ *   - Webhook validates secret (OPTIONAL — if WEBHOOK_SECRET is set, it is
+ *     enforced; if unset, accepts all for local/testing), dedupes update_id,
+ *     enqueues, returns 200 in <50ms. Heavy work happens in the queue
+ *     consumer (fixes V1 #2: ctx.waitUntil running a 90s pipeline).
  *   - No schedule_date anywhere (fixes V1 #1: scheduling via Bot API is
  *     impossible). Scheduling = D1 job + cron trigger.
  *   - Debug dashboard requires a token AND returns 404 if unset (fixes V1 #3).
@@ -30,7 +31,7 @@ import { execAll } from "./storage/d1";
 import { handlePanelRoute } from "./debug-panel";
 import queueConsumer from "./queue/consumer";
 
-const VERSION = "2.15.5";
+const VERSION = "2.15.6";
 
 // ============================================================
 // MAIN EXPORT

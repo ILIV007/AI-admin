@@ -15,7 +15,7 @@ import { getStats } from "./storage/repositories/stats";
 import { ensureOwnerExists } from "./storage/repositories/admins";
 import { refreshModelHealth } from "./ai/fallback";
 
-const VERSION = "2.15.5";
+const VERSION = "2.15.6";
 
 // ============================================================
 // AUTH
@@ -801,9 +801,10 @@ function renderStatus(data) {
   // Secrets
   const secrets = data.secrets || {};
   const secretItems = Object.entries(secrets).map(([k, v]) => {
-    const critical = (k === 'WEBHOOK_SECRET' && !v);
-    const cls = critical ? 'err' : (v ? 'ok' : 'warn');
-    const icon = critical ? '✗' : (v ? '✓' : '!');
+    const critical = (k === 'BOT_TOKEN' && !v);
+    const warn = (k === 'WEBHOOK_SECRET' && !v);
+    const cls = critical ? 'err' : (v ? 'ok' : (warn ? 'warn' : 'err'));
+    const icon = critical ? '✗' : (v ? '✓' : (warn ? '!' : '✗'));
     return '<div class="status-item"><span class="status-label">' + k + '</span><span class="' + cls + '">' + icon + ' ' + (v ? 'set' : 'NOT SET') + '</span></div>';
   }).join('');
   cards.push('<div class="card"><h2>🔐 Secrets</h2>' + secretItems + '</div>');

@@ -28,9 +28,18 @@ const NUL = "\u0000";
 // CRITICAL FIX: U+200C (ZWNJ = نیم‌فاصله) is EXCLUDED from this set.
 // It is the Persian half-space character, essential for correct typography.
 // Stripping it causes compound words like به‌روزرسانی to become بهروزرسانی.
-// We keep U+200B (zero-width SPACE), U+200D (ZWJ — rare, mainly for emoji
-// sequences), U+200E/U+200F (LRM/RLM — bidi marks), bidi overrides, BOM,
-// and soft hyphen.
+//
+// Characters that ARE stripped (kept IN the strip set):
+//   U+200B  zero-width SPACE       (invisible formatting, not a joiner)
+//   U+200D  ZWJ                    (rare; mainly emoji sequences — bot is text-only)
+//   U+200E  LRM                    (bidi left-to-right mark)
+//   U+200F  RLM                    (bidi right-to-left mark)
+//   U+202A-U+202E  bidi overrides  (security risk: can flip text direction)
+//   U+FEFF  BOM / ZWNBSP           (byte-order mark, invisible)
+//   U+00AD  soft hyphen            (invisible, rarely meaningful)
+//
+// Characters PRESERVED (NOT stripped):
+//   U+200C  ZWNJ (نیم‌فاصله)       (Persian half-space — essential typography)
 const ZERO_WIDTH_RE = /[\u200B\u200D-\u200F\u202A-\u202E\uFEFF\u00AD]/g;
 
 // Raw HTML tag (open or close). We intentionally do NOT try to preserve any

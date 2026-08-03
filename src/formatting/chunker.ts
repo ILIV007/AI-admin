@@ -10,8 +10,9 @@
  *   • Visible length = chars outside HTML tags, with entities counted as 1.
  *   • Splits happen only at block boundaries (paragraph / sentence / word)
  *     that lie OUTSIDE tags and entities.
- *   • Each chunk is tag-balanced via closeOpenTags + reopenTags so an open
- *     <b> at the end of chunk N is reopened at the start of chunk N+1.
+ *   • Each chunk is tag-balanced via balanceChunk so an open <b> (or <a href>)
+ *     at the end of chunk N is reopened WITH ITS ATTRIBUTES at the start of
+ *     chunk N+1. This fixes the link-loss bug where href was dropped.
  *   • The footer is stripped from the input (if present) and appended ONLY
  *     to the LAST chunk.
  *   • If a single paragraph exceeds maxVisible, it is split at sentence
@@ -20,7 +21,6 @@
  * Public surface:
  *   • chunkHtml(html, maxVisible, footer) — main entrypoint
  *   • closeOpenTags(html)                 — append closing tags for any open
- *   • reopenTags(closedSuffix)            — produce matching reopen tags
  * -----------------------------------------------------------------------------
  */
 
@@ -90,7 +90,18 @@ export function visibleLength(html: string): number {
 }
 
 // ============================================================
-// Tag balance — closeOpenTags / reopenTags
+// Tag balance — closeOpenTags / balanceChunk
+// ============================================================
+//
+// CRITICAL FIX (v2.15.6): the old `reopenTags(closedSuffix)` only had access
+// to closing-tag NAMES (e.g. "</a></b>") and could only emit "<a><b>" —
+// DROPPING all attributes including `href`. When a paragraph containing a
+// link was split across chunks, chunk N+1 reopened `<a>` with NO href, so
+// Telegram rendered the link text as plain non-clickable text. This was the
+// user-reported "links lost" bug.
+//
+// The fix: `balanceChunk(raw)` now tracks the FULL opening tag HTML
+// (including attributes like href, class) and reopens with the complete tag.
 // ============================================================
 
 const VOID_TAGS = new Set([
@@ -109,13 +120,19 @@ const VOID_TAGS = new Set([
   "wbr",
 ]);
 
+interface OpenTag {
+  name: string; // lowercased tag name, e.g. "a"
+  openHtml: string; // full opening tag incl. attributes, e.g. '<a href="https://x.com">'
+}
+
 /**
- * Scan HTML, return the stack of currently-open non-void tag names
- * (in open order, outermost first).
+ * Scan HTML, return the stack of currently-open non-void tags (in open
+ * order, outermost first). Each entry carries the FULL opening tag HTML so
+ * attributes (href, class, …) survive across chunk boundaries.
  */
-function computeOpenStack(html: string): string[] {
-  const stack: string[] = [];
-  const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*)?)\s*(\/?)>/g;
+function computeOpenStack(html: string): OpenTag[] {
+  const stack: OpenTag[] = [];
+  const tagRe = /<([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*)?)\s*(\/?)>/g;
   let m: RegExpExecArray | null;
   while ((m = tagRe.exec(html)) !== null) {
     const full = m[0];
@@ -124,12 +141,12 @@ function computeOpenStack(html: string): string[] {
     const selfClose = m[3] === "/" || VOID_TAGS.has(name);
     if (isClose) {
       // Pop everything up to and including the matching open tag.
-      const idx = stack.lastIndexOf(name);
+      const idx = stack.map((t) => t.name).lastIndexOf(name);
       if (idx >= 0) {
         stack.length = idx;
       }
     } else if (!selfClose) {
-      stack.push(name);
+      stack.push({ name, openHtml: full });
     }
   }
   return stack;
@@ -137,31 +154,36 @@ function computeOpenStack(html: string): string[] {
 
 /**
  * Append closing tags for any unclosed open tags in the HTML.
- * Closing order is innermost-first (reverse of open order).
+ * Closing order is innermost-first (reverse of open order). Closing tags
+ * never carry attributes.
  */
 export function closeOpenTags(html: string): string {
   const stack = computeOpenStack(html);
   const closingTags = stack
     .slice()
     .reverse()
-    .map((t) => `</${t}>`)
+    .map((t) => `</${t.name}>`)
     .join("");
   return html + closingTags;
 }
 
 /**
- * Given a suffix of closing tags appended by closeOpenTags (e.g. "</i></b>"),
- * produce the matching opening tags for the next chunk (e.g. "<b><i>").
+ * Balance a raw (possibly unbalanced) chunk: append closing tags for any
+ * open tags, and return the reopen string for the NEXT chunk. The reopen
+ * string contains the FULL opening tags (with attributes) in outermost-first
+ * order, so `<a href="…">` split across chunks keeps its href in chunk N+1.
  */
-export function reopenTags(closedSuffix: string): string {
-  const tags: string[] = [];
-  const re = /<\/([a-zA-Z][a-zA-Z0-9]*)>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(closedSuffix)) !== null) {
-    tags.push(m[1].toLowerCase());
-  }
-  // closedSuffix is innermost-first; reopen must be outermost-first.
-  return tags.reverse().map((t) => `<${t}>`).join("");
+function balanceChunk(raw: string): { closed: string; reopen: string } {
+  const stack = computeOpenStack(raw);
+  const closingTags = stack
+    .slice()
+    .reverse()
+    .map((t) => `</${t.name}>`)
+    .join("");
+  const closed = raw + closingTags;
+  // Reopen: outermost-first (stack is already in open order), full HTML.
+  const reopen = stack.map((t) => t.openHtml).join("");
+  return { closed, reopen };
 }
 
 // ============================================================
@@ -405,19 +427,24 @@ export function chunkHtml(
   }
   if (cur) rawChunks.push(cur);
 
-  // Balance tags across chunks: prepend reopen tags, append close tags.
+  // Balance tags across chunks: prepend reopen tags (WITH attributes),
+  // append close tags. This preserves `href` and other attributes across
+  // chunk boundaries — fixing the link-loss bug (v2.15.6).
   const balancedChunks: string[] = [];
   let reopen = "";
   for (const raw of rawChunks) {
     const prefixed = reopen + raw;
-    let safe = prefixed;
-    if (visibleLength(safe) > maxVisible) {
-      safe = truncateVisible(safe, maxVisible);
+    if (visibleLength(prefixed) > maxVisible) {
+      // Safety net: truncateVisible closes tags internally (balanced result).
+      // After truncation the open stack is empty, so there is nothing to
+      // reopen — the discarded content beyond the cut point is lost by design.
+      balancedChunks.push(truncateVisible(prefixed, maxVisible));
+      reopen = "";
+    } else {
+      const { closed, reopen: newReopen } = balanceChunk(prefixed);
+      balancedChunks.push(closed);
+      reopen = newReopen;
     }
-    const closed = closeOpenTags(safe);
-    const addedSuffix = closed.slice(safe.length);
-    balancedChunks.push(closed);
-    reopen = reopenTags(addedSuffix);
   }
 
   // Append the footer ONLY to the LAST chunk. Fixes V1 double-footer bug.

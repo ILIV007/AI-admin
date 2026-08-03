@@ -76,7 +76,7 @@ import { runFormatterSelfTests } from "../formatting/self-test";
 import { listEvents } from "../storage/repositories/debug-events";
 
 const SCOPE = "admin.commands";
-const VERSION = "v2.15.5";
+const VERSION = "v2.15.6";
 // Build date — bumped manually per release. Cloudflare Workers have no
 // long-running process, so there's no runtime "uptime"; this constant plus
 // the current server time are the closest proxy.
@@ -695,7 +695,7 @@ export async function handleVersion(
     `<b>Server time</b>: <code>${now.toISOString()}</code>\n` +
     `<b>Server time</b>: <code>${escapeHtml(tehranNow)}</code>\n\n` +
     `<b>📦 Build stats</b>\n` +
-    `• TypeScript files: <code>40</code>\n` +
+    `• TypeScript files: <code>49</code>\n` +
     `• AI models: <code>${ALL_MODELS.length}</code>\n` +
     `• Cron triggers: <code>1</code>\n\n` +
     `🌀 <i>AI Admin V2 — Built for Cloudflare Workers</i>`;
@@ -925,6 +925,7 @@ export async function handleDiag(
     const adminCount = await execCount(env, "SELECT COUNT(*) as c FROM admins");
     const settingsCount = await execCount(env, "SELECT COUNT(*) as c FROM settings");
     const jobsPending = await execCount(env, "SELECT COUNT(*) as c FROM jobs WHERE status = 'pending'");
+    const jobsPublishing = await execCount(env, "SELECT COUNT(*) as c FROM jobs WHERE status = 'publishing'");
     const jobsPublished = await execCount(env, "SELECT COUNT(*) as c FROM jobs WHERE status = 'published'");
     const jobsRejected = await execCount(env, "SELECT COUNT(*) as c FROM jobs WHERE status = 'rejected'");
     const jobsFailed = await execCount(env, "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed'");
@@ -936,6 +937,9 @@ export async function handleDiag(
     out.push(`admins: <code>${adminCount}</code>`);
     out.push(`settings: <code>${settingsCount}</code>`);
     out.push(`jobs (pending): <code>${jobsPending}</code>`);
+    if (jobsPublishing > 0) {
+      out.push(`jobs (publishing): <code>${jobsPublishing}</code> ⚠️`);
+    }
     out.push(`jobs (published): <code>${jobsPublished}</code>`);
     out.push(`jobs (rejected): <code>${jobsRejected}</code>`);
     out.push(`jobs (failed): <code>${jobsFailed}</code>`);
@@ -1597,7 +1601,7 @@ export async function handleQueue(
 
     // --- Note ---
     lines.push("");
-    lines.push("ℹ️ Cron processes this queue every 15 minutes.");
+    lines.push("ℹ️ Cron processes this queue every 30 minutes.");
 
     const fullText = lines.join("\n");
     const parts = chunkHtml(fullText, 4000, "");
@@ -2239,7 +2243,8 @@ async function safeSend(
 
 /**
  * Read a single model's health record from KV. Returns null on cache miss or
- * parse error. The key shape matches `ai/fallback.ts`: `ai:health:<provider>:<model>`.
+ * parse error. The key shape matches `ai/fallback.ts`: `ai:health:v8:<provider>:<model>`
+ * (the v8 segment is the HEALTH_CACHE_VERSION, bumped when the model list changes).
  */
 async function readHealthFor(
   env: Env,

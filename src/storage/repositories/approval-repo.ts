@@ -120,15 +120,24 @@ export async function setApprovalPublished(
 
 /**
  * Mark an approval as rejected (admin tapped "Reject"). IDEMPOTENT.
+ *
+ * Returns true if THIS call performed the transition (pending → rejected),
+ * false if another callback already moved the job out of pending. Callers
+ * MUST use this return value to avoid double-counting stats / audit entries
+ * on concurrent reject callbacks.
  */
-export async function setApprovalRejected(env: Env, id: string): Promise<void> {
-  await exec(
+export async function setApprovalRejected(
+  env: Env,
+  id: string,
+): Promise<boolean> {
+  const res = await exec(
     env.DB,
     `UPDATE jobs SET status = 'rejected', updated_at = ?
       WHERE id = ? AND status = 'pending'`,
     nowMs(),
     id,
   );
+  return (res.meta?.changes ?? 0) > 0;
 }
 
 /**

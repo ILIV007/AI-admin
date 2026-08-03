@@ -120,16 +120,15 @@ function restoreInlineCode(text: string, codes: string[]): string {
 function extractUrls(text: string): { text: string; urls: string[] } {
   const urls: string[] = [];
   text = text.replace(URL_RE, (url) => {
-    // Remove Telegram promo links: invite links AND https://t.me/username (standalone, not post links)
+    // Remove Telegram INVITE links (joinchat/+//addstickers/addemoji) — these
+    // are always promo, regardless of context.
     if (/^https?:\/\/t\.me\/(?:joinchat|\+|addstickers|addemoji)/i.test(url)) {
       return " ";
     }
-    // Remove https://t.me/username only if it's NOT a post link (no /123)
-    if (/^https?:\/\/t\.me\/[A-Za-z0-9_]+\/?$/i.test(url)) {
-      return " ";
-    }
-    // ALL other URLs (including t.me/username and t.me/username/123) are KEPT.
-    // t.me/username removal is handled separately (only at bottom of post as attribution).
+    // ALL other URLs (including https://t.me/username and t.me/username/123)
+    // are KEPT inline. Standalone t.me/username LINES are removed separately
+    // BEFORE extraction (see cleanContent) so the rule "only delete standalone
+    // lines" applies uniformly to both bare and https:// forms.
     urls.push(url);
     return `${NUL}URL${urls.length - 1}${NUL}`;
   });
@@ -163,24 +162,24 @@ export function cleanContent(
   const ic = extractInlineCode(text);
   text = ic.text;
 
-  // Extract URLs → placeholders (also drops Telegram invite links).
-  // Also drop t.me/username promo links (but NOT t.me/username/123 post links).
-  const u = extractUrls(text);
-  text = u.text;
-
-  // Remove t.me/username promo links (both bare and with https://)
-  // Keep t.me/username/123 (specific post links) — check for /digits AFTER username
-  // Also remove emoji + t.me combos (e.g. "✉️ t.me/username/")
-  // CRITICAL: only remove STANDALONE t.me/username (on its own line, at end of post)
-  // NOT t.me/username inside a sentence (e.g. "به t.me/somechannel/123 مراجعه کنید")
+  // Remove STANDALONE t.me/username lines (both bare and https:// forms).
+  // This runs BEFORE extractUrls so both forms are caught uniformly.
+  // Inline t.me/username (inside a sentence) is KEPT — only standalone lines
+  // are removed. Post links (t.me/username/123) are always kept.
+  // CRITICAL: this matches ANY standalone line, not just "at end of post".
   text = text.replace(/^[ \t]*(?:https?:\/\/)?t\.me\/[A-Za-z0-9_]+\/?[ \t]*$/gimu, (match) => {
-    if (/\/\d+/.test(match)) return match; // Keep post links
+    if (/\/\d+/.test(match)) return match; // Keep post links (t.me/user/123)
     return "";
   });
   // Remove lines that are just emoji + t.me/username (e.g. "✉️ t.me/username/")
   text = text.replace(/^[ \t]*[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F\s]+t\.me\/[A-Za-z0-9_]+\/?[ \t]*$/gimu, "");
   // Remove leftover standalone emojis on their own line (left after t.me removal)
   text = text.replace(/^[ \t]*[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F]+[ \t]*$/gimu, "");
+
+  // Extract URLs → placeholders (drops invite links; keeps all other URLs
+  // including inline t.me/username and t.me/username/123 post links).
+  const u = extractUrls(text);
+  text = u.text;
 
   // --- text-level cleaning passes ---
 

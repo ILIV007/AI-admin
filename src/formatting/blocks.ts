@@ -42,6 +42,40 @@
 import type { ContentBlock, Span } from "../types";
 
 // ============================================================
+// stripTrailingPunct — trim trailing brackets/punctuation from a URL
+// ============================================================
+
+/**
+ * Strip trailing closing brackets ( ) ] }) and sentence punctuation
+ * (.,;:!?) from a URL, but ONLY when the closing bracket has no matching
+ * opener inside the URL. This correctly handles:
+ *   "(https://example.com)"       → "https://example.com"
+ *   "https://en.wikipedia.org/wiki/Foo_(bar)"  → unchanged (balanced)
+ *   "https://example.com."        → "https://example.com"
+ *   "https://example.com/path),"  → "https://example.com/path"
+ */
+function stripTrailingPunct(url: string): string {
+  let out = url;
+  // First strip trailing sentence punctuation (always safe).
+  out = out.replace(/[.,;:!?]+$/g, "");
+  // Then strip unbalanced trailing closing brackets one at a time.
+  for (;;) {
+    const last = out[out.length - 1];
+    if (last === ")" || last === "]" || last === "}") {
+      const closeCount = (out.match(/[)\]}]/g) || []).length;
+      const openCount = (out.match(/[(\[{]/g) || []).length;
+      // If there are more closers than openers, the trailing one is unbalanced.
+      if (closeCount > openCount) {
+        out = out.slice(0, -1);
+        continue;
+      }
+    }
+    break;
+  }
+  return out;
+}
+
+// ============================================================
 // markdownToBlocks
 // ============================================================
 
@@ -447,9 +481,17 @@ function parseInlineInner(text: string): Span[] {
     if (text.startsWith("http://", i) || text.startsWith("https://", i)) {
       const m = /^https?:\/\/[^\s<>"']+/i.exec(text.slice(i));
       if (m) {
+        let url = m[0];
+        // Strip trailing closing brackets that have no matching opener in the
+        // URL. This handles URLs wrapped in parens/brackets like
+        // "(https://example.com)" → "https://example.com", while preserving
+        // balanced brackets inside the URL (e.g. Wikipedia's
+        // "/wiki/Foo_(bar)"). Also strip trailing sentence punctuation
+        // (.,;:!?) that is almost never part of the URL.
+        url = stripTrailingPunct(url);
         flush();
-        spans.push({ kind: "link", text: m[0], url: m[0] });
-        i += m[0].length;
+        spans.push({ kind: "link", text: url, url });
+        i += url.length;
         continue;
       }
     }
@@ -489,10 +531,12 @@ function parseInlineInner(text: string): Span[] {
           // like "t.me" (t has no vowel).
           if (!fileExtensions.has(tld) && !isAllDigitsOrDots &&
               domainPart.includes(".") && !domainPart.startsWith(".") && !domainPart.endsWith("..")) {
+            // Strip trailing brackets/punctuation (same as protocol-URL path).
+            const cleanBareUrl = stripTrailingPunct(bareUrl);
             flush();
             // Store with https:// prefix as the URL, but keep original text
-            spans.push({ kind: "link", text: bareUrl, url: `https://${bareUrl}` });
-            i += bareUrl.length;
+            spans.push({ kind: "link", text: cleanBareUrl, url: `https://${cleanBareUrl}` });
+            i += cleanBareUrl.length;
             continue;
           }
         }

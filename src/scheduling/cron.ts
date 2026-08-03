@@ -23,8 +23,13 @@
  * try/catch so a failure in one step never aborts the others. Each step logs
  * start + finish so we can see timing in `wrangler tail`.
  *
- * wrangler.toml will register ONE cron trigger (every minute) that calls
- * runCron(env, ctx) from the Worker's scheduled() handler.
+ * Additional steps (added after initial version):
+ *   2b. Recover stale "publishing" jobs (stuck >5 min) → reset to pending
+ *   4b. Prune old published_posts history (>30 days)
+ *   7.  Monitor DLQ depth (logs a warning if backlog grows)
+ *
+ * wrangler.toml registers ONE cron trigger (every 30 minutes, 48 ticks/day).
+ * The scheduled() handler in index.ts calls runCron(env, ctx).
  * -----------------------------------------------------------------------------
  */
 

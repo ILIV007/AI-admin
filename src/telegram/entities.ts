@@ -12,7 +12,7 @@
  *   Pre forms:   <pre>…</pre>
  *                <pre><code class="language-…">…</code></pre>
  *   Blockquote:  <blockquote>…</blockquote>
- *                <blockquote extendable>…</blockquote>
+ *                <blockquote expandable>…</blockquote>
  *   Anchor:      <a href="https://…">…</a>
  *   Emoji:       <tg-emoji emoji-id="5368324170671202286">👍</tg-emoji>
  *

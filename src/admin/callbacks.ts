@@ -78,6 +78,72 @@ import {
 const SCOPE = "admin.callbacks";
 
 // ============================================================
+// UI Language callback — handled BEFORE auth gate (any user can
+// change their own UI language). Extracted to its own function so
+// the main callback router stays readable.
+// ============================================================
+
+async function handleUiLangCallback(
+  env: Env,
+  cq: TelegramCallbackQuery,
+  data: string,
+): Promise<void> {
+  const fromId = cq.from.id;
+
+  if (data === "set:uilang") {
+    // Show language selector
+    const { SUPPORTED_LANGUAGES, t, getUiLanguage } = await import("../i18n");
+    const settings = await getSettingsFor(env, fromId);
+    const currentLang = getUiLanguage(settings);
+    const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
+      text: `${l.flag} ${l.label}${l.code === currentLang ? " ✅" : ""}`,
+      callback_data: `set:uilang:${l.code}`,
+    }));
+    const keyboard = buildInlineKeyboard([
+      langButtons,
+      [{ text: "🔙 Back", callback_data: "menu" }],
+    ]);
+    await safeAnswer(env, cq.id, "");
+    await editText(env, cq, t(currentLang, "start.choose_language"), keyboard);
+    return;
+  }
+
+  // set:uilang:<code>
+  const langCode = data.slice("set:uilang:".length) as "en" | "fa";
+  if (langCode !== "en" && langCode !== "fa") {
+    await safeAnswer(env, cq.id, "⚠️ Invalid language", true);
+    return;
+  }
+  const settings = await getSettingsFor(env, fromId);
+  settings.uiLanguage = langCode;
+  await saveSettings(env, fromId, settings);
+  const { t } = await import("../i18n");
+  const msg = t(langCode, "start.language_set");
+  await safeAnswer(env, cq.id, msg);
+  // Re-show language selector with updated selection
+  const { SUPPORTED_LANGUAGES } = await import("../i18n");
+  const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
+    text: `${l.flag} ${l.label}${l.code === langCode ? " ✅" : ""}`,
+    callback_data: `set:uilang:${l.code}`,
+  }));
+  const keyboard = buildInlineKeyboard([
+    langButtons,
+    [{ text: "🔙 Back", callback_data: "menu" }],
+  ]);
+  try {
+    if (cq.message) {
+      await editMessageText(env.BOT_TOKEN, {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        text: msg + "\n\n" + t(langCode, "start.choose_language"),
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
+    }
+  } catch { /* ignore */ }
+}
+
+// ============================================================
 // Public entry
 // ============================================================
 
@@ -97,6 +163,15 @@ export async function handleCallbackQuery(
   // Approval callbacks delegate fully to approval.ts (which answers + edits).
   if (data.startsWith("pub:") || data.startsWith("rej:")) {
     await handleApprovalCallback(env, cq);
+    return;
+  }
+
+  // UI Language selector — anyone (including non-admins) can change their
+  // OWN UI language. This must run BEFORE the admin auth gate so the
+  // language button shown to non-admins in /start actually works.
+  // (v2.15.6 fix: previously blocked by the auth check below.)
+  if (data === "set:uilang" || data.startsWith("set:uilang:")) {
+    await handleUiLangCallback(env, cq, data);
     return;
   }
 
@@ -154,60 +229,6 @@ export async function handleCallbackQuery(
       } catch (e) {
         await safeAnswer(env, cq.id, "❌ Failed to cancel", true);
       }
-      return;
-    }
-    // UI Language selector — anyone can change their own UI language
-    if (data === "set:uilang") {
-      // Show language selector
-      const { SUPPORTED_LANGUAGES, t, getUiLanguage } = await import("../i18n");
-      const settings = await getSettingsFor(env, fromId);
-      const currentLang = getUiLanguage(settings);
-      const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
-        text: `${l.flag} ${l.label}${l.code === currentLang ? " ✅" : ""}`,
-        callback_data: `set:uilang:${l.code}`,
-      }));
-      const keyboard = buildInlineKeyboard([
-        langButtons,
-        [{ text: "🔙 Back", callback_data: "menu" }],
-      ]);
-      await safeAnswer(env, cq.id, "");
-      await editText(env, cq, t(currentLang, "start.choose_language"), keyboard);
-      return;
-    }
-    if (data.startsWith("set:uilang:")) {
-      const langCode = data.slice("set:uilang:".length) as "en" | "fa";
-      if (langCode !== "en" && langCode !== "fa") {
-        await safeAnswer(env, cq.id, "⚠️ Invalid language", true);
-        return;
-      }
-      const settings = await getSettingsFor(env, fromId);
-      settings.uiLanguage = langCode;
-      await saveSettings(env, fromId, settings);
-      const { t } = await import("../i18n");
-      const msg = t(langCode, "start.language_set");
-      await safeAnswer(env, cq.id, msg);
-      // Re-show language selector with updated selection
-      const { SUPPORTED_LANGUAGES } = await import("../i18n");
-      const langButtons = SUPPORTED_LANGUAGES.map((l) => ({
-        text: `${l.flag} ${l.label}${l.code === langCode ? " ✅" : ""}`,
-        callback_data: `set:uilang:${l.code}`,
-      }));
-      const keyboard = buildInlineKeyboard([
-        langButtons,
-        [{ text: "🔙 Back", callback_data: "menu" }],
-      ]);
-      try {
-        const { editMessageText } = await import("../telegram/client");
-        if (cq.message) {
-          await editMessageText(env.BOT_TOKEN, {
-            chat_id: cq.message.chat.id,
-            message_id: cq.message.message_id,
-            text: msg + "\n\n" + t(langCode, "start.choose_language"),
-            parse_mode: "HTML",
-            reply_markup: keyboard,
-          });
-        }
-      } catch { /* ignore */ }
       return;
     }
     if (data.startsWith("set:") || data.startsWith("view:")) {

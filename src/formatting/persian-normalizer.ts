@@ -19,7 +19,9 @@
  *
  * The normalizer is SAFE to run on any text:
  *   - It only matches specific Persian word patterns.
- *   - It runs BEFORE markdownToBlocks; code blocks / links are protected.
+ *   - It runs BEFORE markdownToBlocks; code blocks, links, AND bare URLs are
+ *     protected so URL paths containing Persian text (e.g.
+ *     https://example.com/بهروز) are never mutated.
  *   - It preserves existing U+200C chars (idempotent).
  * -----------------------------------------------------------------------------
  */
@@ -60,7 +62,7 @@ const COMPOUND_FIXES: ReadonlyArray<[string, string]> = [
   ["پیشبینی", "پیش‌بینی"],
   ["پیشبین", "پیش‌بین"],
   ["درحالکه", "در‌حال‌که"],
-  ["درحالیکه", "در‌حال‌که"],
+  ["درحالیکه", "در‌حالی‌که"], // FIX v2.15.6: was "در‌حال‌که" (dropped ی)
 
   // --- به + word ---
   ["بهطور", "به‌طور"],
@@ -84,7 +86,8 @@ const COMPOUND_FIXES: ReadonlyArray<[string, string]> = [
   ["درواقع", "در‌واقع"],
   ["درحالی", "در‌حالی"],
   ["دردسترس", "در‌دسترس"],
-  ["درباره", "در‌باره"],
+  // REMOVED v2.15.6: ["درباره", "در‌باره"] — درباره is a correctly-spelled
+  // single word ("about"); inserting a half-space corrupts it into در+باره.
   ["درمورد", "در‌مورد"],
   ["درطول", "در‌طول"],
   ["درکنار", "در‌کنار"],
@@ -223,7 +226,9 @@ for (const [wrong, correct] of COMPOUND_FIXES) {
 export function normalizePersianHalfSpaces(text: string): string {
   if (!text) return "";
 
-  // 1. Protect code fences, inline code, and links.
+  // 1. Protect code fences, inline code, markdown links, AND bare URLs.
+  //    Bare URLs are protected so Persian text in a URL path (e.g.
+  //    https://example.com/بهروز) is never mutated by the half-space fixer.
   const protected_: string[] = [];
   let working = text;
 
@@ -236,6 +241,13 @@ export function normalizePersianHalfSpaces(text: string): string {
     return `\u0000P${protected_.length - 1}\u0000`;
   });
   working = working.replace(/\[[^\]]*\]\([^)]*\)/g, (m) => {
+    protected_.push(m);
+    return `\u0000P${protected_.length - 1}\u0000`;
+  });
+  // Protect bare URLs (with or without protocol). The URL extends until the
+  // next whitespace or end of line. Trailing punctuation is left in place
+  // (it's not part of the URL and won't be mutated by the Persian fixer).
+  working = working.replace(/https?:\/\/[^\s<>"]+/gi, (m) => {
     protected_.push(m);
     return `\u0000P${protected_.length - 1}\u0000`;
   });

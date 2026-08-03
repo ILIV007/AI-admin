@@ -1269,29 +1269,17 @@ async function handleFinalizeMediaGroup(
         }).catch(() => undefined);
       }
 
-      // Record stats
-      try {
-        const { recordPublished } = await import("../storage/repositories/stats");
-        if (firstItem.fromId) await recordPublished(env, firstItem.fromId);
-      } catch { /* best effort */ }
+      // NOTE: stats recording is handled by the unified block below
+      // (result.action === "published" → recordPublished). Do NOT record
+      // here — that caused double-counting (v2.15.6 fix).
     } catch (e) {
       log("error", "queue.finalizeMediaGroup", "media group publish failed", { error: String(e) });
     }
 
-    // Edit loading message → report
-    if (isAdmin && loadingMsgId && firstItem.fromId) {
-      try {
-        const { t, getUiLanguage } = await import("../i18n");
-        const lang = getUiLanguage(settings);
-        const reportText = `<blockquote><b>✅ ${t(lang, "report.published")}</b></blockquote>`;
-        await editMessageText(env.BOT_TOKEN, {
-          chat_id: firstItem.fromId,
-          message_id: loadingMsgId,
-          text: reportText,
-          parse_mode: "HTML",
-        }).catch(() => undefined);
-      } catch { /* ignore */ }
-    }
+    // NOTE: the loading-message edit is handled by the unified report block
+    // below (which shows the full report with category/AI/media info).
+    // A separate "✅ Published" edit here was dead code — immediately
+    // overwritten by the full report (v2.15.6 fix).
   }
 
   if (result.aiUsed) {

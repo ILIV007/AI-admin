@@ -388,26 +388,19 @@ async function handleReject(
   // Disable keyboard immediately.
   await updateKeyboardOnly(env, cq, "⏳ Processing...");
 
+  // setApprovalRejected returns true ONLY if THIS call flipped pending→rejected.
+  // Concurrent reject callbacks: only one gets true, preventing double-counting
+  // of recordRejected + audit entries (fixes v2.15.6 idempotency bug).
+  let weWon = false;
   try {
-    await setApprovalRejected(env, jobId);
+    weWon = await setApprovalRejected(env, jobId);
   } catch (e) {
     log("error", SCOPE, "setApprovalRejected threw", { error: String(e), jobId });
     await safeAnswer(env, cq.id, "⚠️ Internal error", true);
     return;
   }
 
-  // Re-fetch to verify. If status is "rejected", we (or someone) rejected it.
-  // The conditional UPDATE means only one callback could flip it; if the
-  // status is "rejected" now, the rejection is recorded. If it's something
-  // else (e.g. "published"), someone else beat us — don't double-record.
-  let updated: JobRecord | null = null;
-  try {
-    updated = await getApprovalJob(env, jobId);
-  } catch (e) {
-    log("warn", SCOPE, "re-fetch after reject failed", { error: String(e) });
-  }
-
-  if (updated && updated.status === "rejected") {
+  if (weWon) {
     try {
       await recordRejected(env, job.userId);
     } catch (e) {
@@ -427,7 +420,8 @@ async function handleReject(
     // Don't delete or replace the message — just update the keyboard to show "Rejected"
     await updateKeyboardOnly(env, cq, "🚫 Rejected");
   } else {
-    // Someone else resolved it (published or failed). Don't record a rejection.
+    // Someone else resolved it (published, failed, or already rejected).
+    // Don't record a rejection — avoids double-counting stats/audit.
     await safeAnswer(env, cq.id, "⚠️ Already processed", true);
     await updateKeyboardOnly(env, cq, "⏳ Already processed");
   }

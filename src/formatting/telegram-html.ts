@@ -9,25 +9,24 @@
  *
  * Task 28 (rewrite-formatting overhaul): Telegram supports both
  * `<blockquote>` and `<blockquote expandable>` (collapsible, Bot API 7.3+).
- * We now wrap:
- *   • paragraph  → spans joined; wrapped in <blockquote> when >200 chars,
- *                  or <blockquote expandable> when >400 chars.
- *   • heading    → <b>🌐 Text</b>\n  (🌐 prefix skipped if heading already
- *                  starts with a pictographic emoji, so AI-emitted "📦 Title"
- *                  headings don't get double-emoji'd)
+ * Current rendering rules (synced v2.15.6 — previous header was stale):
+ *   • paragraph  → first paragraph NEVER quoted (unless it's just a link).
+ *                  Just-a-link → always <blockquote> (or expandable if >200).
+ *                  Other paragraphs: >300 chars → expandable; >150 → blockquote;
+ *                  >80 (if no blockquote yet) → blockquote; else plain text.
+ *   • heading    → <b>Text</b> (plain bold, NO emoji prefix — user requested
+ *                  plain text headings).
  *   • code       → <pre><code class="language-xx">escaped</code></pre>.
  *                  SPECIAL: language="prompt" renders as
- *                  <blockquote expandable><pre><code>...</code></pre></blockquote>
- *                  — collapsible AND monospace (copyable). The prompt
- *                  block is produced by cleaner.restorePrompts which wraps
- *                  detected AI/image-gen prompts in a ```prompt fence.
- *   • quote      → <blockquote>spans</blockquote>
- *   • list       • items joined with \n; bullets "• " (unordered) or "1. " (ordered).
- *                  Multi-item unordered → wrapped in <blockquote>.
- *                  Multi-item ordered (step-by-step) → wrapped in
- *                  <blockquote expandable>.
+ *                  <blockquote expandable><code>...</code></blockquote>
+ *                  — collapsible AND monospace (copyable).
+ *   • quote      → <blockquote>spans</blockquote> (expandable if >300 chars).
+ *   • list       → "• " (unordered) or "N. " (ordered) items joined with \n.
+ *                  Multi-item → <blockquote> (expandable if >150 chars).
+ *                  Single-item >20 chars → <blockquote>. Else plain.
  *   • divider    → skipped (separator line caused visual clutter).
- *   • footer     → appended as <blockquote>escaped footer</blockquote>.
+ *   • footer     → appended as <blockquote>escaped footer</blockquote>
+ *                  (guarded: skipped if footer is empty/whitespace).
  * -----------------------------------------------------------------------------
  */
 
