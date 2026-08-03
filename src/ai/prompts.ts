@@ -166,7 +166,7 @@ function describeEmojiLevel(level: number): string {
   // NEVER at end of sentences. NEVER 🤖⚡🔥🚀. Each emoji must serve a structural purpose.
 
   // Character emoji set (expressive — used at higher levels as the PRIMARY set)
-  const CHAR_EMOJIS = "👾 ✴️ 🌀 🪐 〽️ 🪽 📜 🗞️ 🫥 🫡 🔗 🫀 👓 🎩 🌂 🐙 🪼 🍖 🍣 🏉 🎻 🛸 🛰 🪝 🪫 🪔 🪙 🪪 🧬";
+  const CHAR_EMOJIS = "👾 ✴️ 🌀 🪐 〽️ 🪽 📜 🗞️ 🫥 🫡 🫀 👓 🎩 🌂 🐙 🪼 🍖 🍣 🏉 🎻 🛸 🛰 🪝 🪫 🪔 🪙 🪪 🧬";
   // Geometric emoji set (subtle — used at lower levels as the PRIMARY set)
   const GEO_EMOJIS = "🔺 🔻 🔸 🔹 🔶 🔷 ◽️ ◼️ ◻️ ♦️";
 

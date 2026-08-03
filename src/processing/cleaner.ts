@@ -120,9 +120,12 @@ function restoreInlineCode(text: string, codes: string[]): string {
 function extractUrls(text: string): { text: string; urls: string[] } {
   const urls: string[] = [];
   text = text.replace(URL_RE, (url) => {
-    // Only remove Telegram INVITE links (joinchat, +xxx, addstickers, addemoji)
-    // These are ALWAYS promo — never legitimate content.
+    // Remove Telegram promo links: invite links AND t.me/username (not post links)
     if (/^https?:\/\/t\.me\/(?:joinchat|\+|addstickers|addemoji)/i.test(url)) {
+      return " ";
+    }
+    // Also remove t.me/username (but NOT t.me/username/123 post links)
+    if (/^https?:\/\/t\.me\/[A-Za-z0-9_]+\/?$/i.test(url)) {
       return " ";
     }
     // ALL other URLs (including t.me/username and t.me/username/123) are KEPT.
@@ -161,8 +164,20 @@ export function cleanContent(
   text = ic.text;
 
   // Extract URLs → placeholders (also drops Telegram invite links).
+  // Also drop t.me/username promo links (but NOT t.me/username/123 post links).
   const u = extractUrls(text);
   text = u.text;
+
+  // Remove t.me/username promo links (both bare and with https://)
+  // Keep t.me/username/123 (specific post links)
+  // Also remove emoji + t.me combos (e.g. "✉️ t.me/username/")
+  text = text.replace(/(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]+)\/?(?!\d)/gi, (match) => {
+    if (/\/\d+/.test(match)) return match;
+    return ""; // Remove promo link
+  });
+  // Remove lines that are just emoji + (leftover from t.me removal)
+  text = text.replace(/^[ \t]*[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F\s]+t\.me\/[A-Za-z0-9_]+\/?[ \t]*$/gimu, "");
+  text = text.replace(/^[ \t]*[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F]+[ \t]*$/gimu, "");
 
   // --- text-level cleaning passes ---
 
