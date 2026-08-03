@@ -233,10 +233,14 @@ export function cleanContent(
   // "source: @user" attribution — only removes @username, NOT URLs
   text = text.replace(SOURCE_ATTR_RE, " ");
 
-  // "@user | desc" signature lines — but NOT if the line contains a URL
-  text = text.replace(SIGNATURE_LINE_RE, (match) =>
-    hasUrlPlaceholder(match) ? match : "",
-  );
+  // "@user | desc" signature lines — ALWAYS removed.
+  // The hasUrlPlaceholder guard is NOT applied here because a signature line
+  // like "@channel | example.com" is ALWAYS promo — the link is part of the
+  // signature (channel's website/twitter), not content. Removing the whole
+  // line (including the link) is the correct behavior. The user confirmed:
+  // "لینک‌های کنار آیدی آخر پست‌ها که مربوط به چنل‌ها هست رو نگه می‌داره"
+  // (links next to channel ID at end of posts are being kept — should be removed).
+  text = text.replace(SIGNATURE_LINE_RE, "");
 
   // Emoji + @username lines (e.g. "🌀 @ILIVIR3", "🆔 @ShahrSakhtAfzar")
   // — but NOT if the line contains a URL
