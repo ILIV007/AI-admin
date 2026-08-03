@@ -33,7 +33,7 @@
 import type { ContentBlock, Span } from "../types";
 
 // ============================================================
-// escapeHtml
+// escapeHtml / decodeHtmlEntities
 // ============================================================
 
 export function escapeHtml(s: string): string {
@@ -44,6 +44,33 @@ export function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/**
+ * Decode common HTML entities back to their literal characters.
+ * Used to NORMALIZE URLs before re-escaping — prevents double-escaping.
+ *
+ * CRITICAL FIX (v2.15.8): when the AI outputs URLs with `&amp;` (HTML entity
+ * encoding for `&`, common in Google Play links like
+ * `?id=com.example&amp;hl=fa`), the old code would call escapeHtml on the
+ * URL, producing `&amp;amp;` — a double-escaped broken URL. Telegram would
+ * then reject the `<a>` tag (invalid href) and show the link text as plain
+ * non-clickable text. If the text was inside `<b>`, it appeared BOLD but
+ * NOT clickable — exactly the user-reported bug.
+ *
+ * Now we decode entities FIRST (`&amp;` → `&`), then escapeHtml produces
+ * the correct single-escaped `&amp;`.
+ */
+export function decodeHtmlEntities(s: string): string {
+  if (!s) return "";
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, "/");
 }
 
 // ============================================================
@@ -114,27 +141,35 @@ export function renderSpan(span: Span): string {
     case "code":
       return `<code>${escapeHtml(span.code)}</code>`;
     case "link": {
+      // CRITICAL FIX (v2.15.8): decode HTML entities in the URL BEFORE
+      // re-escaping. This prevents double-escaping: if the AI output
+      // contained `&amp;` in the URL (common in Google Play links),
+      // escapeHtml would produce `&amp;amp;` — a broken URL that Telegram
+      // rejects, causing the link to appear as plain non-clickable text.
+      const rawUrl = decodeHtmlEntities(span.url);
+
       // If the link has custom text (like [text](url)), preserve the text EXACTLY.
       // Only shorten BARE URLs (where text === url or text is the URL without
       // protocol, e.g. text="github.com/owner/repo" url="https://github.com/owner/repo").
       // Wrap decodeURIComponent in try-catch: a URL containing a literal `%`
       // followed by non-hex chars (e.g. `50%off`, `%ZZ`) throws URIError.
-      let decoded = span.url;
-      try { decoded = decodeURIComponent(span.url); } catch { /* malformed %, keep raw */ }
-      const urlNoProto = span.url.replace(/^https?:\/\//, "");
+      let decoded = rawUrl;
+      try { decoded = decodeURIComponent(rawUrl); } catch { /* malformed %, keep raw */ }
+      const urlNoProto = rawUrl.replace(/^https?:\/\//, "");
       const decodedNoProto = decoded.replace(/^https?:\/\//, "");
       const isBareUrl =
         !span.text ||
         span.text === span.url ||
+        span.text === rawUrl ||
         span.text === decoded ||
         span.text === urlNoProto ||           // "github.com/owner/repo"
         span.text === decodedNoProto ||
-        span.url.endsWith(span.text) ||       // text is the tail of the URL
-        (span.text.includes("/") && span.url.includes(span.text)); // text is a path segment of the URL
+        rawUrl.endsWith(span.text) ||         // text is the tail of the URL
+        (span.text.includes("/") && rawUrl.includes(span.text)); // text is a path segment of the URL
       const linkText = isBareUrl
-        ? shortenUrl(span.url)  // Bare URL — shorten for display
-        : span.text;            // Custom text — preserve EXACTLY
-      return `<a href="${escapeHtml(span.url)}">${escapeHtml(linkText)}</a>`;
+        ? shortenUrl(rawUrl)   // Bare URL — shorten for display
+        : span.text;           // Custom text — preserve EXACTLY
+      return `<a href="${escapeHtml(rawUrl)}">${escapeHtml(linkText)}</a>`;
     }
     case "mention": {
       if (span.userId !== undefined) {

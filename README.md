@@ -2,7 +2,7 @@
 
 A production-ready Telegram channel content management bot built on Cloudflare Workers. Automatically cleans, classifies, AI-rewrites, formats, and publishes posts to your Telegram channel — completely free.
 
-**Current version: v2.15.7**
+**Current version: v2.15.8**
 
 ## Features
 
