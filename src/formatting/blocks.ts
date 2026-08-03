@@ -57,7 +57,8 @@ import type { ContentBlock, Span } from "../types";
 function stripTrailingPunct(url: string): string {
   let out = url;
   // First strip trailing sentence punctuation (always safe).
-  out = out.replace(/[.,;:!?]+$/g, "");
+  // Includes Persian punctuation: ، (comma) ؟ (question) ؛ (semicolon)
+  out = out.replace(/[.,;:!?،؟؛]+$/g, "");
   // Then strip unbalanced trailing closing brackets one at a time.
   for (;;) {
     const last = out[out.length - 1];

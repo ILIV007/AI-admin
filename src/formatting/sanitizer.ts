@@ -96,11 +96,23 @@ export function sanitizeAiOutput(text: string): string {
     },
   );
 
+  // 1d. CRITICAL FIX (v2.16.0): convert <URL> (angle-bracket-wrapped URLs)
+  //     to bare URLs BEFORE stripping HTML tags. Some AI models (Claude, GPT)
+  //     wrap URLs in angle brackets like <https://example.com>. The HTML-tag
+  //     stripper below would treat this as an HTML tag (it starts with <h>)
+  //     and DELETE it entirely — losing the URL. This was a MAJOR cause of
+  //     the user-reported "links deleted" bug.
+  //     Also normalize markdown links with angle-bracket URLs:
+  //       [text](<https://url>)  →  [text](https://url)
+  text = text.replace(/<((?:https?:\/\/)[^>\s]+)>/gi, "$1");
+  text = text.replace(/\[([^\]]*)\]\(<((?:https?:\/\/)[^>\s]+)>\)/gi, "[$1]($2)");
+
   // 2. Strip raw HTML tags the AI may have emitted — but only real HTML tags,
   //    not comparison operators like "x < 5" or "y > 3".
   //    A real HTML tag starts with < followed by a letter or / (e.g. <b>, </i>).
   //    "x < 5" has a space after <, so it won't match.
   //    NOTE: <a> tags were already converted to markdown in step 1c above.
+  //    NOTE: <URL> angle-bracket URLs were already unwrapped in step 1d above.
   text = text.replace(/<\/?[a-zA-Z][^>]*>/g, "");
 
   // 3. Restore markdown links.

@@ -184,5 +184,19 @@ function isUrlTransformed(
   if (rewrittenLower.includes(`](${url.toLowerCase()}`)) return true;
   if (rewrittenLower.includes(`](${normalized}`)) return true;
 
+  // CRITICAL FIX (v2.16.0): HTML-entity-encoded form. AI models often
+  // output `&amp;` instead of `&` in URLs (e.g. Google Play links like
+  // `?id=com.example&amp;hl=fa`). Without this check, validatePreservation
+  // would flag the URL as "missing" and fall back to the cleaned original,
+  // discarding the AI's entire rewrite just because of entity encoding.
+  // The entity-encoded URL is semantically identical — treat it as preserved.
+  const entityEncoded = url.replace(/&/g, "&amp;");
+  if (rewritten.includes(entityEncoded)) return true;
+  if (rewrittenLower.includes(entityEncoded.toLowerCase())) return true;
+
+  // Also check the normalized form with entities
+  const normalizedEntity = normalized.replace(/&/g, "&amp;");
+  if (rewrittenLower.includes(normalizedEntity)) return true;
+
   return false;
 }
