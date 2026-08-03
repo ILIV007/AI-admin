@@ -1029,7 +1029,28 @@ async function handleFinalizeMediaGroup(
         };
         const ai = await rewriteWithFallback(env, aiReq);
         if (ai?.ok && ai?.text) {
-          workingText = ai.text;
+          // CRITICAL FIX (v2.15.7): validate preservation — if the AI stripped
+          // URLs or GitHub repos, fall back to the cleaned original. Without
+          // this, links were silently lost in media group posts (the main
+          // pipeline has this check, but the media group path bypassed it).
+          const { validatePreservation } = await import("../processing/preservation");
+          const validation = validatePreservation(workingText, ai.text);
+          if (!validation.ok) {
+            const criticalMissing = validation.missing.filter(
+              (m) => m.startsWith("url:") || m.startsWith("repo:"),
+            );
+            if (criticalMissing.length > 0) {
+              log("warn", "queue.finalizeMediaGroup", "AI stripped critical content; using cleaned original", {
+                criticalMissing,
+              });
+              // Keep workingText (cleaned original) — don't use AI output
+            } else {
+              // Minor loss (codeblock merge, package rename) — keep AI output
+              workingText = ai.text;
+            }
+          } else {
+            workingText = ai.text;
+          }
           aiUsed = true;
           aiModel = ai.model;
         }

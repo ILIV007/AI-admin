@@ -69,10 +69,38 @@ export function sanitizeAiOutput(text: string): string {
     return `${NUL}LINK${links.length - 1}${NUL}`;
   });
 
+  // 1c. CRITICAL FIX (v2.15.7): convert raw HTML <a href="URL">TEXT</a> to
+  //     markdown [TEXT](URL) BEFORE stripping raw HTML. The AI is told to
+  //     output Markdown only, but some models occasionally emit raw <a> tags
+  //     anyway. Without this conversion, the sanitizer would strip the tag
+  //     and the URL would be LOST — the user-reported "links deleted" bug.
+  //     We handle both double and single quotes around the href, and
+  //     unquoted hrefs. We also handle the case where </a> is missing
+  //     (treat rest of line as link text).
+  text = text.replace(
+    /<a\s+href=(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi,
+    (_m, dqUrl, sqUrl, bareUrl, linkText) => {
+      const url = dqUrl || sqUrl || bareUrl;
+      const text = (linkText || "").trim();
+      return `[${text}](${url})`;
+    },
+  );
+  // Also catch <a href="URL">TEXT without closing </a> (broken HTML)
+  text = text.replace(
+    /<a\s+href=(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([^\n<]*)/gi,
+    (_m, dqUrl, sqUrl, bareUrl, linkText) => {
+      const url = dqUrl || sqUrl || bareUrl;
+      const text = (linkText || "").trim();
+      if (!text) return url; // no link text → just the bare URL
+      return `[${text}](${url})`;
+    },
+  );
+
   // 2. Strip raw HTML tags the AI may have emitted — but only real HTML tags,
   //    not comparison operators like "x < 5" or "y > 3".
   //    A real HTML tag starts with < followed by a letter or / (e.g. <b>, </i>).
   //    "x < 5" has a space after <, so it won't match.
+  //    NOTE: <a> tags were already converted to markdown in step 1c above.
   text = text.replace(/<\/?[a-zA-Z][^>]*>/g, "");
 
   // 3. Restore markdown links.
