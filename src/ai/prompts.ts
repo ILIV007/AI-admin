@@ -90,7 +90,7 @@ export function buildSystemPrompt(
       `- NEVER use markdown tables. Use bullet/numbered lists instead.\n` +
       `- Use ONLY ## (H2) and ### (H3) for headings. NEVER use # (H1) or ####+.\n` +
       `- NEVER add pagination ("Part 1/2", "Page 1", "1/N"). The system handles splitting.\n` +
-      `- CRITICAL: Preserve ALL links EXACTLY as [text](url). NEVER strip the URL. NEVER convert a markdown link to plain text. If source has [click here](https://example.com), output MUST have [click here](https://example.com).\n` +
+      `- CRITICAL: Preserve ALL links EXACTLY as they appear in the source. If the source has [text](url), keep [text](url). If the source has a bare URL like https://example.com, keep it as a bare URL. NEVER strip URLs, NEVER convert links to plain text, NEVER remove the href. Links are SACRED — they must survive your rewrite unchanged.\n` +
       `- CRITICAL: GitHub links [text](https://github.com/owner/repo) MUST be preserved EXACTLY with the full URL.\n` +
       `- CRITICAL: Do NOT create NEW links. Only keep links that exist in the source.\n` +
       `- CRITICAL: Do NOT add "source:", "via", "credit" lines or descriptions before links.\n` +
@@ -103,13 +103,13 @@ export function buildSystemPrompt(
       `- No greetings, closings, or meta-text. Output ONLY the processed text.\n` +
       `- BOLDING: Only key terms/tool names/warnings (max 2-6 per post). NEVER bold >10 words in a row.\n` +
       `- HEADINGS: Do NOT add emoji prefixes to headings. Use plain text headings (## Title).\n` +
-      `- STRUCTURE: Use bullets (•/-), numbered lists, and visual symbols (→ × | + ▸ ◆ ◇ ▪ ◦). These are ALWAYS available — they are structural, not decorative.\n` +
+      `- STRUCTURE: Use bullets (•/-) and numbered lists when the source HAS a list. Do NOT convert prose paragraphs into bullets. If the source is flowing text, keep it as flowing text. Match the source's structure — don't impose lists where none existed.\n` +
       `- BLOCKQUOTE (> markdown): Use ONLY for direct quotes from sources or genuine side-notes. Do NOT use > for regular paragraphs, lists, or links — the system handles auto-quoting deterministically.\n` +
       `- LINKS: Keep links on their OWN line, separate from paragraphs. Do NOT embed links inside blockquotes. Format: paragraph text\\n\\n[text](url) — NOT: paragraph [text](url) text.\n` +
       `- RTL: CRITICAL. Persian paragraphs MUST begin with a Persian word. The ONLY exception is when the ENTIRE post is English. If a paragraph contains ANY Persian text, its FIRST word MUST be Persian. Examples of CORRECT: "هوش مصنوعی (AI) یک فناوری است", "زبان Python قدرتمند است", "این ابزار با React کار می‌کند". Examples of WRONG: "AI یک فناوری است", "Python قدرتمند است", "React با این ابزار کار می‌کند". For English technical terms, ALWAYS use the pattern: Persian_word (English_term) — e.g. "هوش مصنوعی (AI)", "زبان Python", "کتابخانه React".\n` +
       `- Persian punctuation: comma (،), question mark (؟), semicolon (؛). Half-spaces (نیم‌فاصله) MANDATORY in ALL compound words. Use U+200C (zero-width non-joiner). Examples: به‌روزرسانی ✓ (not بهروزرسانی), نمی‌دانم ✓ (not نمیدانم), نکرده‌اید ✓ (not نکردهاید), می‌توانید ✓ (not میتوانید), می‌رود ✓ (not میرود), همه‌ما ✓ (not همهما), این‌که ✓, آن‌که ✓, به‌طور ✓, در‌حال‌که ✓, چون‌که ✓, نگه‌داری ✓, سرعت‌بخشی ✓, توسعه‌دهنده ✓, کاربران‌گرامی ✓. ALWAYS insert half-space between: prefix+stem (می، نمی، هیچ، این، آن، به، در) and between noun+suffix (ها، ی، شو، ش). If unsure whether to use half-space, use a regular space instead — NEVER write words joined together without any separator. Proofread EVERY word for missing half-spaces before returning.\n` +
       `- CRITICAL PERSIAN: Do NOT double letters. The letter ه (heh) — write it ONCE, never "هه". Proofread before returning.\n` +
-      `- EMOJI: Use ONLY the emojis listed in the GUIDANCE section. NEVER use 🌍🌐💡📌📦⚡🔒🐞🧩🤖🔥🚀🎉😍✨ or ANY emoji NOT in the approved list. If an emoji is not in the GUIDANCE list, do NOT use it. Follow the GUIDANCE section for emoji level. Structural symbols (→ × | + ▸ ◆ •) are ALWAYS encouraged for formatting. Do NOT repeat the same emoji. Do NOT put emojis on every paragraph. NEVER at the END of sentences.\n` +
+      `- EMOJI: Follow the GUIDANCE section for emoji level. NEVER use emojis NOT in the approved list. Do NOT repeat the same emoji. NEVER at the END of sentences.\n` +
       `- Keep the original meaning and tone. You MAY add valuable context (a key insight, an important warning, a useful tip) — but ONLY if it genuinely adds value. Do NOT add filler, fluff, or obvious statements. Quality over quantity: if you're unsure whether an addition adds value, leave it out.\n` +
       `- CRITICAL: Do NOT add labels or descriptions before links. If the source has a bare URL, keep it as a bare URL — do NOT add words like "سایت", "لینک", "منبع", "Website", "Link" before it. The link speaks for itself.\n`
   );

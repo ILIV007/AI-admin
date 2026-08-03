@@ -120,11 +120,11 @@ function restoreInlineCode(text: string, codes: string[]): string {
 function extractUrls(text: string): { text: string; urls: string[] } {
   const urls: string[] = [];
   text = text.replace(URL_RE, (url) => {
-    // Remove Telegram promo links: invite links AND t.me/username (not post links)
+    // Remove Telegram promo links: invite links AND https://t.me/username (standalone, not post links)
     if (/^https?:\/\/t\.me\/(?:joinchat|\+|addstickers|addemoji)/i.test(url)) {
       return " ";
     }
-    // Also remove t.me/username (but NOT t.me/username/123 post links)
+    // Remove https://t.me/username only if it's NOT a post link (no /123)
     if (/^https?:\/\/t\.me\/[A-Za-z0-9_]+\/?$/i.test(url)) {
       return " ";
     }
@@ -169,14 +169,17 @@ export function cleanContent(
   text = u.text;
 
   // Remove t.me/username promo links (both bare and with https://)
-  // Keep t.me/username/123 (specific post links)
+  // Keep t.me/username/123 (specific post links) — check for /digits AFTER username
   // Also remove emoji + t.me combos (e.g. "✉️ t.me/username/")
-  text = text.replace(/(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]+)\/?(?!\d)/gi, (match) => {
-    if (/\/\d+/.test(match)) return match;
-    return ""; // Remove promo link
+  // CRITICAL: only remove STANDALONE t.me/username (on its own line, at end of post)
+  // NOT t.me/username inside a sentence (e.g. "به t.me/somechannel/123 مراجعه کنید")
+  text = text.replace(/^[ \t]*(?:https?:\/\/)?t\.me\/[A-Za-z0-9_]+\/?[ \t]*$/gimu, (match) => {
+    if (/\/\d+/.test(match)) return match; // Keep post links
+    return "";
   });
-  // Remove lines that are just emoji + (leftover from t.me removal)
+  // Remove lines that are just emoji + t.me/username (e.g. "✉️ t.me/username/")
   text = text.replace(/^[ \t]*[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F\s]+t\.me\/[A-Za-z0-9_]+\/?[ \t]*$/gimu, "");
+  // Remove leftover standalone emojis on their own line (left after t.me removal)
   text = text.replace(/^[ \t]*[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F]+[ \t]*$/gimu, "");
 
   // --- text-level cleaning passes ---
